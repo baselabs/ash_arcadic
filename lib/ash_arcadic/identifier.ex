@@ -11,18 +11,28 @@ defmodule AshArcadic.Identifier do
 
   @doc """
   Returns the identifier as a string, or raises a value-free `ArgumentError`.
-  Accepts an atom or binary.
+
+  Accepts a non-`nil`, non-boolean atom or a binary. Fails **closed**: `nil`,
+  `true`/`false`, and any non-atom/non-binary term raise the same value-free
+  `ArgumentError` rather than silently becoming the literal `"nil"`/`"true"` or a
+  `FunctionClauseError` that could surface the argument in a stacktrace (AGENTS.md
+  Rules 2 & 4). Callers pass DSL-static labels or resolved identifiers, never a
+  runtime value.
   """
   @spec validate!(atom() | String.t()) :: String.t()
+  def validate!(name) when is_nil(name) or is_boolean(name), do: raise_invalid!()
+
   def validate!(name) when is_atom(name), do: validate!(Atom.to_string(name))
 
   def validate!(name) when is_binary(name) do
     case Arcadic.Identifier.validate(name) do
-      :ok ->
-        name
-
-      {:error, :invalid_identifier} ->
-        raise ArgumentError, "invalid ArcadeDB identifier (value redacted)"
+      :ok -> name
+      {:error, :invalid_identifier} -> raise_invalid!()
     end
   end
+
+  def validate!(_other), do: raise_invalid!()
+
+  @spec raise_invalid!() :: no_return()
+  defp raise_invalid!, do: raise(ArgumentError, "invalid ArcadeDB identifier (value redacted)")
 end
