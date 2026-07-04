@@ -111,7 +111,9 @@ defmodule AshArcadic.MultitenancyTest do
     # to_string/1 on a non-String.Chars term raises Protocol.UndefinedError whose message
     # embeds the term (a Rule-4 value leak). The encoder must fail closed with a value-free
     # ArgumentError instead — the same posture as the blank/overflow paths.
-    err = assert_raise ArgumentError, fn -> Multitenancy.database_name(Res, %{secret: "hunter2"}) end
+    err =
+      assert_raise ArgumentError, fn -> Multitenancy.database_name(Res, %{secret: "hunter2"}) end
+
     refute err.message =~ "hunter2"
     refute err.message =~ "secret"
 
