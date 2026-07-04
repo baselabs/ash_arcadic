@@ -61,7 +61,8 @@ defmodule AshArcadic.MixProject do
   defp package do
     [
       maintainers: ["rjpalermo"],
-      files: ~w(lib .formatter.exs mix.exs README* LICENSE* CHANGELOG* usage-rules.md documentation),
+      files:
+        ~w(lib .formatter.exs mix.exs README* LICENSE* CHANGELOG* usage-rules.md documentation),
       licenses: ["MIT"],
       links: %{
         "GitHub" => @source_url,
