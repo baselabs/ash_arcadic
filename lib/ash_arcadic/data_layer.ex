@@ -69,7 +69,8 @@ defmodule AshArcadic.DataLayer do
     verifiers: [
       AshArcadic.DataLayer.Verifiers.ValidateLabelFormat,
       AshArcadic.DataLayer.Verifiers.ValidateDatabase,
-      AshArcadic.DataLayer.Verifiers.ValidateSensitive
+      AshArcadic.DataLayer.Verifiers.ValidateSensitive,
+      AshArcadic.DataLayer.Verifiers.ValidateSkip
     ]
 
   # === Capability declarations (grow per plan) ===
