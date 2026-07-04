@@ -43,7 +43,7 @@ defmodule AshArcadic.Multitenancy do
   end
 
   defp default_encode(tenant) do
-    str = to_string(tenant)
+    str = stringify_or_fail!(tenant)
     passthrough = "t_" <> str
 
     cond do
@@ -57,6 +57,14 @@ defmodule AshArcadic.Multitenancy do
         encoded = "g" <> Base.encode32(str, case: :lower, padding: false)
         if byte_size(encoded) <= @max_bytes, do: encoded, else: fail_closed!()
     end
+  end
+
+  # A non-`String.Chars` tenant (map/tuple/arbitrary struct) makes `to_string/1`
+  # raise `Protocol.UndefinedError`, whose message embeds the term — a Rule-4 value
+  # leak. Detect it first and fail closed value-free, the same posture as the
+  # blank/overflow paths (steer the caller to a `tenant_database` MFA).
+  defp stringify_or_fail!(tenant) do
+    if String.Chars.impl_for(tenant), do: to_string(tenant), else: fail_closed!()
   end
 
   defp validate_mfa!(name) when is_binary(name) do

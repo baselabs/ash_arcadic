@@ -106,4 +106,15 @@ defmodule AshArcadic.MultitenancyTest do
   test "tenant_database MFA: a non-binary return fails closed, value-free" do
     assert_raise ArgumentError, fn -> Multitenancy.database_name(ResMfa, "nonbinary") end
   end
+
+  test "a non-String.Chars tenant (map/tuple/struct) fails closed value-free, never leaking the term" do
+    # to_string/1 on a non-String.Chars term raises Protocol.UndefinedError whose message
+    # embeds the term (a Rule-4 value leak). The encoder must fail closed with a value-free
+    # ArgumentError instead — the same posture as the blank/overflow paths.
+    err = assert_raise ArgumentError, fn -> Multitenancy.database_name(Res, %{secret: "hunter2"}) end
+    refute err.message =~ "hunter2"
+    refute err.message =~ "secret"
+
+    assert_raise ArgumentError, fn -> Multitenancy.database_name(Res, {:a, :b}) end
+  end
 end
