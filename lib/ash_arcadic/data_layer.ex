@@ -70,7 +70,8 @@ defmodule AshArcadic.DataLayer do
       AshArcadic.DataLayer.Verifiers.ValidateLabelFormat,
       AshArcadic.DataLayer.Verifiers.ValidateDatabase,
       AshArcadic.DataLayer.Verifiers.ValidateSensitive,
-      AshArcadic.DataLayer.Verifiers.ValidateSkip
+      AshArcadic.DataLayer.Verifiers.ValidateSkip,
+      AshArcadic.DataLayer.Verifiers.ValidateMultitenancyAttr
     ]
 
   # === Capability declarations (grow per plan) ===
