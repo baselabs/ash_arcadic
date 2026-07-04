@@ -28,7 +28,10 @@ defmodule AshArcadic.DataLayer.Verifiers.ValidateMultitenancyAttrTest do
         end
       end
 
-    assert err.message =~ "skip"
+    # "fail-open" is unique to ValidateMultitenancyAttr's message; ValidateSkip also
+    # emits at [:arcade, :skip] but says "perpetual StaleRecord" — so this pins the
+    # attribution to THIS verifier rather than any error that happens to mention "skip".
+    assert err.message =~ "fail-open"
   end
 
   test "a binary-storage discriminator scopes inconsistently => compile error" do
