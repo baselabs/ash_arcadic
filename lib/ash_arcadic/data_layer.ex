@@ -68,7 +68,8 @@ defmodule AshArcadic.DataLayer do
     transformers: [AshArcadic.DataLayer.Transformers.EnsureLabelled],
     verifiers: [
       AshArcadic.DataLayer.Verifiers.ValidateLabelFormat,
-      AshArcadic.DataLayer.Verifiers.ValidateDatabase
+      AshArcadic.DataLayer.Verifiers.ValidateDatabase,
+      AshArcadic.DataLayer.Verifiers.ValidateSensitive
     ]
 
   # === Capability declarations (grow per plan) ===
