@@ -63,7 +63,10 @@ defmodule AshArcadic.DataLayer do
 
   @behaviour Ash.DataLayer
 
-  use Spark.Dsl.Extension, sections: [@arcade], transformers: [], verifiers: []
+  use Spark.Dsl.Extension,
+    sections: [@arcade],
+    transformers: [AshArcadic.DataLayer.Transformers.EnsureLabelled],
+    verifiers: []
 
   # === Capability declarations (grow per plan) ===
   # Plan 1 advertises only :multitenancy (required for a :context resource to
