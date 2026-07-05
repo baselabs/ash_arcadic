@@ -19,6 +19,37 @@ defmodule AshArcadic.DataLayer.WriteResolutionTest do
     end
   end
 
+  defmodule ContextWithDatabaseRes do
+    use Ash.Resource, domain: nil, data_layer: AshArcadic.DataLayer
+
+    arcade do
+      client(AshArcadic.Test.MockClient)
+      # Spec §6: `database` is IGNORED for :context (the tenant resolves it). A
+      # static value here must NOT pre-seed query.database and defeat the read
+      # fail-closed backstop.
+      database("static_base")
+    end
+
+    attributes do
+      uuid_primary_key(:id)
+    end
+
+    multitenancy do
+      strategy :context
+    end
+  end
+
+  test "resource_to_query ignores the static `database` DSL for :context (spec §6) — no pre-seed defeats the read backstop" do
+    query = DL.resource_to_query(ContextWithDatabaseRes, nil)
+    # `database` must NOT leak into the query for :context — otherwise read_conn
+    # sees a nonblank database and reads it even when set_tenant never fired.
+    assert query.database == nil
+
+    # Consequence: a :context read with no resolved tenant fails CLOSED, never
+    # silently reads the static database.
+    assert {:error, :tenant_required} = DL.read_conn(query, ContextWithDatabaseRes)
+  end
+
   test "write_database :context fails closed on a nil/blank tenant (no base fallthrough)" do
     assert {:error, :tenant_required} =
              DL.write_database(ContextRes, %Ash.Changeset{resource: ContextRes, to_tenant: nil})

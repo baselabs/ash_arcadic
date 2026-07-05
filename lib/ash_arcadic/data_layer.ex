@@ -137,9 +137,22 @@ defmodule AshArcadic.DataLayer do
     %AshArcadic.Query{
       resource: resource,
       client: Info.client(resource),
-      database: Info.database(resource),
+      database: query_database(resource),
       label: Info.label(resource)
     }
+  end
+
+  # `database` is IGNORED for :context (spec §6 — the tenant resolves it via
+  # set_tenant/3). Seeding the static DSL value would pre-populate query.database
+  # and DEFEAT read_conn/2's fail-closed backstop: a :context read that never
+  # fired set_tenant (blank tenant) would then read the static database instead of
+  # failing closed (a silent unscoped read). nil for :context forces set_tenant to
+  # be the sole source of the tenant database.
+  defp query_database(resource) do
+    case strategy(resource) do
+      :context -> nil
+      _ -> Info.database(resource)
+    end
   end
 
   @impl true
@@ -391,7 +404,8 @@ defmodule AshArcadic.DataLayer do
   # MATCH sets only the upsert-fields subset (never re-setting the matched identity).
   # Idempotent by construction: a replay on the same identity matches the SAME @rid.
   defp do_upsert(resource, changeset, keys) do
-    identity_keys = upsert_identity_keys(resource, keys || Ash.Resource.Info.primary_key(resource))
+    identity_keys =
+      upsert_identity_keys(resource, keys || Ash.Resource.Info.primary_key(resource))
 
     if identity_keys == [] do
       # Fail closed: an empty identity would emit `MERGE (n:L {})`, matching ANY node
