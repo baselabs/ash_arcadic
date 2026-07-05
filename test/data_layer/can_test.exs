@@ -28,6 +28,10 @@ defmodule AshArcadic.DataLayer.CanTest do
     assert DL.can?(AshArcadic.Test.Basic, :transact)
   end
 
+  test "traverse is true (Plan 4)" do
+    assert DL.can?(AshArcadic.Test.Basic, :traverse)
+  end
+
   test "aggregates/lateral_join false" do
     refute DL.can?(AshArcadic.Test.Basic, {:aggregate, :count})
     refute DL.can?(AshArcadic.Test.Basic, {:lateral_join, []})

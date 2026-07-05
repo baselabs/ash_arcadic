@@ -35,9 +35,10 @@ defmodule AshArcadic.DataLayer.SkeletonTest do
            } = q
   end
 
-  test "can?/2: read + multitenancy + transact supported (Plan 3)" do
+  test "can?/2: read + multitenancy + transact + traverse supported (Plans 3–4)" do
     assert AshArcadic.DataLayer.can?(AshArcadic.Test.Basic, :multitenancy)
     assert AshArcadic.DataLayer.can?(AshArcadic.Test.Basic, :read)
     assert AshArcadic.DataLayer.can?(AshArcadic.Test.Basic, :transact)
+    assert AshArcadic.DataLayer.can?(AshArcadic.Test.Basic, :traverse)
   end
 end

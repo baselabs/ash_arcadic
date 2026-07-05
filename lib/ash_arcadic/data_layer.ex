@@ -131,6 +131,7 @@ defmodule AshArcadic.DataLayer do
   def can?(_, {:lateral_join, _}), do: false
   def can?(_, {:aggregate, _}), do: false
   def can?(_, :transact), do: true
+  def can?(_, :traverse), do: true
   def can?(_, _), do: false
 
   @impl true
