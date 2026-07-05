@@ -69,6 +69,21 @@ defmodule AshArcadic.Integration.CreateEdgeTest do
     assert count_edges(admin, "a", "KNOWS") == 0
   end
 
+  test "CREATE multi-edge (multiple? true): two calls of the same dest → 2 parallel edges", %{
+    admin: admin
+  } do
+    {:ok, a} = create_person("a", "org1")
+    {:ok, _b} = create_person("b", "org1")
+
+    # `:calls` is multiple? true → CREATE, NOT MERGE. Two calls must materialize TWO
+    # parallel edges (the inverse of the MERGE idempotency above), proving the CREATE
+    # branch reaches the DB — a build_create unit test alone cannot show this.
+    {:ok, _} = call(a, ["b"], "org1")
+    {:ok, _} = call(a, ["b"], "org1")
+
+    assert count_edges(admin, "a", "CALLED") == 2
+  end
+
   defp create_person(id, tenant) do
     EdgeWritePerson
     |> Ash.Changeset.for_create(:create, %{id: id, name: id, tenant: tenant}, tenant: tenant)
@@ -78,6 +93,12 @@ defmodule AshArcadic.Integration.CreateEdgeTest do
   defp befriend(actor_record, to_ids, since, tenant) do
     actor_record
     |> Ash.Changeset.for_update(:befriend, %{to: to_ids, since: since}, tenant: tenant)
+    |> Ash.update()
+  end
+
+  defp call(actor_record, to_ids, tenant) do
+    actor_record
+    |> Ash.Changeset.for_update(:call, %{to: to_ids}, tenant: tenant)
     |> Ash.update()
   end
 end
