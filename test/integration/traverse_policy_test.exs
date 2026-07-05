@@ -89,6 +89,31 @@ defmodule AshArcadic.Integration.TraversePolicyTest do
            ]
   end
 
+  test "a caller FILTER selects destinations but does NOT block traversal through a filtered-out (but authorized) intermediate",
+       %{admin: admin} do
+    # p1 -> hide -> deep : `deep` reachable ONLY through `hide`. `hide` is AUTHORIZED (visible)
+    # but excluded by the caller filter `name != "HIDE"`. Per-hop authz must gate intermediates
+    # by ROW POLICY, not by the caller's destination filter — so the filter drops `hide` from the
+    # RESULTS without blocking traversal THROUGH it to `deep`.
+    p1 = create_attr("p1", "org1", "P1", true)
+    create_attr("hide", "org1", "HIDE", true)
+    create_attr("deep", "org1", "DEEP", true)
+    create_attr("keep", "org1", "KEEP", true)
+    pol_edge(admin, "p1", "hide", "org1")
+    pol_edge(admin, "hide", "deep", "org1")
+    pol_edge(admin, "p1", "keep", "org1")
+
+    filtered = Ash.Query.filter(TraversePolicyNode, name != "HIDE")
+
+    {:ok, loaded} =
+      Ash.load(p1, [descendants: filtered], tenant: "org1", actor: @user, authorize?: true)
+
+    names = loaded.descendants |> Enum.map(& &1.name) |> Enum.sort()
+    # DEEP survives (traversed through the visible HIDE); KEEP direct; HIDE filtered from results.
+    assert names == ["DEEP", "KEEP"]
+    refute "HIDE" in names
+  end
+
   test "a caller filter on the loaded relationship is honored (Option-B delegates filter to the read)",
        %{admin: admin} do
     p1 = create_attr("p1", "org1", "P1", true)

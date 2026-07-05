@@ -316,14 +316,9 @@ defmodule AshArcadic.ManualRelationships.TraverseTest do
     end
   end
 
-  describe "regroup/4 (per-hop authorization)" do
-    defmodule RDst do
-      @moduledoc false
-      defstruct [:id, :name]
-    end
-
-    # p1: d1 via a fully-authorized path [p1,d1]; d2 via [p1,mid,d2] crossing DENIED `mid`;
-    #     d1 again (dup). p2: d3 via [p2,d3]; d1 via [p2,d1].
+  describe "surviving_dests/2 (per-hop authorization filter)" do
+    # p1: d1 via [p1,d1] (authorized); d2 via [p1,mid,d2] crossing DENIED `mid`; d1 dup.
+    # p3: d1 via BOTH [p3,mid,d1] (denied) AND [p3,d1] (clean) — the clean path must keep it.
     defp reach_map do
       %{
         %{id: "p1"} => [
@@ -331,59 +326,76 @@ defmodule AshArcadic.ManualRelationships.TraverseTest do
           %{dest: "d2", path: ["p1", "mid", "d2"]},
           %{dest: "d1", path: ["p1", "d1"]}
         ],
-        %{id: "p2"} => [
-          %{dest: "d3", path: ["p2", "d3"]},
-          %{dest: "d1", path: ["p2", "d1"]}
+        %{id: "p3"} => [
+          %{dest: "d1", path: ["p3", "mid", "d1"]},
+          %{dest: "d1", path: ["p3", "d1"]}
         ]
       }
     end
 
-    # Authorized read over the node union, IN READ ORDER (e.g. sorted by name). `mid` (and `d2`)
-    # are ABSENT — `mid` is policy-denied, so d2 (reachable ONLY through mid) must be dropped.
-    defp authorized do
-      [
-        %RDst{id: "p1", name: "P1"},
-        %RDst{id: "p2", name: "P2"},
-        %RDst{id: "d1", name: "A"},
-        %RDst{id: "d3", name: "C"}
-      ]
+    # The ROW-POLICY-authorized node set (Read A). `mid` is DENIED (absent) — even though `d2`
+    # (its downstream) IS authorized as a node.
+    defp auth_set, do: MapSet.new(["p1", "p3", "d1", "d2", "d3"])
+
+    test "TRIPWIRE: drops a dest whose ONLY path crosses a denied node — even when the dest itself is authorized" do
+      surviving = Traverse.surviving_dests(reach_map(), auth_set())
+      # d1 kept (path [p1,d1]); d2 dropped (only path crosses denied `mid`), though d2's PK is in
+      # auth_set — this is per-hop (PATH) authz, which a destination-only check would miss.
+      assert surviving[%{id: "p1"}] == MapSet.new(["d1"])
     end
 
-    test ":many — dest via a denied intermediate is dropped; fully-authorized paths survive, in READ order" do
-      result = Traverse.regroup(reach_map(), authorized(), :id, :many)
+    test "POSITIVE multi-path: a dest reachable via BOTH a denied AND a clean path is KEPT" do
+      surviving = Traverse.surviving_dests(reach_map(), auth_set())
 
-      # p1: d1 kept (path [p1,d1] all authorized); d2 DROPPED (only path crosses denied `mid`).
+      # p3 reaches d1 via [p3,mid,d1] (denied) AND [p3,d1] (clean) → any fully-authorized path keeps it.
+      assert surviving[%{id: "p3"}] == MapSet.new(["d1"])
+    end
+
+    test "a source whose every path is denied → empty set" do
+      rmap = %{%{id: "p9"} => [%{dest: "d9", path: ["p9", "mid", "d9"]}]}
+      assert Traverse.surviving_dests(rmap, auth_set()) == %{%{id: "p9"} => MapSet.new()}
+    end
+  end
+
+  describe "regroup/4 (final assembly, read-order-preserving)" do
+    defmodule RDst do
+      @moduledoc false
+      defstruct [:id, :name]
+    end
+
+    # Per-source surviving dest-PK sets (output of surviving_dests).
+    defp surviving do
+      %{%{id: "p1"} => MapSet.new(["d1"]), %{id: "p2"} => MapSet.new(["d1", "d3"])}
+    end
+
+    # The authorized DESTINATION read (Read B), IN READ ORDER (e.g. caller sort by name).
+    defp records, do: [%RDst{id: "d1", name: "A"}, %RDst{id: "d3", name: "C"}]
+
+    test ":many — per-source records = surviving ∩ records, in READ order" do
+      result = Traverse.regroup(surviving(), records(), :id, :many)
       assert result[%{id: "p1"}] == [%RDst{id: "d1", name: "A"}]
-      # p2: d3 + d1 kept (direct authorized paths); READ order [d1(A), d3(C)].
       assert result[%{id: "p2"}] == [%RDst{id: "d1", name: "A"}, %RDst{id: "d3", name: "C"}]
     end
 
-    test "read-order is preserved (sort survives) — not reachability order" do
-      # p2's reachability order is d3,d1 but the authorized read order is d1,d3; regroup follows READ order.
-      result = Traverse.regroup(reach_map(), authorized(), :id, :many)
+    test "read-order is preserved (caller sort survives)" do
+      # p2 surviving {d1,d3}; records order is [d1(A), d3(C)] → regroup follows READ order.
+      result = Traverse.regroup(surviving(), records(), :id, :many)
       assert Enum.map(result[%{id: "p2"}], & &1.id) == ["d1", "d3"]
     end
 
-    test ":one — first authorized reachable record (read order), or nil" do
-      result = Traverse.regroup(reach_map(), authorized(), :id, :one)
+    test ":one — first surviving record in read order, or nil" do
+      result = Traverse.regroup(surviving(), records(), :id, :one)
       assert result[%{id: "p1"}] == %RDst{id: "d1", name: "A"}
       assert result[%{id: "p2"}] == %RDst{id: "d1", name: "A"}
     end
 
-    test "TRIPWIRE: a dest that IS authorized as a node but whose ONLY path crosses a denied node is dropped" do
-      # d2's node is authorized here, but its only path [p1,mid,d2] crosses denied `mid`.
-      # This isolates per-hop (path) authz from destination authz — a destination-only check keeps d2.
-      auth = authorized() ++ [%RDst{id: "d2", name: "B"}]
-      result = Traverse.regroup(reach_map(), auth, :id, :many)
-      refute Enum.any?(result[%{id: "p1"}], &(&1.id == "d2"))
-      assert Enum.map(result[%{id: "p1"}], & &1.id) == ["d1"]
-    end
+    test "a dest that survived per-hop but is absent from Read B (caller filter dropped it) → [] / nil" do
+      # p1 surviving {d1}, but Read B returned no matching record (e.g. caller filter excluded d1).
+      assert Traverse.regroup(%{%{id: "p1"} => MapSet.new(["d1"])}, [], :id, :many) ==
+               %{%{id: "p1"} => []}
 
-    test "a source whose reachable dests are ALL path-denied → [] (:many) / nil (:one)" do
-      # source p1 authorized, but the only path to d9 crosses denied `mid`.
-      rmap = %{%{id: "p3"} => [%{dest: "d9", path: ["p1", "mid", "d9"]}]}
-      assert Traverse.regroup(rmap, authorized(), :id, :many) == %{%{id: "p3"} => []}
-      assert Traverse.regroup(rmap, authorized(), :id, :one) == %{%{id: "p3"} => nil}
+      assert Traverse.regroup(%{%{id: "p1"} => MapSet.new(["d1"])}, [], :id, :one) ==
+               %{%{id: "p1"} => nil}
     end
   end
 

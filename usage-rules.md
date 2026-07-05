@@ -140,29 +140,29 @@ _An Ash DataLayer for ArcadeDB (native OpenCypher over HTTP)._
   reachability leak). Opt out with **`scope_edges: false`** for graphs whose edges are
   written out-of-band and rely on node-structure scoping only. `:context` traversal
   needs no edge scoping (physical DB isolation).
-- **Traversal delegates filter / sort / limit / row-policy / field-policy to a
-  standard authorized read (Option B, spec §7.2 — resolves the Plan-4 CV1 carry).**
-  The traversal is a two-phase primitive: (1) a tenant-scoped reachability query
-  returns each source's reachable destination PKs (scoping the whole path — nodes +
-  edges); (2) a standard authorized `Ash.read` over those PKs, carrying the caller's
-  `actor` / `authorize?` / `tenant` / `domain` and the loaded relationship's
-  `context.query`, applies **row policy** (→ Cypher `WHERE`), **field policy**
-  (redaction), and the relationship/caller **filter + sort + limit** — all by Ash's
-  existing, tested read pipeline. Authorization is now enforced (a policy-denied
-  destination is dropped **even on the PK-only load** where Ash's post-load
-  short-circuits policy), and the tenant boundary is enforced **twice over** (the
-  path predicate + the read's `:attribute` filter / `:context` database), both
-  fail-closed. NOTE: a caller/relationship **`limit` applies over the UNION** of all
-  sources' reachable destinations, not per-source (a Slice-3+ lateral-join concern).
-- **Authorization is PER-HOP (row policy on every node of the path).** The authorized
-  read covers **every node on each path** (destinations *and* intermediates), and a
-  destination is returned only if it has a path whose **every** node is authorized. So a
-  destination reachable **only** through a row-policy-denied intermediate is **dropped**
-  (the intermediate is never returned); a destination with any fully-authorized path
-  survives. This covers **self-referential** traversal (the shipped norm). A path through
-  an intermediate of a **different resource** carrying a **different** policy is a Slice-3
-  concern and **fails closed** here (such a destination is dropped). Field-policy redaction
-  still applies to the returned destinations.
+- **Traversal delegates filter / sort / row-policy / field-policy to standard authorized
+  reads (Option B, spec §7.2 — resolves the Plan-4 CV1 carry).** The traversal is a
+  three-step primitive: (1) a tenant-scoped reachability query returns each source's
+  reachable paths as **node-PK lists** (scoping the whole path — nodes + edges); (2) two
+  authorized `Ash.read`s — **Read A** authorizes every path node by **row policy**, then
+  **Read B** reads the surviving destinations through the caller's `context.query` (its
+  **filter + sort**), applying row policy, **field policy** (redaction), and the tenant
+  filter / database; (3) regroup per source. The tenant boundary is enforced **twice over**
+  (the path predicate + the reads' `:attribute` filter / `:context` database), both
+  fail-closed. **Ash rejects `limit`/`offset` on manual relationships** (it raises
+  `Ash.Error.Load.InvalidQuery`), so a traversal relationship cannot be loaded with a limit —
+  use a downstream read/pagination over the loaded set instead.
+- **Authorization is PER-HOP (row policy on every node of the path).** Read A authorizes
+  **every node on each path** (destinations *and* intermediates) by row policy; a destination
+  is returned only if it has a path whose **every** node is authorized. So a destination
+  reachable **only** through a row-policy-denied intermediate is **dropped** (the intermediate
+  is never returned); a destination with any fully-authorized path survives. The caller's
+  destination **filter** (Read B) selects/shapes which destinations to return — it does **not**
+  block traversal *through* a filtered-out but authorized intermediate. This covers
+  **self-referential** traversal (the shipped norm). A path through an intermediate of a
+  **different resource** carrying a **different** policy is a Slice-3 concern and **fails
+  closed** here (such a destination is dropped). Field-policy redaction still applies to the
+  returned destinations.
 
 ## Edge writes (Slice 2, Plan 1)
 

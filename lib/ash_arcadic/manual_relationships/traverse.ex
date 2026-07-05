@@ -18,28 +18,32 @@ defmodule AshArcadic.ManualRelationships.Traverse do
       discriminator — `ALL(x IN nodes(p) WHERE x.<attr> = $tenant) AND ALL(r IN
       relationships(p) WHERE r.<attr> = $tenant)` — on by default; `scope_edges: false` opts
       out of the edge clause (probe E4).
-    * **Phase 2 (authorized read).** A STANDARD authorized `Ash.read` over the union of EVERY
-      path node's PK (destinations AND intermediates), narrowing `context.query` (which already
-      carries the relationship/caller filter + sort + limit + domain + tenant). Row policy,
-      field policy (redaction), and the `:attribute` tenant filter / `:context` tenant DB are
-      all delegated to Ash — this module never decodes a vertex. NOTE: a caller/relationship
-      `limit` applies over the UNION of all sources' reachable nodes, not per-source (a
-      Slice-3+ lateral-join concern).
-    * **Phase 3 (regroup).** Keeps a destination for a source only if it has a path whose EVERY
-      node is authorized — so a destination reachable ONLY through a row-policy-denied
-      intermediate is dropped (per-hop authorization), while a destination with any
-      fully-authorized path survives. Emits records in authorized-read order (sort/limit
-      survive), deduped per source and cardinality-aware.
+    * **Phase 2 (two authorized reads).** *Read A* authorizes EVERY path node: a STANDARD
+      `Ash.read` on the destination resource over the union of every path node's PK
+      (destinations AND intermediates), carrying `actor`/`authorize?`/`tenant`/`domain` so
+      **row policy** alone decides each node's visibility (Read A does NOT carry the caller's
+      destination filter/sort — a filtered-out but authorized intermediate is still
+      traversable). Each source's destinations that have a fully-authorized path then form
+      *Read B*: a STANDARD authorized `Ash.read` narrowing `context.query` (the
+      relationship/caller **filter + sort** + domain + tenant) to those surviving dest PKs,
+      applying row policy, **field policy** (redaction), and the `:attribute` tenant filter /
+      `:context` tenant DB. This module never decodes a vertex. NOTE: Ash rejects `limit`/
+      `offset` on manual relationships, so there is no per-source-vs-union paging concern; the
+      caller `filter`/`sort` apply to destinations by Read B.
+    * **Phase 3 (regroup).** Assembles each source's records from Read B in READ order (so the
+      caller sort survives), keeping those whose PK survived per-hop authorization — a
+      destination reachable ONLY through a row-policy-denied intermediate is dropped, while a
+      destination with any fully-authorized path survives; deduped per source, cardinality-aware.
 
   It returns a source-PK-keyed map of **authorized** destination records; authorization is
-  enforced on EVERY node on the path, not only the returned destinations. This covers
-  self-referential traversal (the shipped norm); a multi-resource path whose intermediates
-  carry a different policy is a Slice-3 concern and fails closed here. A single-attribute
-  destination primary key is required (composite → fail-closed value-free, mirroring the
-  edge-write dest-PK rule). Values ride `params`; every interpolated identifier is
-  `AshArcadic.Identifier.validate!`-checked. Tenancy is FAIL-CLOSED twice over: Phase 1
-  scopes the path (or targets the per-tenant `:context` database), and Phase 2's authorized
-  read re-applies the tenant filter / database.
+  enforced by **row policy on EVERY node on the path** (Read A), not only the returned
+  destinations. This covers self-referential traversal (the shipped norm); a multi-resource
+  path whose intermediates carry a different policy is a Slice-3 concern and fails closed here.
+  A single-attribute destination primary key is required (composite → fail-closed value-free,
+  mirroring the edge-write dest-PK rule). Values ride `params`; every interpolated identifier
+  is `AshArcadic.Identifier.validate!`-checked. Tenancy is FAIL-CLOSED twice over: Phase 1
+  scopes the path (or targets the per-tenant `:context` database), and both Phase-2 reads
+  re-apply the tenant filter / database.
   """
 
   @behaviour Ash.Resource.ManualRelationship
@@ -264,25 +268,35 @@ defmodule AshArcadic.ManualRelationships.Traverse do
   defp cardinalize(records, _many), do: records
 
   @doc false
-  # Phase-3 regroup (Option B, §7.2 step 3, amended for per-hop authz). `authorized` is the
-  # authorized-read record set over the FULL node union; a node is authorized iff its PK is in
-  # that set. For each source, a destination SURVIVES iff it has ≥1 path-entry whose EVERY node
-  # PK is authorized — a destination reachable ONLY through a row-policy-denied intermediate is
-  # dropped, while a destination with any fully-authorized path is kept. Records are emitted by
-  # iterating `authorized` in READ order (so sort/limit survive), unique by PK. Sources with no
-  # surviving dest → cardinalize([], card). `dest_pk` is the destination's single PK atom.
-  def regroup(reach_map, authorized, dest_pk, card) do
-    authorized_set = MapSet.new(authorized, &Map.get(&1, dest_pk))
-
+  # Per-hop authorization filter (Option B §7.2 step 3a, amended). `authorized_set` is the set of
+  # PKs that passed ROW POLICY (Read A over the full node union). For each source, a destination
+  # SURVIVES iff it has ≥1 path-entry whose EVERY node PK is in `authorized_set` — a destination
+  # reachable ONLY through a row-policy-denied intermediate is dropped; a destination with any
+  # fully-authorized path is kept. Returns %{src_key => MapSet(surviving dest PKs)}. This uses
+  # only ROW POLICY (never the caller's destination filter, which selects/shapes destinations,
+  # not which nodes may be traversed through — that is Read B's job).
+  def surviving_dests(reach_map, authorized_set) do
     Map.new(reach_map, fn {src_key, entries} ->
-      surviving =
+      dests =
         for %{dest: dest, path: path} <- entries,
             Enum.all?(path, &MapSet.member?(authorized_set, &1)),
             into: MapSet.new(),
             do: dest
 
-      recs = Enum.filter(authorized, fn r -> MapSet.member?(surviving, Map.get(r, dest_pk)) end)
+      {src_key, dests}
+    end)
+  end
 
+  @doc false
+  # Phase-3 regroup (Option B §7.2 step 3b). Given each source's surviving dest-PK set and the
+  # authorized DESTINATION records (Read B — caller filter + sort applied), emit each source's
+  # records by iterating `records` in READ order (so the caller sort survives), keeping those
+  # whose PK is in that source's surviving set. A dest that survived per-hop authorization but
+  # was dropped by the caller's destination filter is absent from `records` → naturally excluded.
+  # Sources with no surviving/authorized dest → cardinalize([], card).
+  def regroup(surviving, records, dest_pk, card) do
+    Map.new(surviving, fn {src_key, dest_set} ->
+      recs = Enum.filter(records, fn r -> MapSet.member?(dest_set, Map.get(r, dest_pk)) end)
       {src_key, cardinalize(recs, card)}
     end)
   end
@@ -333,7 +347,7 @@ defmodule AshArcadic.ManualRelationships.Traverse do
           }
 
           {reach_map, node_union} = assemble_reachability(rows, reach_spec)
-          {finish_load(reach_map, node_union, dest_pk, card, context), length(rows)}
+          {finish_load(reach_map, node_union, dest, dest_pk, card, context), length(rows)}
 
         {:error, error} ->
           {{:error, wrap_traverse_error(error)}, 0}
@@ -343,30 +357,64 @@ defmodule AshArcadic.ManualRelationships.Traverse do
     end
   end
 
-  # Phase 2 (authorized read over EVERY path node) + Phase 3 (path-aware regroup). Empty
-  # reachability → skip the read (no `IN []`); every source defaults empty via `regroup` over an
-  # empty map.
-  defp finish_load(_reach_map, [], _dest_pk, _card, _context), do: {:ok, %{}}
+  # Phase 2 (two authorized reads) + Phase 3 (regroup), §7.2 amended for per-hop authz. Empty
+  # reachability → no read (no `IN []`); Ash defaults each absent source to []/nil.
+  #   Read A — authorize EVERY path node by ROW POLICY (which nodes are visible/traversable).
+  #   surviving_dests — keep a destination only if it has a fully-authorized path.
+  #   Read B — read the surviving DESTINATIONS through the caller's query (filter + sort).
+  # Two reads because a manual relationship must apply per-hop policy over ALL nodes yet apply
+  # the caller's DESTINATION filter/sort over destinations only (Ash rejects limit/offset on
+  # manual relationships, so no per-source paging concern here).
+  defp finish_load(_reach_map, [], _dest, _dest_pk, _card, _context), do: {:ok, %{}}
 
-  defp finish_load(reach_map, node_union, dest_pk, card, context) do
-    case authorized_read(context, dest_pk, node_union) do
-      {:ok, authorized} -> {:ok, regroup(reach_map, authorized, dest_pk, card)}
+  defp finish_load(reach_map, node_union, dest, dest_pk, card, context) do
+    with {:ok, authorized_nodes} <- authorize_nodes(context, dest, dest_pk, node_union) do
+      authorized_set = MapSet.new(authorized_nodes, &Map.get(&1, dest_pk))
+      surviving = surviving_dests(reach_map, authorized_set)
+      dest_union = surviving |> Map.values() |> Enum.flat_map(&MapSet.to_list/1) |> Enum.uniq()
+      read_dests(surviving, dest_union, dest_pk, card, context)
+    end
+  end
+
+  # Read B + regroup. Empty surviving union → no read (no `IN []`); regroup over [] defaults each
+  # source to []/nil.
+  defp read_dests(surviving, [], dest_pk, card, _context),
+    do: {:ok, regroup(surviving, [], dest_pk, card)}
+
+  defp read_dests(surviving, dest_union, dest_pk, card, context) do
+    case authorized_read(context, dest_pk, dest_union) do
+      {:ok, records} -> {:ok, regroup(surviving, records, dest_pk, card)}
       {:error, error} -> {:error, error}
     end
   end
 
-  # The Option-B authorized read (§7.2 step 2, amended for per-hop authz). context.query already
-  # carries the relationship/caller filter + sort + limit + domain + tenant (relationships.ex:
-  # 600-611); we narrow it to the reachable node-PK union (destinations AND intermediates) and
-  # run a STANDARD authorized Ash read. Routes through Ash's full read path → row policy (→
-  # Cypher WHERE via filter/3) + field policy (redaction) + the :attribute tenant filter /
-  # :context tenant DB. The returned set is EVERY authorized node on any path, so `regroup` can
-  # keep only destinations reachable via a fully-authorized path. Records return already-
-  # authorized, so Ash's PK-only post-load short-circuit (spec §2) cannot re-expose a denied
-  # node. The read emits its own Slice-1 :read span beneath the :traverse span (§9).
-  defp authorized_read(context, dest_pk, node_union) do
-    context.query
+  # Read A — per-hop node authorization (§7.2 step 2a, amended). A BASE authorized read on the
+  # destination resource carrying only actor/authorize?/tenant/domain — NOT `context.query`,
+  # whose caller filter/sort SELECT and SHAPE destinations, not which nodes may be traversed
+  # THROUGH. So ROW POLICY alone decides each node's visibility (a filtered-out but authorized
+  # intermediate is still traversable). Returns the authorized node records; a node absent →
+  # denied (fail-closed). Same :attribute tenant filter / :context tenant DB as any read.
+  defp authorize_nodes(context, dest, dest_pk, node_union) do
+    dest
     |> Ash.Query.filter(^Ash.Expr.ref(dest_pk) in ^node_union)
+    |> Ash.read(
+      actor: context.actor,
+      authorize?: context.authorize?,
+      tenant: context.tenant,
+      domain: context.domain
+    )
+  end
+
+  # Read B — the authorized DESTINATION read (§7.2 step 2b). context.query already carries the
+  # relationship/caller filter + sort + domain + tenant (relationships.ex:600-611); we narrow it
+  # to the surviving (per-hop-authorized) dest PKs and run a STANDARD authorized Ash read. Routes
+  # through Ash's full read path → row policy (→ Cypher WHERE via filter/3) + field policy
+  # (redaction) + the :attribute tenant filter / :context tenant DB. Records return already-
+  # authorized, so Ash's PK-only post-load short-circuit (spec §2) cannot re-expose a denied
+  # dest. The read emits its own Slice-1 :read span beneath the :traverse span (§9).
+  defp authorized_read(context, dest_pk, dest_union) do
+    context.query
+    |> Ash.Query.filter(^Ash.Expr.ref(dest_pk) in ^dest_union)
     |> Ash.read(
       actor: context.actor,
       authorize?: context.authorize?,
