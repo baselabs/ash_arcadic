@@ -56,6 +56,7 @@ defmodule AshArcadic.Changes.DestroyEdge do
          destination_count: length(dest_ids),
          direction: edge.direction,
          tenant?: not is_nil(changeset.to_tenant),
+         in_transaction?: AshArcadic.Transaction.in_transaction?(),
          result: Telemetry.result_tag(result)
        }}
     end)

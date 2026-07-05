@@ -37,4 +37,23 @@ defmodule AshArcadic.TelemetryTest do
     assert AshArcadic.Telemetry.validate!(%{resource: Foo, properties?: true}) ==
              %{resource: Foo, properties?: true}
   end
+
+  test "the create_edge span emits in_transaction? in its stop metadata (spec §9)" do
+    ref = :telemetry_test.attach_event_handlers(self(), [[:ash_arcadic, :create_edge, :stop]])
+
+    # Drive CreateEdge.run through the R4-error path (plaintext sensitive prop, empty
+    # `to:`) so the span emits its stop metadata WITHOUT needing a live DB.
+    cs = %Ash.Changeset{
+      resource: AshArcadic.Test.EdgeSensitivePerson,
+      arguments: %{secret: "plaintext"},
+      action: %{arguments: [%{name: :secret, type: Ash.Type.String, constraints: []}]},
+      to_tenant: nil
+    }
+
+    assert {:error, _} = AshArcadic.Changes.CreateEdge.run(cs, %{}, edge: :links, to: :to)
+
+    assert_received {[:ash_arcadic, :create_edge, :stop], ^ref, _measurements, meta}
+    assert Map.has_key?(meta, :in_transaction?)
+    assert is_boolean(meta.in_transaction?)
+  end
 end

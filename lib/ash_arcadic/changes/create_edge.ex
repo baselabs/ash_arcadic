@@ -58,6 +58,7 @@ defmodule AshArcadic.Changes.CreateEdge do
          direction: edge.direction,
          properties?: properties?,
          tenant?: not is_nil(changeset.to_tenant),
+         in_transaction?: AshArcadic.Transaction.in_transaction?(),
          result: Telemetry.result_tag(result)
        }}
     end)
