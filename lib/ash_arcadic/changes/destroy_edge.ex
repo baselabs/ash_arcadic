@@ -45,7 +45,10 @@ defmodule AshArcadic.Changes.DestroyEdge do
 
           {:error, reason} ->
             {:error,
-             InvalidRelationship.exception(relationship: edge.name, message: conn_reason(reason))}
+             InvalidRelationship.exception(
+               relationship: edge.name,
+               message: EdgeCypher.conn_reason(reason)
+             )}
         end
 
       {result,
@@ -73,8 +76,26 @@ defmodule AshArcadic.Changes.DestroyEdge do
   defp destroy_one(conn, resource, edge, src_key, dest_id, tenant) do
     {cypher, params} = build_destroy(resource, edge, src_key, dest_id, tenant)
 
-    # Count-decode: [_|_] echoes `<deleted>` per removed edge (E3) → :ok; [] → the
-    # WHERE matched nothing → StaleRecord (fail-closed). Never row_to_attrs the echo.
+    # Rule-4 full-param encode-gate BEFORE the command (spec §6.3 — the gate runs before
+    # EVERY edge command, create AND destroy): an unencodable param (e.g. a raw non-UTF8
+    # binary destination id) must fail closed value-free, never reach the transport and
+    # raise Jason.EncodeError with the bytes in the message.
+    case EdgeCypher.encode_gate(params) do
+      {:error, key} ->
+        {:error,
+         InvalidRelationship.exception(
+           relationship: edge.name,
+           message: EdgeCypher.encode_reason(key)
+         )}
+
+      :ok ->
+        run_destroy(conn, cypher, params, resource, edge, src_key, dest_id)
+    end
+  end
+
+  # Count-decode: [_|_] echoes `<deleted>` per removed edge (E3) → :ok; [] → the
+  # WHERE matched nothing → StaleRecord (fail-closed). Never row_to_attrs the echo.
+  defp run_destroy(conn, cypher, params, resource, edge, src_key, dest_id) do
     case Arcadic.command(conn, cypher, params) do
       {:ok, [_ | _]} ->
         {:ok, :destroyed}
@@ -121,8 +142,4 @@ defmodule AshArcadic.Changes.DestroyEdge do
   defp redacted(src_key, _dest_id) do
     src_key |> Map.keys() |> Map.new(&{&1, "<redacted>"}) |> Map.put("dst", "<redacted>")
   end
-
-  defp conn_reason(:tenant_required), do: "tenant required"
-  defp conn_reason(:cross_database_transaction), do: "transaction spans multiple databases"
-  defp conn_reason(:transaction_begin_failed), do: "could not begin ArcadeDB transaction"
 end

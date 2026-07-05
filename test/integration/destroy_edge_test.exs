@@ -57,6 +57,33 @@ defmodule AshArcadic.Integration.DestroyEdgeTest do
     assert c == 1
   end
 
+  test "unfriend with a non-JSON-encodable destination id fails closed value-free (encode-gate, Rule 4)",
+       %{} do
+    {:ok, a} = create_person("a", "org1")
+
+    # A raw non-UTF8 binary id survives Ash's :string cast, but Jason.encode raises
+    # with the bytes in the message. The full-param encode-gate must catch it BEFORE
+    # the transport (spec §6.3 — the gate runs before EVERY edge command), so the
+    # error is a value-free InvalidRelationship naming only the key, NOT a raised
+    # Jason.EncodeError carrying the raw bytes.
+    poisoned = <<0xFF, 0xFE>>
+
+    result =
+      try do
+        unfriend(a, [poisoned], "org1")
+      rescue
+        e -> {:raised, e}
+      end
+
+    assert {:error, %Ash.Error.Invalid{errors: errors}} = result
+    assert Enum.any?(errors, &match?(%Ash.Error.Changes.InvalidRelationship{}, &1))
+    # value-free: neither the raw bytes nor their byte representation reach the message
+    message = Exception.message(%Ash.Error.Invalid{errors: errors})
+    refute message =~ poisoned
+    refute message =~ "255"
+    refute message =~ "0xFF"
+  end
+
   defp create_person(id, tenant) do
     EdgeDestroyPerson
     |> Ash.Changeset.for_create(:create, %{id: id, name: id, tenant: tenant}, tenant: tenant)

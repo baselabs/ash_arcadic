@@ -73,7 +73,10 @@ defmodule AshArcadic.Changes.CreateEdge do
 
       {:error, reason} ->
         {:error,
-         InvalidRelationship.exception(relationship: edge.name, message: conn_reason(reason))}
+         InvalidRelationship.exception(
+           relationship: edge.name,
+           message: EdgeCypher.conn_reason(reason)
+         )}
     end
   end
 
@@ -106,11 +109,17 @@ defmodule AshArcadic.Changes.CreateEdge do
     case EdgeCypher.encode_gate(params) do
       {:error, key} ->
         {:error,
-         InvalidRelationship.exception(relationship: edge.name, message: encode_reason(key))}
+         InvalidRelationship.exception(
+           relationship: edge.name,
+           message: EdgeCypher.encode_reason(key)
+         )}
 
       :ok ->
         case Arcadic.command(conn, cypher, params) do
           {:ok, [_ | _]} ->
+            # A non-empty MATCH bound the tenant-scoped endpoints and applied the
+            # MERGE/CREATE; endpoint-PK uniqueness is a host-app index concern
+            # (usage-rules), not a data-layer guarantee.
             {:ok, :created}
 
           {:ok, []} ->
@@ -219,13 +228,4 @@ defmodule AshArcadic.Changes.CreateEdge do
   defp argument_types(_changeset), do: %{}
 
   defp tenant_attr({src_attr, _dest_attr, _value}), do: Identifier.validate!(to_string(src_attr))
-
-  defp conn_reason(:tenant_required), do: "tenant required"
-  defp conn_reason(:cross_database_transaction), do: "transaction spans multiple databases"
-  defp conn_reason(:transaction_begin_failed), do: "could not begin ArcadeDB transaction"
-
-  defp encode_reason(key) do
-    "edge property #{inspect(key)} is not JSON-encodable (raw binary nested in a :map/:list " <>
-      "value? encode it app-side or use a :binary-typed argument)"
-  end
 end

@@ -114,4 +114,20 @@ defmodule AshArcadic.Changes.EdgeCypher do
       end
     end)
   end
+
+  @doc false
+  # Value-free message naming only the offending param KEY (never its value) when the
+  # encode-gate rejects a param. Shared by CreateEdge/DestroyEdge so the two cannot drift.
+  def encode_reason(key) do
+    "edge parameter #{inspect(key)} is not JSON-encodable (raw binary nested in a " <>
+      ":map/:list value? encode it app-side or use a :binary-typed argument)"
+  end
+
+  @doc false
+  # Value-free message for a `write_conn` error reason. Shared home (anti-divergence):
+  # a per-module fork of these clauses would let the two change modules' tenant/txn
+  # error text drift.
+  def conn_reason(:tenant_required), do: "tenant required"
+  def conn_reason(:cross_database_transaction), do: "transaction spans multiple databases"
+  def conn_reason(:transaction_begin_failed), do: "could not begin ArcadeDB transaction"
 end
