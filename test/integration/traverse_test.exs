@@ -53,6 +53,32 @@ defmodule AshArcadic.Integration.TraverseTest do
     refute "X3" in names
   end
 
+  test "TRIPWIRE: an in-tenant node reachable ONLY through an out-of-tenant INTERMEDIATE is excluded (distinguishes full-path ALL(nodes(p)) from endpoint-only scoping)",
+       %{admin: admin} do
+    # p1(org1) -> p2(org1, valid) ; p1 -> xm(org2 INTERMEDIATE) -> pl(org1 leaf). pl is
+    # org1, but its ONLY path from p1 passes through the org2 node xm. The full-path
+    # ALL(x IN nodes(p) WHERE x.org_id=$tenant) predicate EXCLUDES pl; a weaker
+    # endpoint-only predicate (b.org_id=$tenant) would WRONGLY INCLUDE it. The depth-1/2/3
+    # cases above cannot detect that weakening (each org2 node is its own endpoint) — this
+    # case is what makes the isolation gate able to go red for endpoint-only scoping.
+    p1 = create_attr("p1", "org1", "P1")
+    create_attr("p2", "org1", "P2")
+    create_attr("xm", "org2", "XM")
+    create_attr("pl", "org1", "PL")
+    attr_edge(admin, "p1", "p2")
+    attr_edge(admin, "p1", "xm")
+    attr_edge(admin, "xm", "pl")
+
+    {:ok, loaded} = Ash.load(p1, :descendants, tenant: "org1")
+    names = loaded.descendants |> Enum.map(& &1.name) |> Enum.sort()
+
+    # Positive control: the all-org1 path p1->p2 IS reachable (query not vacuously empty).
+    assert names == ["P2"]
+    # pl (org1) reached only via the org2 intermediate xm → excluded by full-path scoping.
+    refute "PL" in names
+    refute "XM" in names
+  end
+
   test "TRIPWIRE: a fabricated wrong-tenant load returns nothing (the SEED node is scoped too)",
        %{admin: admin} do
     p1 = create_attr("p1", "org1", "P1")
