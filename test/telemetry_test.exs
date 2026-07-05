@@ -1,5 +1,6 @@
 defmodule AshArcadic.TelemetryTest do
   use ExUnit.Case, async: true
+  alias AshArcadic.Changes.CreateEdge
   alias AshArcadic.Telemetry
 
   test "span runs the fun and returns its result; emits [:ash_arcadic, op] events" do
@@ -50,7 +51,7 @@ defmodule AshArcadic.TelemetryTest do
       to_tenant: nil
     }
 
-    assert {:error, _} = AshArcadic.Changes.CreateEdge.run(cs, %{}, edge: :links, to: :to)
+    assert {:error, _} = CreateEdge.run(cs, %{}, edge: :links, to: :to)
 
     assert_received {[:ash_arcadic, :create_edge, :stop], ^ref, _measurements, meta}
     assert Map.has_key?(meta, :in_transaction?)
