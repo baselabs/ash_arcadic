@@ -121,6 +121,22 @@ defmodule AshArcadic.Changes.CreateEdgeTest do
                CreateEdge.edge_properties(cs, %AshArcadic.Edge{properties: [:secret]})
     end
 
+    test "run/3: R4 guard fires BEFORE the empty-`to:` no-op (spec S2-12)" do
+      # :secret is sensitive on EdgeSensitivePerson, declared here as a PLAINTEXT
+      # :string arg, and `to:` resolves to [] (no destination). The R4 guard must fire
+      # regardless of the empty `to:` — a `dest_ids == []` early-return would silently
+      # drop the misdeclaration guard and report a no-op success.
+      cs = %Ash.Changeset{
+        resource: AshArcadic.Test.EdgeSensitivePerson,
+        arguments: %{secret: "plaintext"},
+        action: %{arguments: [%{name: :secret, type: Ash.Type.String, constraints: []}]},
+        to_tenant: nil
+      }
+
+      assert {:error, %Ash.Error.Changes.InvalidRelationship{}} =
+               CreateEdge.run(cs, %{}, edge: :links, to: :to)
+    end
+
     test "a non-sensitive UNDECLARED string property serializes value-free (no crash on nil type)" do
       # :extra is a non-sensitive edge property with a string value but NO declared
       # action argument (only reachable via set_argument-injection) → type resolves
