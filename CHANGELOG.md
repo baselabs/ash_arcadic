@@ -38,6 +38,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   update/destroy denied as `StaleRecord`). `Cast` `:time` (ISO8601) and `:decimal`
   (exact string) round-trip. Transactions/traversal land in Plans 3–4.
 
+### Fixed
+
+- **`/review-autopilot` closeout (Plan 2, 2026-07-05).** Tenant-isolation and
+  fail-closed hardening surfaced by the closeout review:
+  - **`:attribute` upsert cross-tenant hijack** — the native `MERGE` matched on the
+    primary key alone, so a same-PK upsert from another tenant matched and mutated
+    the victim's row. The tenant discriminator now rides the MERGE identity
+    (tenant-local match; a cross-tenant upsert creates its own row).
+  - **`:context` read backstop** — the static `database` DSL option is now ignored
+    for `:context` (it no longer pre-seeds `query.database` and defeats the
+    fail-closed read on a blank tenant).
+  - **JSON-encode leak** — a raw non-UTF8 binary nested in a `:map`/`:list` attribute
+    is pre-checked on every write path and fails closed with a value-free error
+    (previously the JSON encoder raised with the bytes in the message — a redaction
+    breach).
+  - **Bulk upsert** — a bulk `upsert? true` action now fails closed instead of
+    silently emitting `CREATE` and producing duplicate rows.
+  - Added end-to-end coverage for composite-primary-key updates.
+
 ### Notes
 
 - `:decimal` range operators (`gt/lt/gte/lte`) are rejected (`UnsupportedFilter`) and

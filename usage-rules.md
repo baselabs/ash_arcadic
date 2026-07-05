@@ -20,6 +20,12 @@ _An Ash DataLayer for ArcadeDB (native OpenCypher over HTTP)._
 - **Parameters only.** Every value reaches ArcadeDB as a bound `$param` via
   `arcadic`; identifiers (labels, db names) are allowlist-validated. No string
   interpolation into Cypher.
+- **Wire-encodable values only.** Written property values must be JSON-encodable.
+  Scalars, dates/times, decimals, and top-level binaries (base64'd) are handled;
+  a **raw non-UTF8 binary nested inside a `:map`/`:list`** value is not — encode it
+  app-side (`Base.encode64`) or use a `:binary`-typed attribute. The write path
+  **pre-checks and fails closed** with a value-free error naming the attribute,
+  rather than letting the JSON encoder raise with the bytes in the message.
 - **Sensitive means encrypted-binary.** A `sensitive` attribute must be
   app-side-encrypted binary (e.g. AshCloak) or `skip`ped; the data layer verifies
   the type shape, not the ciphertext. The multitenancy discriminator is never
@@ -49,10 +55,12 @@ _An Ash DataLayer for ArcadeDB (native OpenCypher over HTTP)._
 
 - **`:context` = database-per-tenant** (strongest isolation): `set_tenant/3`
   re-targets a physically distinct ArcadeDB database. A nil/blank tenant fails
-  closed (no query runs) — never a silent base-database read/write. No cross-tenant
-  traversal. **`:context` database names are operator-visible** on the server; use a
-  `tenant_database` MFA to hash a classified tenant space if the tenant identity is
-  sensitive.
+  closed (no query runs) — never a silent base-database read/write. The per-resource
+  `database` DSL option is **ignored for `:context`** (the tenant resolves the
+  database; a static value can never pre-seed and defeat the fail-closed read). No
+  cross-tenant traversal. **`:context` database names are operator-visible** on the
+  server; use a `tenant_database` MFA to hash a classified tenant space if the
+  tenant identity is sensitive.
 - **`:attribute` = discriminator on a shared graph:** Ash core injects the
   `<discriminator> == <tenant>` filter (read) and force-sets it (write); AshArcadic
   compiles the injected filter to a scoped `WHERE`. A cross-tenant update/destroy
@@ -61,8 +69,13 @@ _An Ash DataLayer for ArcadeDB (native OpenCypher over HTTP)._
   traversal possible.
 - **Upsert via native `MERGE`:** an action with `upsert? true` maps to
   `MERGE (n:Label {<identity>}) ON CREATE SET … ON MATCH SET …` — idempotent on the
-  primary key (or a composite identity). Bulk **upsert** is not supported; use a
-  single-row upsert action.
+  primary key (or a composite identity). For an **`:attribute`-multitenant**
+  resource the tenant discriminator is **added to the MERGE identity**, so a
+  same-PK upsert from another tenant matches nothing and creates its own row (MERGE
+  matches the whole node pattern and cannot compose a `WHERE`, so the discriminator
+  must ride the identity — otherwise it would hijack the other tenant's row).
+  **Bulk upsert is not supported** — a bulk `upsert? true` action **fails closed**
+  with an error (it never silently `CREATE`s duplicates); use a single-row upsert.
 
 See `docs/CHARTER.md` for architecture and the open multitenancy decision; `AGENTS.md`
 for the full working rules.
