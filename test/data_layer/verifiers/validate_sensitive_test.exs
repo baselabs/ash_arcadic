@@ -156,4 +156,81 @@ defmodule AshArcadic.DataLayer.Verifiers.ValidateSensitiveTest do
 
     assert err.message =~ "plaintext selector"
   end
+
+  describe "R4 — sensitive edge properties" do
+    test "rejects a sensitive edge-property key whose same-named action arg is not binary-storage" do
+      err =
+        assert_dsl_error %Spark.Error.DslError{path: [:arcade, :sensitive]} do
+          defmodule Elixir.AshArcadic.Test.R4Plaintext do
+            use Ash.Resource,
+              domain: AshArcadic.Test.Domain,
+              validate_domain_inclusion?: false,
+              data_layer: AshArcadic.DataLayer
+
+            arcade do
+              client(AshArcadic.Test.MockClient)
+              sensitive([:secret])
+
+              edge :links do
+                label(:LINKS)
+                destination(__MODULE__)
+                properties([:secret])
+              end
+            end
+
+            attributes do
+              uuid_primary_key :id
+              attribute :secret, :binary
+            end
+
+            actions do
+              defaults [:read]
+
+              create :link do
+                argument :secret, :string
+                argument :to, :uuid
+              end
+            end
+          end
+        end
+
+      assert err.message =~ "names a sensitive attribute"
+    end
+
+    test "accepts when the same-named arg is binary-storage-typed (positive control)" do
+      refute_dsl_errors do
+        defmodule Elixir.AshArcadic.Test.R4Binary do
+          use Ash.Resource,
+            domain: AshArcadic.Test.Domain,
+            validate_domain_inclusion?: false,
+            data_layer: AshArcadic.DataLayer
+
+          arcade do
+            client(AshArcadic.Test.MockClient)
+            sensitive([:secret])
+
+            edge :links do
+              label(:LINKS)
+              destination(__MODULE__)
+              properties([:secret])
+            end
+          end
+
+          attributes do
+            uuid_primary_key :id
+            attribute :secret, :binary
+          end
+
+          actions do
+            defaults [:read]
+
+            create :link do
+              argument :secret, :binary
+              argument :to, :uuid
+            end
+          end
+        end
+      end
+    end
+  end
 end

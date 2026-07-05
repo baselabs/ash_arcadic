@@ -9,8 +9,13 @@ defmodule AshArcadic.DataLayer.Verifiers.ValidateSensitive do
   - **R3** — the multitenancy discriminator is not sensitive (it is a plaintext
     selector; Ash injects it as a plaintext filter/force-set, and AshArcadic holds
     no key material to encrypt it).
+  - **R4** — an `edge` `properties` key naming a sensitive attribute requires every
+    same-named DECLARED action argument to be binary-storage-typed; otherwise the
+    classified datum flows onto edges as plaintext through a same-named plaintext
+    argument. (`AshArcadic.Changes.CreateEdge` enforces the runtime half for
+    undeclared/injected arguments.)
 
-  Checks the TYPE SHAPE, not encryption. (R4 edge-property enforcement is Slice 2.)
+  Checks the TYPE SHAPE, not encryption.
   """
   use Spark.Dsl.Verifier
   alias AshArcadic.Cast
@@ -33,8 +38,9 @@ defmodule AshArcadic.DataLayer.Verifiers.ValidateSensitive do
     tenant_attr = Verifier.get_option(dsl_state, [:multitenancy], :attribute)
 
     with :ok <- known(module, sensitive, by_name),
-         :ok <- not_discriminator(module, sensitive, tenant_attr) do
-      encrypted_or_skipped(module, sensitive, by_name, skip)
+         :ok <- not_discriminator(module, sensitive, tenant_attr),
+         :ok <- encrypted_or_skipped(module, sensitive, by_name, skip) do
+      edge_property_arguments(module, sensitive, dsl_state)
     end
   end
 
@@ -94,6 +100,58 @@ defmodule AshArcadic.DataLayer.Verifiers.ValidateSensitive do
                "in `skip`. A sensitive attribute stored as plaintext defeats the classification; " <>
                "store app-side-encrypted bytes in a :binary-typed attribute, or skip it."
          )}
+    end
+  end
+
+  # R4 — an edge `properties` key naming a sensitive attribute requires every
+  # same-named DECLARED action argument to be binary-storage-typed; otherwise the
+  # classified datum flows onto edges as plaintext through a same-named plaintext
+  # argument. (AshArcadic.Changes.CreateEdge enforces the runtime half for
+  # undeclared/injected arguments.)
+  defp edge_property_arguments(module, sensitive, dsl_state) do
+    edge_keys =
+      dsl_state
+      |> Verifier.get_entities([:arcade])
+      |> Enum.filter(&match?(%AshArcadic.Edge{}, &1))
+      |> Enum.flat_map(& &1.properties)
+      |> Enum.filter(&(&1 in sensitive))
+      |> Enum.uniq()
+
+    if edge_keys == [] do
+      :ok
+    else
+      offending =
+        dsl_state
+        |> Verifier.get_entities([:actions])
+        |> Enum.find_value(&offending_argument(&1, edge_keys))
+
+      case offending do
+        nil ->
+          :ok
+
+        {action_name, arg_name} ->
+          {:error,
+           DslError.exception(
+             module: module,
+             path: [:arcade, :sensitive],
+             message:
+               "edge property #{inspect(arg_name)} names a sensitive attribute, so every " <>
+                 "same-named action argument must be a binary-storage-typed declared action " <>
+                 "argument — otherwise the classified datum reaches edges as plaintext. " <>
+                 "Offending argument on action #{inspect(action_name)}; retype it :binary or rename it."
+           )}
+      end
+    end
+  end
+
+  defp offending_argument(action, edge_keys) do
+    (Map.get(action, :arguments) || [])
+    |> Enum.find(fn arg ->
+      arg.name in edge_keys and not Cast.binary_storage?(arg.type, arg.constraints)
+    end)
+    |> case do
+      nil -> nil
+      arg -> {action.name, arg.name}
     end
   end
 end
