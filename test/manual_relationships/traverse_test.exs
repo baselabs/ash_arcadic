@@ -380,6 +380,53 @@ defmodule AshArcadic.ManualRelationships.TraverseTest do
     end
   end
 
+  describe "regroup/4" do
+    defmodule RDst do
+      @moduledoc false
+      defstruct [:id, :name]
+    end
+
+    defp reach_map do
+      %{%{id: "p1"} => ["d1", "d2", "d1"], %{id: "p2"} => ["d3", "d1"]}
+    end
+
+    # Authorized read result, IN READ ORDER (e.g. sorted by name). d2 is ABSENT here —
+    # simulating a policy-denied / filtered-out destination that Phase 1 reached but the
+    # authorized read dropped.
+    defp authorized do
+      [%RDst{id: "d1", name: "A"}, %RDst{id: "d3", name: "C"}]
+    end
+
+    test ":many — per-source records = reachable ∩ authorized, in READ order; denied dest dropped" do
+      result = Traverse.regroup(reach_map(), authorized(), :id, :many)
+
+      # p1 reached d1 (auth), d2 (DENIED → dropped), d1 (dup → inherent dedup) => [d1].
+      assert result[%{id: "p1"}] == [%RDst{id: "d1", name: "A"}]
+
+      # p2 reached d3 (auth) and d1 (auth); read order is [d1(A), d3(C)] → filtered keeps that order.
+      assert result[%{id: "p2"}] == [%RDst{id: "d1", name: "A"}, %RDst{id: "d3", name: "C"}]
+    end
+
+    test "read-order is preserved (sort survives) — not reachability order" do
+      # p2's reachability list is ["d3","d1"] but the authorized read order is [d1, d3];
+      # regroup follows the READ order, so d1 precedes d3.
+      result = Traverse.regroup(reach_map(), authorized(), :id, :many)
+      assert Enum.map(result[%{id: "p2"}], & &1.id) == ["d1", "d3"]
+    end
+
+    test ":one — first authorized reachable record (read order), or nil" do
+      result = Traverse.regroup(reach_map(), authorized(), :id, :one)
+      assert result[%{id: "p1"}] == %RDst{id: "d1", name: "A"}
+      assert result[%{id: "p2"}] == %RDst{id: "d1", name: "A"}
+    end
+
+    test "a source whose reachable dests were ALL denied → [] (:many) / nil (:one)" do
+      rmap = %{%{id: "p3"} => ["d2"]}
+      assert Traverse.regroup(rmap, authorized(), :id, :many) == %{%{id: "p3"} => []}
+      assert Traverse.regroup(rmap, authorized(), :id, :one) == %{%{id: "p3"} => nil}
+    end
+  end
+
   describe "first_unencodable_id_field/1 ($ids encode-gate, Rule 4)" do
     test "nil when all id values are JSON-encodable scalars" do
       assert Traverse.first_unencodable_id_field([%{"id" => "p1"}]) == nil

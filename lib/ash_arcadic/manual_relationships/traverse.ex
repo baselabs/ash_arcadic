@@ -257,6 +257,24 @@ defmodule AshArcadic.ManualRelationships.Traverse do
   defp cardinalize(records, :one), do: List.first(records)
   defp cardinalize(records, _many), do: records
 
+  @doc false
+  # Phase-3 regroup (Option B, §7.2 step 3). Intersect each source's reachable dest-PK list
+  # with the AUTHORIZED record set, iterating `authorized` in READ order so the authorized
+  # read's sort/limit survive; authorized records are unique by PK, so per-source dedup is
+  # inherent. A reachable dest ABSENT from `authorized` (policy-denied / filtered / limit-cut)
+  # is dropped. Sources with no surviving dest → cardinalize([], card) (i.e. []/nil). `dest_pk`
+  # is the destination's single PK atom.
+  def regroup(reach_map, authorized, dest_pk, card) do
+    Map.new(reach_map, fn {src_key, reachable} ->
+      reachable_set = MapSet.new(reachable)
+
+      recs =
+        Enum.filter(authorized, fn r -> MapSet.member?(reachable_set, Map.get(r, dest_pk)) end)
+
+      {src_key, cardinalize(recs, card)}
+    end)
+  end
+
   # Orchestration: resolve database + tenant scope + conn (all fail-closed), build the
   # one statement, run it, assemble. Returns {result, pre_dedup_row_count} for telemetry.
   defp do_load(
