@@ -37,6 +37,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `:attribute` rides Ash-core's injected discriminator filter (cross-tenant
   update/destroy denied as `StaleRecord`). `Cast` `:time` (ISO8601) and `:decimal`
   (exact string) round-trip. Transactions/traversal land in Plans 3–4.
+- **Transactions (Slice 1, Plan 3).** `can?(:transact)` now advertises transaction
+  support; `transaction/4` / `in_transaction?/1` / `rollback/2` map Ash's data-layer
+  transaction callbacks onto `arcadic`'s low-level session trio. The session is
+  **owner-process-only** (a process-dictionary marker + lazily-opened session; Ash
+  disables async inside a transaction and never transfers the marker to spawned
+  tasks, so no data-layer op runs cross-process) and **lazy write-first** (the first
+  write opens the session; a read before any write, and reads/writes on the
+  transaction's own database, reuse it — read-own-writes). Single-database by design:
+  a **cross-database write inside a transaction fails closed** with a value-free
+  `:cross_database_transaction` error (an ArcadeDB session is bound to one database);
+  a cross-database or pre-write read runs on its own conn (a read is not an atomicity
+  hazard). All transaction error paths are value-free (no tenant-derived database
+  name, session id, or Cypher escapes; a begin failure surfaces as a bare
+  `:transaction_begin_failed`, a commit failure as `:transaction_commit_failed`).
+  Adds a `:transaction` telemetry span (result `:commit` / `:rollback` / `:error`)
+  and threads `in_transaction?` into every per-op span's metadata. **Closes the
+  Plan-2 CV3/CV4 write-then-error-without-rollback residuals for `transaction? true`
+  actions** — a duplicate-PK multi-row update (mutate-then-`UpdateFailed`) now rolls
+  the multi-`SET` back atomically instead of leaving the mutation committed.
+  Traversal lands in Plan 4.
 
 ### Fixed
 

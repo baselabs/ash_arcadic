@@ -2,9 +2,9 @@
 
 _An Ash DataLayer for ArcadeDB (native OpenCypher over HTTP)._
 
-> Slice 1, Plans 1–2 landed: the `arcade do ... end` DSL section, query
-> compilation, CRUD, and the multitenancy write path are live (transactions and
-> traversal land in Plans 3–4). The binding facts:
+> Slice 1, Plans 1–3 landed: the `arcade do ... end` DSL section, query
+> compilation, CRUD, the multitenancy write path, and transactions are live
+> (traversal lands in Plan 4). The binding facts:
 
 ## What ash_arcadic owns (and what it does not)
 
@@ -76,6 +76,29 @@ _An Ash DataLayer for ArcadeDB (native OpenCypher over HTTP)._
   must ride the identity — otherwise it would hijack the other tenant's row).
   **Bulk upsert is not supported** — a bulk `upsert? true` action **fails closed**
   with an error (it never silently `CREATE`s duplicates); use a single-row upsert.
+
+## Transactions (Plan 3)
+
+- **Transactions are single-database.** A transaction opens one ArcadeDB session,
+  bound to one database. A **cross-database write inside a transaction fails closed**
+  (`:cross_database_transaction`) — an atomic write spanning two tenants' databases
+  (`:context` multitenancy) is impossible by construction, never a silent split-brain
+  write on a fresh connection. A cross-database *read* inside a transaction is allowed
+  and runs on its own connection (a read is not an atomicity hazard).
+- **Read-own-writes on the same database.** The session opens lazily on the **first
+  write**; a read issued after that write (on the transaction's database) reuses the
+  session and therefore **sees the transaction's own uncommitted writes**. A read
+  *before* any write runs on a plain connection (no session yet).
+- **Owner-process only.** The transaction session lives in the calling process; Ash
+  disables async inside a transaction, so every action runs in that process. Do not
+  hand a transaction's work to a spawned task or a separate process — it will not see
+  the session.
+- **The duplicate-PK residual is a data-model problem, not a transaction one.** Inside
+  a transaction a duplicate-primary-key update (two rows sharing a PK) matches >1 row,
+  fails as `UpdateFailed`, and the mutation rolls back atomically (nothing is left
+  half-written). To prevent the duplicate rows in the first place, add a **unique
+  index on the primary key** in your host-app `arcadic` migration — that removes the
+  residual entirely rather than relying on the transaction to clean it up.
 
 See `docs/CHARTER.md` for architecture and the open multitenancy decision; `AGENTS.md`
 for the full working rules.
