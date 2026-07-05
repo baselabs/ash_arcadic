@@ -18,8 +18,45 @@ defmodule AshArcadic.ManualRelationships.Traverse do
   `Arcadic.query` map shape (`%{"s1" => .., "b" => %{..vertex..}}`), not agtype.
   """
 
+  @behaviour Ash.Resource.ManualRelationship
+
+  alias Ash.Resource.ManualRelationship.Context
   alias AshArcadic.Cast
+  alias AshArcadic.DataLayer
+  alias AshArcadic.DataLayer.Info
+  alias AshArcadic.Errors.QueryFailed
   alias AshArcadic.Identifier
+  alias AshArcadic.Multitenancy
+  alias AshArcadic.Telemetry
+  alias AshArcadic.Transaction
+
+  @impl true
+  def select(_opts), do: []
+
+  @impl true
+  def load([], _opts, _context), do: {:ok, %{}}
+
+  def load(records, opts, %Context{} = context) do
+    source = context.relationship.source
+    dest = context.relationship.destination
+    card = context.relationship.cardinality
+    {_edge, direction, _min, max_depth} = opts_tuple = validate_opts!(opts)
+
+    Telemetry.span(
+      :traverse,
+      %{
+        resource: source,
+        multitenancy: strategy(source),
+        direction: direction,
+        tenant?: not is_nil(context.tenant),
+        in_transaction?: Transaction.in_transaction?()
+      },
+      fn ->
+        {result, row_count} = do_load(records, context, source, dest, card, opts_tuple)
+        {result, stop_meta(result, row_count, max_depth)}
+      end
+    )
+  end
 
   @doc false
   # Validates the manual opts. Raises a value-free ArgumentError on any bad value
@@ -173,4 +210,167 @@ defmodule AshArcadic.ManualRelationships.Traverse do
 
   defp cardinalize(records, :one), do: List.first(records)
   defp cardinalize(records, _many), do: records
+
+  # Orchestration: resolve database + tenant scope + conn (all fail-closed), build the
+  # one statement, run it, assemble. Returns {result, pre_dedup_row_count} for telemetry.
+  defp do_load(
+         records,
+         context,
+         source,
+         dest,
+         card,
+         {edge_label, direction, min_depth, max_depth}
+       ) do
+    with {:ok, database} <- resolve_database(source, context.tenant),
+         {:ok, tenant_attr, tenant} <- resolve_tenant(source, dest, context.tenant),
+         {:ok, conn} <- resolve_conn(source, database) do
+      src_pkey = Ash.Resource.Info.primary_key(source)
+      src_types = Info.attribute_types(source)
+      ids = records |> Enum.map(&encode_id(&1, src_pkey, src_types)) |> Enum.uniq()
+
+      spec = %{
+        direction: direction,
+        edge_label: edge_label,
+        min_depth: min_depth,
+        max_depth: max_depth,
+        src_label: Info.label(source),
+        dest_label: Info.label(dest),
+        src_pkey: src_pkey,
+        tenant_attr: tenant_attr,
+        tenant: tenant,
+        per_hop_scope?: not is_nil(tenant_attr),
+        ids: ids
+      }
+
+      {cypher, params} = build_traverse(spec)
+
+      case Arcadic.query(conn, cypher, params) do
+        {:ok, rows} ->
+          {{:ok, assemble_rows(rows, assemble_spec(dest, src_pkey, src_types), card)},
+           length(rows)}
+
+        {:error, error} ->
+          {{:error, wrap_traverse_error(error)}, 0}
+      end
+    else
+      {:error, reason} -> {{:error, traverse_error(reason)}, 0}
+    end
+  end
+
+  @doc false
+  # The database to target. :context resolves the per-tenant DB (fail-closed on
+  # blank); :attribute/none uses the resource's static `database` (may be nil → base
+  # conn). Mirrors DataLayer.read_conn/2's database selection.
+  def resolve_database(source, tenant) do
+    if strategy(source) == :context do
+      case blank_tenant(tenant) do
+        :blank -> {:error, :tenant_required}
+        :ok -> {:ok, Multitenancy.database_name(source, tenant)}
+      end
+    else
+      {:ok, Info.database(source)}
+    end
+  end
+
+  @doc false
+  # The node-scope attribute + tenant, or a fail-closed error. :none → unscoped
+  # (no :attribute endpoint). Mixed discriminators → fail closed BEFORE any query.
+  # Blank tenant on a scoped traversal → fail closed.
+  def resolve_tenant(source, dest, tenant) do
+    case scope_decision(strategy(source), attr(source), strategy(dest), attr(dest)) do
+      :none ->
+        {:ok, nil, nil}
+
+      {:error, :mixed_attribute} = err ->
+        err
+
+      {:ok, scope_attr} ->
+        case blank_tenant(tenant) do
+          :blank -> {:error, :tenant_required}
+          :ok -> {:ok, scope_attr, tenant}
+        end
+    end
+  end
+
+  # Route the database-targeted base conn through the transaction resolver: a plain
+  # conn outside a tx; the session (read-own-writes) inside one. :read never errors on
+  # the session guard, but the spec's error variants are handled by do_load's else.
+  defp resolve_conn(source, database) do
+    Transaction.resolve_conn(base_conn(source, database), :read)
+  end
+
+  defp base_conn(source, nil), do: Info.client(source).conn()
+
+  defp base_conn(source, database),
+    do: Arcadic.with_database(Info.client(source).conn(), database)
+
+  defp assemble_spec(dest, src_pkey, src_types) do
+    %{
+      src_pkey: src_pkey,
+      src_types: src_types,
+      dest_pkey: Ash.Resource.Info.primary_key(dest),
+      dest: dest,
+      dest_attr_map: Info.attribute_map(dest),
+      dest_attr_types: Info.attribute_types(dest)
+    }
+  end
+
+  # One $ids entry: source-PK fields stringified and serialized by attribute type so
+  # the param matches the STORED form (binary→base64, date/decimal→string). Every
+  # value is JSON-safe by construction → no reachable non-encodable $ids (see plan
+  # substrate note); the RETURN side coerces back via Cast.load_value.
+  defp encode_id(record, src_pkey, src_types) do
+    Map.new(src_pkey, fn field ->
+      {to_string(field), Cast.serialize_value(Map.get(record, field), Map.get(src_types, field))}
+    end)
+  end
+
+  defp wrap_traverse_error(error),
+    do:
+      QueryFailed.exception(query: "ArcadeDB traversal", reason: DataLayer.redact_db_error(error))
+
+  # Value-free error for a fail-closed resolve. The atom is the ONLY thing named —
+  # never a tenant-derived database, attr, or Cypher (AGENTS.md Rule 4).
+  defp traverse_error(:tenant_required),
+    do: QueryFailed.exception(query: "ArcadeDB traversal", reason: "multitenancy tenant required")
+
+  defp traverse_error(:mixed_attribute),
+    do:
+      QueryFailed.exception(
+        query: "ArcadeDB traversal",
+        reason: "traversal across resources with different multitenancy attributes is unsupported"
+      )
+
+  defp traverse_error(:cross_database_transaction),
+    do:
+      QueryFailed.exception(
+        query: "ArcadeDB traversal",
+        reason: "transaction spans multiple databases (single-database sessions)"
+      )
+
+  defp traverse_error(:transaction_begin_failed),
+    do:
+      QueryFailed.exception(
+        query: "ArcadeDB traversal",
+        reason: "could not begin ArcadeDB transaction"
+      )
+
+  defp stop_meta({:ok, map}, row_count, max_depth) do
+    dests = map |> Map.values() |> Enum.map(&List.wrap/1) |> List.flatten()
+    %{destination_count: length(dests), row_count: row_count, depth: max_depth, result: :ok}
+  end
+
+  defp stop_meta({:error, _}, _row_count, max_depth),
+    do: %{destination_count: 0, row_count: 0, depth: max_depth, result: :error}
+
+  defp strategy(resource), do: Ash.Resource.Info.multitenancy_strategy(resource)
+
+  defp attr(resource) do
+    if strategy(resource) == :attribute do
+      to_string(Ash.Resource.Info.multitenancy_attribute(resource))
+    end
+  end
+
+  defp blank_tenant(t) when t in [nil, ""], do: :blank
+  defp blank_tenant(_), do: :ok
 end

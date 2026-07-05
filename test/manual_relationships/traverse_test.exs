@@ -215,4 +215,41 @@ defmodule AshArcadic.ManualRelationships.TraverseTest do
       assert Traverse.assemble_rows([], assemble_spec(), :many) == %{}
     end
   end
+
+  describe "resolve_database/2 + resolve_tenant/3 (fail-closed seams, no server)" do
+    alias AshArcadic.Test.{TraverseAttrNode, TraverseAttrTeam, TraverseContextNode}
+
+    test "resolve_database :context blank tenant → :tenant_required" do
+      assert Traverse.resolve_database(TraverseContextNode, "") == {:error, :tenant_required}
+      assert Traverse.resolve_database(TraverseContextNode, nil) == {:error, :tenant_required}
+    end
+
+    test "resolve_database :context resolves the per-tenant database name" do
+      assert Traverse.resolve_database(TraverseContextNode, "acme") == {:ok, "t_acme"}
+    end
+
+    test "resolve_database :attribute → static database (nil here, base conn)" do
+      assert Traverse.resolve_database(TraverseAttrNode, "acme") == {:ok, nil}
+    end
+
+    test "resolve_tenant :none when neither endpoint is :attribute" do
+      assert Traverse.resolve_tenant(TraverseContextNode, TraverseContextNode, "acme") ==
+               {:ok, nil, nil}
+    end
+
+    test "resolve_tenant :attribute self-ref scopes by the discriminator" do
+      assert Traverse.resolve_tenant(TraverseAttrNode, TraverseAttrNode, "acme") ==
+               {:ok, "org_id", "acme"}
+    end
+
+    test "resolve_tenant :attribute blank tenant → :tenant_required" do
+      assert Traverse.resolve_tenant(TraverseAttrNode, TraverseAttrNode, "") ==
+               {:error, :tenant_required}
+    end
+
+    test "TRIPWIRE: resolve_tenant across DIFFERENT discriminators fails closed" do
+      assert Traverse.resolve_tenant(TraverseAttrNode, TraverseAttrTeam, "acme") ==
+               {:error, :mixed_attribute}
+    end
+  end
 end
