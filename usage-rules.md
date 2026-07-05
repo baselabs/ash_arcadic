@@ -119,9 +119,8 @@ _An Ash DataLayer for ArcadeDB (native OpenCypher over HTTP)._
   `:outgoing | :incoming | :both`; `max_depth` is a required integer ≥ 1 (unbounded
   `*` is forbidden); `min_depth` defaults to 1. Loading the relationship returns the
   reachable destination records, deduped per source.
-- **Slice 1 does not write edges.** Traversal reads edges written out-of-band
-  (host-app ingestion / raw `arcadic` Cypher). Edge *writes* (an `edge` DSL entity)
-  are a later slice.
+- **Edge writes landed in Slice 2** (see "Edge writes" below). Traversal also reads
+  edges written out-of-band (host-app ingestion / raw `arcadic` Cypher).
 - **Traversal is fail-closed multitenant.** A blank tenant runs no query. `:context`
   traversal is physically scoped to the tenant's database (no cross-tenant reach).
   `:attribute` traversal scopes **every node on the path** via the native predicate
@@ -139,6 +138,63 @@ _An Ash DataLayer for ArcadeDB (native OpenCypher over HTTP)._
   enforce non-tenant authorization via the graph structure, the tenant boundary, or a
   post-load filter on the returned records. Policy-/filter-aware traversal is a
   deliberate future-slice item, not a Slice-1 capability.
+
+## Edge writes (Slice 2, Plan 1)
+
+- **Declare an edge** in the `arcade do … end` block, then wire a change on a
+  create/update action:
+
+      arcade do
+        client MyApp.Client
+        label :Person
+        edge :friends do
+          label :KNOWS
+          direction :outgoing          # :outgoing (default) | :incoming | :both
+          destination MyApp.Person      # must have a single-attribute primary key
+          properties [:since]           # optional edge-property keys
+          # multiple? false             # default → idempotent MERGE; true → parallel CREATE
+        end
+      end
+
+      actions do
+        update :befriend do
+          require_atomic? false          # the change is a non-atomic after_action
+          argument :to, {:array, :string}
+          argument :since, :string
+          change {AshArcadic.Changes.CreateEdge, edge: :friends, to: :to}
+        end
+
+        update :unfriend do
+          require_atomic? false
+          argument :to, {:array, :string}
+          change {AshArcadic.Changes.DestroyEdge, edge: :friends, to: :to}
+        end
+      end
+
+- **`to:` names an argument** holding the destination PK (or a list → N edges;
+  nil/empty → no edge, the action still succeeds). Edge **property values come from
+  same-named DECLARED action arguments**, serialized by the argument's declared type.
+- **Writes run in the action's transaction** (an `after_action` hook). A failed or
+  0-row edge write returns `{:error, _}` so Ash rolls the vertex back; a mid-list
+  failure rolls **all** edges back (not a partial write). DB errors are redacted.
+- **`multiple?` selects the primitive.** `false` (default) → `MERGE` — idempotent, one
+  edge per endpoint-pair + label (a repeat `befriend` updates the edge's properties, no
+  duplicate). `true` → `CREATE` — parallel edges (each write is a new edge).
+- **Single-attribute destination PK required.** Edge destinations must have a
+  single-attribute primary key (the endpoint match binds `b.<pk> = $dst`).
+- **Fail-closed multitenant.** For an `:attribute` resource, both endpoints are scoped
+  by the tenant discriminator in the `WHERE` *before* the MERGE/CREATE/DELETE
+  rel-pattern (never inlined into a node pattern), and the discriminator is stamped
+  onto the edge. A same-PK destination in another tenant is **not** bound — a
+  cross-tenant edge write 0-rows (`InvalidRelationship`); a cross-tenant edge delete
+  0-rows (`StaleRecord`). Deleting an absent edge also fails closed as `StaleRecord`.
+- **Sensitive edge properties (R4).** An `edge` `properties` key naming a `sensitive`
+  attribute requires every same-named action argument to be **binary-storage-typed**
+  (`:binary`), else the classified datum would reach edges as plaintext. Enforced at
+  compile time (`ValidateSensitive` R4) and at runtime (`CreateEdge` fails closed,
+  value-free, on an undeclared/plaintext argument). Edge property values are
+  **full-param encode-gated** (Rule 4) before the DB touch — a raw non-UTF8 binary
+  nested in a `:map`/`:list` property fails closed value-free, naming only the key.
 
 See `docs/CHARTER.md` for architecture and the open multitenancy decision; `AGENTS.md`
 for the full working rules.

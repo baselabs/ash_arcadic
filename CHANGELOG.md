@@ -73,6 +73,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`:mixed_attribute`). Params-only with identifier validation; value-free errors; a
   `:traverse` telemetry span (`row_count`/`destination_count`/`depth`). `can?(:traverse)`
   advertised. **Completes Slice 1** (the vertex-centric data layer).
+- **Edge writes (Slice 2, Plan 1).** AshArcadic-backed resources can now write graph
+  edges. An `edge` DSL entity in the `arcade do … end` block (name/label/direction/
+  destination/properties + a `multiple?` primitive selector: `false` → idempotent
+  `MERGE`, `true` → parallel `CREATE`). Two Ash change modules run as `after_action`
+  hooks inside the action's transaction: `AshArcadic.Changes.CreateEdge`
+  (`change {CreateEdge, edge:, to:}`) and `AshArcadic.Changes.DestroyEdge`. Both scope
+  **both endpoints** (identity + tenant discriminator) in a `WHERE` *before* the
+  MERGE/CREATE/DELETE rel-pattern via one shared `EdgeCypher` builder (anti-divergence)
+  — a same-PK-in-both-tenants edge write/delete binds only the in-tenant node
+  (cross-tenant hijack denied; integration-proven). CreateEdge stamps the `:attribute`
+  discriminator onto `:attribute` edges, encode-gates the **full param map** (Rule 4 —
+  a raw non-UTF8 binary nested in a `:map`/`:list` fails closed value-free before the
+  DB touch), and enforces the **R4 sensitive-property runtime guard** (a `sensitive`
+  edge property with no binary-storage-typed argument fails closed, value-free); a
+  0-row create → `InvalidRelationship`, a mid-list failure rolls all edges back.
+  DestroyEdge count-decodes the `<deleted>` echo — a 0-row delete (already-gone or
+  cross-tenant) fails closed as `StaleRecord`. Compile-time guards: `ValidateEdge`
+  (edge label + property-key identifiers) and the `ValidateSensitive` **R4** clause (an
+  edge-property key naming a sensitive attribute requires a binary-storage-typed
+  declared argument). Adds `Info.edges/1` and `:create_edge`/`:destroy_edge` telemetry
+  spans (`properties?` added to the value-free allowlist). Plan 2 (traversal upgrade —
+  `relationships(p)` edge scoping + the Option-B authorized read) is pending.
 
 ### Fixed
 
