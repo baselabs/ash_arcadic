@@ -102,6 +102,31 @@ defmodule AshArcadic.Integration.DestroyEdgeTest do
     assert c == 0
   end
 
+  test "cross-tenant :both unfriend is denied — undirected match still scopes BOTH endpoints", %{
+    admin: admin
+  } do
+    {:ok, a1} = create_person("a", "org1")
+    {:ok, _} = create_person("b", "org1")
+    {:ok, _} = befriend_pals(a1, ["b"], "org1")
+
+    # org2 actor with the same src id must NOT delete org1's :both PALS edge. The match
+    # is undirected, but the WHERE still pins BOTH endpoints to org2 — dropping either
+    # tenant clause would let this delete org1's edge (the over-delete fence).
+    {:ok, a2} = create_person("a", "org2")
+    assert {:error, %Ash.Error.Invalid{errors: errors}} = unfriend_pals(a2, ["b"], "org2")
+    assert Enum.any?(errors, &match?(%Ash.Error.Changes.StaleRecord{}, &1))
+
+    # org1's PALS edge SURVIVES the denied cross-tenant delete
+    {:ok, [%{"c" => c}]} =
+      Arcadic.query(
+        admin,
+        "MATCH (:EDPerson {id:'a', tenant:'org1'})-[e:PALS]-(:EDPerson {id:'b', tenant:'org1'}) RETURN count(e) AS c",
+        %{}
+      )
+
+    assert c == 1
+  end
+
   defp create_person(id, tenant) do
     EdgeDestroyPerson
     |> Ash.Changeset.for_create(:create, %{id: id, name: id, tenant: tenant}, tenant: tenant)
