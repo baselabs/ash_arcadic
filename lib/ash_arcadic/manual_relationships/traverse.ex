@@ -223,11 +223,11 @@ defmodule AshArcadic.ManualRelationships.Traverse do
        ) do
     with {:ok, database} <- resolve_database(source, context.tenant),
          {:ok, tenant_attr, tenant} <- resolve_tenant(source, dest, context.tenant),
-         {:ok, conn} <- resolve_conn(source, database) do
-      src_pkey = Ash.Resource.Info.primary_key(source)
-      src_types = Info.attribute_types(source)
-      ids = records |> Enum.map(&encode_id(&1, src_pkey, src_types)) |> Enum.uniq()
-
+         {:ok, conn} <- resolve_conn(source, database),
+         src_pkey = Ash.Resource.Info.primary_key(source),
+         src_types = Info.attribute_types(source),
+         ids = records |> Enum.map(&encode_id(&1, src_pkey, src_types)) |> Enum.uniq(),
+         :ok <- check_ids_encodable(ids) do
       spec = %{
         direction: direction,
         edge_label: edge_label,
@@ -316,12 +316,39 @@ defmodule AshArcadic.ManualRelationships.Traverse do
   end
 
   # One $ids entry: source-PK fields stringified and serialized by attribute type so
-  # the param matches the STORED form (binary→base64, date/decimal→string). Every
-  # value is JSON-safe by construction → no reachable non-encodable $ids (see plan
-  # substrate note); the RETURN side coerces back via Cast.load_value.
+  # the param matches the STORED form (binary→base64, date/decimal→string). Scalar PKs
+  # are JSON-safe after this; a :map/:array PK nesting a raw binary, or a :string PK
+  # holding invalid UTF-8, is NOT (serialize_value base64s only TOP-LEVEL binary-storage
+  # values) — `check_ids_encodable/1` is the fail-closed backstop before the wire. The
+  # RETURN side coerces back via Cast.load_value.
   defp encode_id(record, src_pkey, src_types) do
     Map.new(src_pkey, fn field ->
       {to_string(field), Cast.serialize_value(Map.get(record, field), Map.get(src_types, field))}
+    end)
+  end
+
+  # Fail closed value-free if any serialized $ids value is not JSON-encodable — without
+  # this, Req/Jason raises `Jason.EncodeError` with the offending bytes in its message at
+  # the wire (AGENTS.md Rule 4) AND an uncaught crash crosses the callback boundary
+  # instead of a redacted `{:error, _}`. Mirrors the write path's `encode_check`.
+  defp check_ids_encodable(ids) do
+    case first_unencodable_id_field(ids) do
+      nil -> :ok
+      field -> {:error, {:unencodable_id, field}}
+    end
+  end
+
+  @doc false
+  # First $ids PK-FIELD name whose serialized value is not JSON-encodable, or nil.
+  # Returns the FIELD (a declared attribute name), never the value (Rule 4).
+  def first_unencodable_id_field(ids) do
+    ids
+    |> Enum.flat_map(&Map.to_list/1)
+    |> Enum.find_value(fn {field, value} ->
+      case Jason.encode(value) do
+        {:ok, _} -> nil
+        {:error, _} -> field
+      end
     end)
   end
 
@@ -341,6 +368,20 @@ defmodule AshArcadic.ManualRelationships.Traverse do
         reason: "traversal across resources with different multitenancy attributes is unsupported"
       )
 
+  defp traverse_error({:unencodable_id, field}),
+    do:
+      QueryFailed.exception(
+        query: "ArcadeDB traversal",
+        reason: "primary-key field #{field} is not JSON-encodable"
+      )
+
+  # The next two clauses are DIALYZER-REQUIRED but RUNTIME-UNREACHABLE on this read path:
+  # `Transaction.resolve_conn/2`'s @spec declares both atoms for BOTH modes, but in `:read`
+  # mode it never emits them (a cross-DB read runs on its own conn; sessions open on writes).
+  # They are kept to satisfy the typed union so `do_load`'s `else` is exhaustive (dialyzer
+  # clean). NOTE the sibling `data_layer.ex` read path takes the opposite tack — it narrows
+  # to `:tenant_required` and documents why the tx atoms can't occur (data_layer.ex:233-236);
+  # both are correct, so do not "fix" one to match the other.
   defp traverse_error(:cross_database_transaction),
     do:
       QueryFailed.exception(

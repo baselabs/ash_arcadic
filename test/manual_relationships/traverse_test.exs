@@ -190,11 +190,13 @@ defmodule AshArcadic.ManualRelationships.TraverseTest do
     test ":many — source-PK-keyed map; dest deduped by PK; @-keys ignored" do
       result = Traverse.assemble_rows(rows(), assemble_spec(), :many)
 
+      # The exact struct equalities ARE the @-key-exclusion coverage: the `b` rows carry
+      # @rid/@cat, so a decode that leaked any undeclared property into a declared field
+      # would break these. (A `refute Map.has_key?(struct, :"@rid")` would be vacuous —
+      # struct/2 drops undeclared keys regardless; the real row_to_attrs @-key routing is
+      # unit-tested directly in test/cast_test.exs.)
       assert result[%{id: "p1"}] == [%Dst{id: "d1", name: "D1"}, %Dst{id: "d2", name: "D2"}]
       assert result[%{id: "p2"}] == [%Dst{id: "d3", name: "D3"}]
-
-      # @rid/@cat never leak onto the decoded struct.
-      refute Map.has_key?(hd(result[%{id: "p1"}]), :"@rid")
     end
 
     test "TRIPWIRE: row_count (pre-dedup) diverges from destination_count (post-dedup)" do
@@ -250,6 +252,57 @@ defmodule AshArcadic.ManualRelationships.TraverseTest do
     test "TRIPWIRE: resolve_tenant across DIFFERENT discriminators fails closed" do
       assert Traverse.resolve_tenant(TraverseAttrNode, TraverseAttrTeam, "acme") ==
                {:error, :mixed_attribute}
+    end
+  end
+
+  describe "assemble_rows/3 composite PK" do
+    defmodule Dst2 do
+      @moduledoc false
+      defstruct [:org_id, :node_id, :name]
+    end
+
+    test "composite src PK builds a multi-field src_key from s1/s2 (Ash Map.take shape)" do
+      spec = %{
+        src_pkey: [:org_id, :node_id],
+        src_types: %{org_id: {Ash.Type.String, []}, node_id: {Ash.Type.String, []}},
+        dest_pkey: [:org_id, :node_id],
+        dest: Dst2,
+        dest_attr_map: %{org_id: "org_id", node_id: "node_id", name: "name"},
+        dest_attr_types: %{
+          org_id: {Ash.Type.String, []},
+          node_id: {Ash.Type.String, []},
+          name: {Ash.Type.String, []}
+        }
+      }
+
+      rows = [
+        %{
+          "s1" => "acme",
+          "s2" => "n1",
+          "b" => %{"@rid" => "#1:1", "org_id" => "acme", "node_id" => "d1", "name" => "D1"}
+        }
+      ]
+
+      result = Traverse.assemble_rows(rows, spec, :many)
+
+      assert result[%{org_id: "acme", node_id: "n1"}] ==
+               [%Dst2{org_id: "acme", node_id: "d1", name: "D1"}]
+    end
+  end
+
+  describe "first_unencodable_id_field/1 ($ids encode-gate, Rule 4)" do
+    test "nil when all id values are JSON-encodable scalars" do
+      assert Traverse.first_unencodable_id_field([%{"id" => "p1"}]) == nil
+      assert Traverse.first_unencodable_id_field([%{"a" => "x", "b" => 42}]) == nil
+    end
+
+    test "TRIPWIRE: flags a NESTED non-UTF8 binary (map PK) by FIELD name, never the value" do
+      poison = [%{"id" => %{"k" => <<0xFF, 0x00, 0x42>>}}]
+      assert Traverse.first_unencodable_id_field(poison) == "id"
+    end
+
+    test "flags a raw non-UTF8 binary id value (a :string PK holding invalid UTF-8)" do
+      assert Traverse.first_unencodable_id_field([%{"id" => <<0xFF>>}]) == "id"
     end
   end
 end
