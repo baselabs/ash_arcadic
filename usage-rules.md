@@ -129,6 +129,16 @@ _An Ash DataLayer for ArcadeDB (native OpenCypher over HTTP)._
   through an out-of-tenant intermediate is **excluded**, not just the endpoints.
   Traversing between two `:attribute` resources with **different** discriminators
   fails closed (`:mixed_attribute`) — one tenant value cannot honor two dimensions.
+- **Traversal applies tenant scoping ONLY — not the related query's filters or Ash
+  policies.** Like the `ash_age` manual-relationship pattern it ports, traversal
+  returns all edge-reachable, tenant-scoped destinations and does **not** apply the
+  loaded relationship's `filter`/`sort`/`limit`, a caller-supplied query filter, or
+  the destination resource's **Ash read policies** (those ride Ash's `context.query`,
+  which the manual relationship does not consume). Multitenant isolation is enforced
+  (via the path predicate above), but authorization/field policies are **not** —
+  enforce non-tenant authorization via the graph structure, the tenant boundary, or a
+  post-load filter on the returned records. Policy-/filter-aware traversal is a
+  deliberate future-slice item, not a Slice-1 capability.
 
 See `docs/CHARTER.md` for architecture and the open multitenancy decision; `AGENTS.md`
 for the full working rules.
