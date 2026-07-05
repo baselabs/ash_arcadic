@@ -106,8 +106,17 @@ defmodule AshArcadic.Transaction do
       result = fun.()
 
       case commit_if_open() do
-        :ok -> {:ok, result}
-        {:error, _error} -> {:error, :transaction_commit_failed}
+        :ok ->
+          {:ok, result}
+
+        {:error, _error} ->
+          # A failed ArcadeDB commit (e.g. an MVCC ConcurrentModificationException — probe-
+          # verified 2026-07-05: HTTP 503 "Please retry") leaves the session STILL OPEN
+          # server-side; roll it back to free it immediately (probe-verified: rollback → 204),
+          # else it leaks until the server's idle expiry. rollback_or_log/0 is value-free and
+          # never raises, so a rollback that also fails only logs — the commit error still wins.
+          rollback_or_log()
+          {:error, :transaction_commit_failed}
       end
     rescue
       exception ->

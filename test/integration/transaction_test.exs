@@ -95,6 +95,38 @@ defmodule AshArcadic.Integration.TransactionTest do
     refute DL.in_transaction?(CrudPerson)
   end
 
+  # F4 (probe-verified 2026-07-05, live ArcadeDB): a commit that fails with an MVCC
+  # ConcurrentModificationException (HTTP 503 "Please retry") surfaces through the real DL
+  # stack as {:error, :transaction_commit_failed}; run/1 rolls the still-open session back so
+  # it does not leak. Forced deterministically: stage an in-session update (captures the row
+  # version), then bump the SAME row via the admin conn (autocommit) before the fun returns —
+  # run/1's commit then conflicts on the stale version.
+  test "an MVCC conflict at commit surfaces :transaction_commit_failed; session write discarded",
+       %{admin: admin} do
+    {:ok, _} = create_person("mvcc", "orig")
+    {:ok, [record | _]} = Ash.read(CrudPerson)
+
+    result =
+      DL.transaction(CrudPerson, fn ->
+        changeset = Ash.Changeset.for_update(record, :update, %{name: "session-change"})
+        {:ok, _} = DL.update(CrudPerson, changeset)
+
+        # OUTSIDE the session (admin autocommit): bump the same row → sets up the commit conflict.
+        Arcadic.command!(admin, "MATCH (n:CrudPerson {id:'mvcc'}) SET n.name='concurrent'")
+        :staged
+      end)
+
+    assert result == {:error, :transaction_commit_failed}
+
+    names =
+      admin
+      |> Arcadic.command!("MATCH (n:CrudPerson {id:'mvcc'}) RETURN n.name AS name")
+      |> Enum.map(& &1["name"])
+
+    # the concurrent (committed) write persisted; the session's staged write was discarded.
+    assert names == ["concurrent"]
+  end
+
   describe "per-op spans carry in_transaction?" do
     test "a create reports in_transaction? false outside and true inside a transaction" do
       ref = :telemetry_test.attach_event_handlers(self(), [[:ash_arcadic, :create, :stop]])

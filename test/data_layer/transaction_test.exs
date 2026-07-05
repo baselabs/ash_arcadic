@@ -346,9 +346,13 @@ defmodule AshArcadic.TransactionTest do
       refute AshArcadic.Transaction.in_transaction?()
     end
 
-    test "a failing commit maps to {:error, :transaction_commit_failed} without rolling back", %{
-      base: base
-    } do
+    # F4 (probe-verified 2026-07-05, live ArcadeDB): a failed commit (MVCC
+    # ConcurrentModificationException → HTTP 503 "Please retry") leaves the session STILL
+    # OPEN server-side (a read in it returns 200); run/1 must roll it back to free it (rollback
+    # returns 204), else it leaks until idle expiry. Non-vacuous: without the commit-failure
+    # rollback, no {:stub_transport, :rollback} is received.
+    test "a failing commit rolls back the still-open session and maps to :transaction_commit_failed",
+         %{base: base} do
       on_exit(fn -> Process.delete(:stub_commit_result) end)
       Process.put(:stub_commit_result, {:error, %Arcadic.Error{reason: :server_error}})
 
@@ -360,8 +364,39 @@ defmodule AshArcadic.TransactionTest do
 
       assert result == {:error, :transaction_commit_failed}
       assert_received {:stub_transport, :commit}
-      refute_received {:stub_transport, :rollback}
+      assert_received {:stub_transport, :rollback}
       refute AshArcadic.Transaction.in_transaction?()
+    end
+
+    # If the commit-failure cleanup rollback ALSO fails, run/1 logs value-free (never the
+    # db-bearing message) and still returns :transaction_commit_failed (the commit error wins).
+    test "a failing commit whose cleanup rollback also fails logs value-free, still returns :transaction_commit_failed",
+         %{base: base} do
+      on_exit(fn ->
+        Process.delete(:stub_commit_result)
+        Process.delete(:stub_rollback_result)
+      end)
+
+      Process.put(:stub_commit_result, {:error, %Arcadic.Error{reason: :server_error}})
+
+      Process.put(
+        :stub_rollback_result,
+        {:error,
+         %Arcadic.Error{reason: :server_error, message: "rollback failed on db SENTINEL_CF_9z"}}
+      )
+
+      log =
+        ExUnit.CaptureLog.capture_log(fn ->
+          assert {:error, :transaction_commit_failed} =
+                   AshArcadic.Transaction.run(fn ->
+                     {:ok, _} = AshArcadic.Transaction.resolve_conn(base, :write)
+                     :done
+                   end)
+        end)
+
+      assert_received {:stub_transport, :rollback}
+      assert log =~ "rollback failed"
+      refute log =~ "SENTINEL_CF_9z"
     end
 
     test "an unexpected exit rolls back the session and propagates; marker still cleared", %{

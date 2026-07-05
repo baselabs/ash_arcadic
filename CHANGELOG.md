@@ -58,7 +58,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the multi-`SET` back atomically instead of leaving the mutation committed.
   A rollback that itself fails or raises during unwind is logged value-free (a static
   line, never the transport error's database-bearing message) and never masks the
-  original error. Traversal lands in Plan 4.
+  original error. A **failed commit** now rolls the session back before returning
+  `:transaction_commit_failed`: a probe against live ArcadeDB confirmed a commit that
+  fails with an MVCC `ConcurrentModificationException` leaves the session **open**
+  server-side (retryable), so rolling it back frees it immediately instead of leaking it
+  until idle expiry. Traversal lands in Plan 4.
 
 ### Fixed
 
