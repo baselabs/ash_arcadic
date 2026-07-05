@@ -228,11 +228,11 @@ defmodule AshArcadic.DataLayer do
              QueryFailed.exception(query: "ArcadeDB read query", reason: redact_db_error(error))}
         end
 
-      {:error, :tenant_required} ->
+      {:error, reason} ->
         {:error,
          QueryFailed.exception(
            query: "ArcadeDB read query",
-           reason: "multitenancy tenant required for :context read"
+           reason: conn_error_reason(reason)
          )}
     end
   end
@@ -297,11 +297,11 @@ defmodule AshArcadic.DataLayer do
             {:error, CreateFailed.exception(resource: resource, reason: redact_db_error(error))}
         end
 
-      {:error, :tenant_required} ->
+      {:error, reason} ->
         {:error,
          CreateFailed.exception(
            resource: resource,
-           reason: "multitenancy tenant required for :context write"
+           reason: conn_error_reason(reason)
          )}
     end
   end
@@ -369,11 +369,11 @@ defmodule AshArcadic.DataLayer do
         })
         |> decode_bulk_result(resource, entries, return_records?)
 
-      {:error, :tenant_required} ->
+      {:error, reason} ->
         {:error,
          CreateFailed.exception(
            resource: resource,
-           reason: "multitenancy tenant required for :context write"
+           reason: conn_error_reason(reason)
          )}
     end
   end
@@ -502,11 +502,11 @@ defmodule AshArcadic.DataLayer do
             {:error, CreateFailed.exception(resource: resource, reason: redact_db_error(error))}
         end
 
-      {:error, :tenant_required} ->
+      {:error, reason} ->
         {:error,
          CreateFailed.exception(
            resource: resource,
-           reason: "multitenancy tenant required for :context write"
+           reason: conn_error_reason(reason)
          )}
     end
   end
@@ -615,11 +615,11 @@ defmodule AshArcadic.DataLayer do
              )}
         end
 
-      {:error, :tenant_required} ->
+      {:error, reason} ->
         {:error,
          UpdateFailed.exception(
            resource: resource,
-           reason: "multitenancy tenant required for :context write"
+           reason: conn_error_reason(reason)
          )}
     end
   end
@@ -667,11 +667,11 @@ defmodule AshArcadic.DataLayer do
              )}
         end
 
-      {:error, :tenant_required} ->
+      {:error, reason} ->
         {:error,
          QueryFailed.exception(
            query: "ArcadeDB delete query",
-           reason: "multitenancy tenant required for :context write"
+           reason: conn_error_reason(reason)
          )}
     end
   end
@@ -866,40 +866,76 @@ defmodule AshArcadic.DataLayer do
   end
 
   @doc false
-  # The write connection for a changeset, fail-closed on a blank :context tenant.
+  # The write connection for a changeset, fail-closed on a blank :context tenant. Routes the
+  # database-targeted base conn through resolve_conn/2, which is an EXACT passthrough outside
+  # a transaction and folds in the cross-database session guard inside one.
   @spec write_conn(Ash.Resource.t(), Ash.Changeset.t()) ::
-          {:ok, Arcadic.Conn.t()} | {:error, :tenant_required}
+          {:ok, Arcadic.Conn.t()}
+          | {:error, :tenant_required | :cross_database_transaction | :transaction_begin_failed}
   def write_conn(resource, changeset) do
     case write_database(resource, changeset) do
-      {:ok, nil} -> {:ok, conn_for(resource)}
-      {:ok, database} -> {:ok, Arcadic.with_database(conn_for(resource), database)}
-      {:error, :tenant_required} -> {:error, :tenant_required}
+      {:ok, nil} ->
+        AshArcadic.Transaction.resolve_conn(conn_for(resource), :write)
+
+      {:ok, database} ->
+        AshArcadic.Transaction.resolve_conn(
+          Arcadic.with_database(conn_for(resource), database),
+          :write
+        )
+
+      {:error, :tenant_required} ->
+        {:error, :tenant_required}
     end
   end
 
   @doc false
   # The read connection for a query. :context REQUIRES a database resolved by
   # set_tenant/3; a nil database means set_tenant never fired (blank tenant) → fail
-  # closed rather than reading the base database (a silent cross-tenant read).
+  # closed rather than reading the base database (a silent cross-tenant read). Routes the
+  # database-targeted base conn through resolve_conn/2 (exact passthrough outside a tx;
+  # session reuse / read-own-conn inside one — a read is never an atomicity hazard).
   @spec read_conn(AshArcadic.Query.t(), Ash.Resource.t()) ::
-          {:ok, Arcadic.Conn.t()} | {:error, :tenant_required}
+          {:ok, Arcadic.Conn.t()}
+          | {:error, :tenant_required | :cross_database_transaction | :transaction_begin_failed}
   def read_conn(%AshArcadic.Query{} = query, resource) do
     case strategy(resource) do
       :context ->
         case query.database do
-          blank when blank in [nil, ""] -> {:error, :tenant_required}
-          database -> {:ok, Arcadic.with_database(conn_for(resource), database)}
+          blank when blank in [nil, ""] ->
+            {:error, :tenant_required}
+
+          database ->
+            AshArcadic.Transaction.resolve_conn(
+              Arcadic.with_database(conn_for(resource), database),
+              :read
+            )
         end
 
       _ ->
         case query.database do
-          nil -> {:ok, conn_for(resource)}
-          database -> {:ok, Arcadic.with_database(conn_for(resource), database)}
+          nil ->
+            AshArcadic.Transaction.resolve_conn(conn_for(resource), :read)
+
+          database ->
+            AshArcadic.Transaction.resolve_conn(
+              Arcadic.with_database(conn_for(resource), database),
+              :read
+            )
         end
     end
   end
 
   defp conn_for(resource), do: Info.client(resource).conn()
+
+  # Maps a value-free conn-resolution error atom to a value-free reason string. The atom is
+  # the ONLY thing interpolated — never a database name (tenant-derived), session id, or
+  # Cypher (AGENTS.md Rule 4). An unexpected atom raises here (fail-closed loud), never leaks.
+  defp conn_error_reason(:tenant_required), do: "multitenancy tenant required for :context write"
+
+  defp conn_error_reason(:cross_database_transaction),
+    do: "transaction spans multiple databases (single-database sessions)"
+
+  defp conn_error_reason(:transaction_begin_failed), do: "could not begin ArcadeDB transaction"
 
   defp strategy(resource), do: Ash.Resource.Info.multitenancy_strategy(resource)
 

@@ -120,6 +120,60 @@ defmodule AshArcadic.TransactionTest do
     end
   end
 
+  # A MockClient-backed :context resource — MockClient.conn/0 builds a pure %Arcadic.Conn{}
+  # with NO server call (mirrors WriteResolutionTest.ContextRes), so this unit suite never
+  # hits IntegrationClient's System.fetch_env! (which would raise without ARCADIC_TEST_URL).
+  # Do NOT use AshArcadic.Test.ContextDoc here — it is IntegrationClient-backed.
+  defmodule TxContextRes do
+    use Ash.Resource, domain: nil, data_layer: AshArcadic.DataLayer
+
+    arcade do
+      client(AshArcadic.Test.MockClient)
+    end
+
+    attributes do
+      uuid_primary_key(:id)
+    end
+
+    multitenancy do
+      strategy(:context)
+    end
+  end
+
+  describe "write_conn/read_conn are session-aware (cross-DB guard folded in)" do
+    alias AshArcadic.DataLayer, as: DL
+
+    setup do
+      on_exit(fn -> AshArcadic.Transaction.clear() end)
+      :ok
+    end
+
+    # TRIPWIRE: inside a transaction whose session is open on tenant "acme"'s database, a
+    # write for tenant "other" (a DIFFERENT database) must fail closed value-free — never
+    # a silent unscoped write on a fresh conn. Non-vacuous: without the guard, write_conn
+    # returns {:ok, base_conn_for_other} and the write escapes the session.
+    test "TRIPWIRE: a cross-database write inside a transaction fails closed" do
+      AshArcadic.Transaction.begin_marker()
+      # Stash a session opened on tenant "acme"'s database (t_acme).
+      AshArcadic.Transaction.put_session(%Arcadic.Conn{
+        base_url: "http://127.0.0.1:41478",
+        database: "t_acme",
+        auth: {"root", "pw"},
+        session_id: "s1"
+      })
+
+      changeset = %Ash.Changeset{resource: TxContextRes, to_tenant: "other"}
+      assert {:error, :cross_database_transaction} = DL.write_conn(TxContextRes, changeset)
+    end
+
+    test "with NO marker, write_conn is the exact passthrough it was before" do
+      changeset = %Ash.Changeset{resource: TxContextRes, to_tenant: "acme"}
+
+      assert {:ok, %Arcadic.Conn{database: "t_acme", session_id: nil}} =
+               DL.write_conn(TxContextRes, changeset)
+    end
+  end
+
   describe "run/1 — commit / rollback / reraise / cleanup" do
     setup do
       base =
