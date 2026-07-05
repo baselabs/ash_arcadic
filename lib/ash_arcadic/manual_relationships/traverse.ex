@@ -74,4 +74,61 @@ defmodule AshArcadic.ManualRelationships.Traverse do
         :none
     end
   end
+
+  @doc false
+  # Pure Cypher builder. `:attribute` (per_hop_scope? true) emits ONE bound-path
+  # MATCH with the native predicate ALL(x IN nodes(p) WHERE x.<attr> = $tenant)
+  # (probe P7 — replaces ash_age's UNION-ALL, which AGE forced). No SQL DISTINCT:
+  # per-path rows are raw so row_count is the genuine pre-dedup fan-out; Elixir
+  # dedup (Task 4) yields destination_count. Every identifier is validated; only
+  # $ids/$tenant carry values.
+  def build_traverse(spec) do
+    edge = Identifier.validate!(spec.edge_label)
+    src = Identifier.validate!(spec.src_label)
+    dst = Identifier.validate!(spec.dest_label)
+    src_match = src_match(spec.src_pkey)
+    src_return = src_return(spec.src_pkey)
+    pat = pattern(spec.direction, src, dst, edge, spec.min_depth, spec.max_depth)
+
+    if spec.per_hop_scope? do
+      attr = Identifier.validate!(spec.tenant_attr)
+
+      cypher =
+        "UNWIND $ids AS sid MATCH p=#{pat} " <>
+          "WHERE #{src_match} AND ALL(x IN nodes(p) WHERE x.#{attr} = $tenant) " <>
+          "RETURN #{src_return}, b"
+
+      {cypher, %{"ids" => spec.ids, "tenant" => spec.tenant}}
+    else
+      cypher =
+        "UNWIND $ids AS sid MATCH #{pat} WHERE #{src_match} RETURN #{src_return}, b"
+
+      {cypher, %{"ids" => spec.ids}}
+    end
+  end
+
+  defp pattern(:incoming, src, dst, edge, min, max),
+    do: "(a:#{src})<-[:#{edge}*#{min}..#{max}]-(b:#{dst})"
+
+  defp pattern(:both, src, dst, edge, min, max),
+    do: "(a:#{src})-[:#{edge}*#{min}..#{max}]-(b:#{dst})"
+
+  defp pattern(_outgoing, src, dst, edge, min, max),
+    do: "(a:#{src})-[:#{edge}*#{min}..#{max}]->(b:#{dst})"
+
+  defp src_match(src_pkey) do
+    Enum.map_join(src_pkey, " AND ", fn f ->
+      f = f |> to_string() |> Identifier.validate!()
+      "a.#{f} = sid.#{f}"
+    end)
+  end
+
+  defp src_return(src_pkey) do
+    src_pkey
+    |> Enum.with_index(1)
+    |> Enum.map_join(", ", fn {f, i} ->
+      f = f |> to_string() |> Identifier.validate!()
+      "a.#{f} AS s#{i}"
+    end)
+  end
 end
