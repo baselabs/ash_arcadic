@@ -30,7 +30,8 @@ injection-safe.
 **2. Multitenancy is fail-closed.** A nil/blank tenant on a multitenant resource
 must fail closed (no query runs), never silently span tenants. Port `ash_age`'s
 posture: `:context` resolves a per-tenant namespace; `:attribute` scopes **every
-node on a path**, including in traversal.
+node on a path**, including in traversal — and, since Slice 2, **every edge** on
+the path by default (`scope_edges: false` opts out for out-of-band-edge graphs).
 
 **3. Sensitive = encrypted binary.** Enforce via verifier (port `ash_age`'s R1–R4):
 sensitive attrs must be binary-storage-typed (app-side-encrypted, AshCloak) or
