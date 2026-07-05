@@ -41,9 +41,16 @@ defmodule AshArcadic.Changes.EdgeCypher do
   # attribute type (resolved once for the whole list). Single-attribute PK is
   # enforced by destination_pk! at the build site.
   def serialize_destination_ids(destination, dest_ids) do
-    [dest_pk_attr] = Ash.Resource.Info.primary_key(destination)
-    spec = Map.get(Info.attribute_types(destination), dest_pk_attr)
-    Enum.map(dest_ids, &Cast.serialize_value(&1, spec))
+    case Ash.Resource.Info.primary_key(destination) do
+      [dest_pk_attr] ->
+        spec = Map.get(Info.attribute_types(destination), dest_pk_attr)
+        Enum.map(dest_ids, &Cast.serialize_value(&1, spec))
+
+      # Fail with the SAME value-free message as destination_pk! rather than letting a
+      # `[single] = pk` destructure raise a cryptic MatchError first at the write site.
+      _ ->
+        raise ArgumentError, "edge destinations must have a single-attribute primary key"
+    end
   end
 
   @doc false

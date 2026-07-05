@@ -30,4 +30,16 @@ defmodule AshArcadic.Changes.EdgeCypherTest do
     poisoned = %{"props" => %{"blob" => <<0xFF, 0xFE>>}, "dst" => "p2"}
     assert {:error, "props"} = EdgeCypher.encode_gate(poisoned)
   end
+
+  test "serialize_destination_ids/2 raises the value-free single-attribute-PK error for a composite dest PK" do
+    # A composite destination PK must surface the designed value-free ArgumentError
+    # (matching destination_pk!), NOT a cryptic MatchError from a `[single] = pk`
+    # destructure that fires first at the change's write site.
+    err =
+      assert_raise ArgumentError, fn ->
+        EdgeCypher.serialize_destination_ids(AshArcadic.Test.UpsertComposite, ["r1"])
+      end
+
+    assert err.message =~ "single-attribute primary key"
+  end
 end
