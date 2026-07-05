@@ -79,6 +79,29 @@ defmodule AshArcadic.Integration.TraverseTest do
     refute "XM" in names
   end
 
+  test "TRIPWIRE: :both (undirected) traversal scopes every node too — the org2 intermediate excludes the in-tenant leaf",
+       %{admin: admin} do
+    # Same intermediate-hop graph loaded through the :both (undirected) relationship. Proves
+    # the ALL(x IN nodes(p)) predicate is DIRECTION-INDEPENDENT (closeout probe-confirmed):
+    # pl is reachable from p1 undirected via xm(org2), but the org2 node fails the predicate.
+    p1 = create_attr("p1", "org1", "P1")
+    create_attr("p2", "org1", "P2")
+    create_attr("xm", "org2", "XM")
+    create_attr("pl", "org1", "PL")
+    attr_edge(admin, "p1", "p2")
+    attr_edge(admin, "p1", "xm")
+    attr_edge(admin, "xm", "pl")
+
+    {:ok, loaded} = Ash.load(p1, :connected, tenant: "org1")
+    names = loaded.connected |> Enum.map(& &1.name) |> Enum.sort()
+
+    # Positive control: p2 reachable undirected (query not vacuously empty).
+    assert "P2" in names
+    # pl (org1) reachable only through the org2 intermediate xm → excluded even undirected.
+    refute "PL" in names
+    refute "XM" in names
+  end
+
   test "TRIPWIRE: a fabricated wrong-tenant load returns nothing (the SEED node is scoped too)",
        %{admin: admin} do
     p1 = create_attr("p1", "org1", "P1")

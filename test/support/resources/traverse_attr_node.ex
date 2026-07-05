@@ -25,6 +25,15 @@ defmodule AshArcadic.Test.TraverseAttrNode do
          edge_label: :PARENT_OF, direction: :outgoing, min_depth: 1, max_depth: 3}
       )
     end
+
+    # :both (undirected) — proves the native ALL(nodes(p)) predicate scopes every node
+    # regardless of edge direction (closeout probe-confirmed; integration-gated below).
+    has_many :connected, __MODULE__ do
+      manual(
+        {AshArcadic.ManualRelationships.Traverse,
+         edge_label: :PARENT_OF, direction: :both, min_depth: 1, max_depth: 3}
+      )
+    end
   end
 
   actions do
