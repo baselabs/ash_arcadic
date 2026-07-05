@@ -18,6 +18,7 @@ defmodule AshArcadic.ManualRelationships.Traverse do
   `Arcadic.query` map shape (`%{"s1" => .., "b" => %{..vertex..}}`), not agtype.
   """
 
+  alias AshArcadic.Cast
   alias AshArcadic.Identifier
 
   @doc false
@@ -131,4 +132,45 @@ defmodule AshArcadic.ManualRelationships.Traverse do
       "a.#{f} AS s#{i}"
     end)
   end
+
+  @doc false
+  # Assembles the F3 source-PK-keyed map from the flat map-rows Arcadic.query
+  # returns (`%{"s1" => .., "b" => %{..vertex..}}`). Source-PK scalars coerce back
+  # to runtime shape via Cast.load_value (so the key === Map.take(record, src_pkey)
+  # Ash matches). Dest vertices decode via Cast.row_to_attrs (ignores @-keys), then
+  # dedup by dest PK and cardinalize. `spec` = %{src_pkey, src_types, dest_pkey,
+  # dest, dest_attr_map, dest_attr_types}.
+  def assemble_rows(rows, spec, card) do
+    %{src_pkey: src_pkey, src_types: src_types, dest_pkey: dest_pkey} = spec
+    indexed_pkey = Enum.with_index(src_pkey, 1)
+
+    rows
+    |> Enum.reduce(%{}, fn row, acc ->
+      src_key =
+        Map.new(indexed_pkey, fn {atom, i} ->
+          {atom, Cast.load_value(Map.get(row, "s#{i}"), Map.get(src_types, atom))}
+        end)
+
+      b_record = decode_record(Map.get(row, "b"), spec)
+      Map.update(acc, src_key, [b_record], &[b_record | &1])
+    end)
+    |> Map.new(fn {k, recs} -> {k, cardinalize(dedup(Enum.reverse(recs), dest_pkey), card)} end)
+  end
+
+  defp decode_record(vertex, %{dest: dest, dest_attr_map: attr_map, dest_attr_types: attr_types}) do
+    struct(dest, Cast.row_to_attrs(vertex, attr_map, attr_types))
+  end
+
+  defp dedup(records, dest_pkey) do
+    {out, _seen} =
+      Enum.reduce(records, {[], MapSet.new()}, fn r, {out, seen} ->
+        key = Map.take(r, dest_pkey)
+        if MapSet.member?(seen, key), do: {out, seen}, else: {[r | out], MapSet.put(seen, key)}
+      end)
+
+    Enum.reverse(out)
+  end
+
+  defp cardinalize(records, :one), do: List.first(records)
+  defp cardinalize(records, _many), do: records
 end

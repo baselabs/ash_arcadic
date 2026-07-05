@@ -158,4 +158,61 @@ defmodule AshArcadic.ManualRelationships.TraverseTest do
       refute err.message =~ "DROP"
     end
   end
+
+  describe "assemble_rows/3" do
+    defmodule Dst do
+      @moduledoc false
+      defstruct [:id, :name]
+    end
+
+    defp assemble_spec do
+      %{
+        src_pkey: [:id],
+        src_types: %{id: {Ash.Type.String, []}},
+        dest_pkey: [:id],
+        dest: Dst,
+        dest_attr_map: %{id: "id", name: "name"},
+        dest_attr_types: %{id: {Ash.Type.String, []}, name: {Ash.Type.String, []}}
+      }
+    end
+
+    defp rows do
+      # p1 reaches d1, d2, and d1 again (fan-out dup) ; p2 reaches d3. `b` carries
+      # @-keys that must be ignored on decode.
+      [
+        %{"s1" => "p1", "b" => %{"@rid" => "#1:1", "@cat" => "v", "id" => "d1", "name" => "D1"}},
+        %{"s1" => "p1", "b" => %{"@rid" => "#1:2", "@cat" => "v", "id" => "d2", "name" => "D2"}},
+        %{"s1" => "p1", "b" => %{"@rid" => "#1:1", "@cat" => "v", "id" => "d1", "name" => "D1"}},
+        %{"s1" => "p2", "b" => %{"@rid" => "#1:3", "@cat" => "v", "id" => "d3", "name" => "D3"}}
+      ]
+    end
+
+    test ":many — source-PK-keyed map; dest deduped by PK; @-keys ignored" do
+      result = Traverse.assemble_rows(rows(), assemble_spec(), :many)
+
+      assert result[%{id: "p1"}] == [%Dst{id: "d1", name: "D1"}, %Dst{id: "d2", name: "D2"}]
+      assert result[%{id: "p2"}] == [%Dst{id: "d3", name: "D3"}]
+
+      # @rid/@cat never leak onto the decoded struct.
+      refute Map.has_key?(hd(result[%{id: "p1"}]), :"@rid")
+    end
+
+    test "TRIPWIRE: row_count (pre-dedup) diverges from destination_count (post-dedup)" do
+      result = Traverse.assemble_rows(rows(), assemble_spec(), :many)
+      destinations = result |> Map.values() |> List.flatten()
+      # 4 raw rows in; 3 unique destinations out (d1 deduped) — proves dedup ran.
+      assert length(rows()) == 4
+      assert length(destinations) == 3
+    end
+
+    test ":one cardinality returns the first destination, not a list" do
+      result = Traverse.assemble_rows(rows(), assemble_spec(), :one)
+      assert result[%{id: "p1"}] == %Dst{id: "d1", name: "D1"}
+      assert result[%{id: "p2"}] == %Dst{id: "d3", name: "D3"}
+    end
+
+    test "empty rows → empty map" do
+      assert Traverse.assemble_rows([], assemble_spec(), :many) == %{}
+    end
+  end
 end
