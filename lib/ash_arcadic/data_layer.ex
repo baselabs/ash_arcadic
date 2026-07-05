@@ -391,7 +391,7 @@ defmodule AshArcadic.DataLayer do
   # MATCH sets only the upsert-fields subset (never re-setting the matched identity).
   # Idempotent by construction: a replay on the same identity matches the SAME @rid.
   defp do_upsert(resource, changeset, keys) do
-    identity_keys = keys || Ash.Resource.Info.primary_key(resource)
+    identity_keys = upsert_identity_keys(resource, keys || Ash.Resource.Info.primary_key(resource))
 
     if identity_keys == [] do
       # Fail closed: an empty identity would emit `MERGE (n:L {})`, matching ANY node
@@ -450,6 +450,26 @@ defmodule AshArcadic.DataLayer do
            resource: resource,
            reason: "multitenancy tenant required for :context write"
          )}
+    end
+  end
+
+  # Scopes the MERGE identity by the tenant discriminator for `:attribute`
+  # resources. MERGE matches on the WHOLE node pattern (there is no WHERE), so a
+  # PK-only identity would MATCH a same-PK row belonging to ANOTHER tenant and its
+  # ON MATCH SET would mutate/move that row — a cross-tenant hijack (update/destroy
+  # avoid this via `changeset_where`; MERGE cannot compose a WHERE). Appending the
+  # Ash-force-set discriminator to the identity makes the match tenant-local: a
+  # cross-tenant upsert under the same PK no longer matches, so it CREATEs its own
+  # row. Fail-closed isolation, AGENTS.md Rule 2. `:context` needs no discriminator
+  # (isolation is the physical per-tenant database).
+  defp upsert_identity_keys(resource, base_keys) do
+    case strategy(resource) do
+      :attribute ->
+        attr = Ash.Resource.Info.multitenancy_attribute(resource)
+        if attr in base_keys, do: base_keys, else: base_keys ++ [attr]
+
+      _ ->
+        base_keys
     end
   end
 

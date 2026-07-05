@@ -21,5 +21,9 @@ defmodule AshArcadic.Test.AttributeDoc do
   actions do
     default_accept [:id, :org_id, :name]
     defaults [:read, :create, :update, :destroy]
+
+    create :upsert do
+      upsert? true
+    end
   end
 end
