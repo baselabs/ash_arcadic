@@ -49,6 +49,10 @@ defmodule AshArcadic.MixProject do
       {:arcadic, path: "../arcadic"},
       {:jason, "~> 1.4"},
       {:telemetry, "~> 1.0"},
+      # SAT solver required by Ash.Policy.Authorizer (Ash lists it as an optional dep;
+      # the policy solver raises "No SAT solver available" at DSL-verify/read time without
+      # one). Pure Elixir, no NIF — CI-portable, no C toolchain.
+      {:simple_sat, "~> 0.1"},
 
       # Dev/Test
       {:ex_doc, "~> 0.31", only: :dev, runtime: false},
