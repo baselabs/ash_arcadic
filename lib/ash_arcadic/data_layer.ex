@@ -19,10 +19,12 @@ defmodule AshArcadic.DataLayer do
   `:multitenancy`; CRUD/query/upsert/transact/traversal land in later plans.
   """
 
+  alias Ash.Error.Changes.StaleRecord
   alias AshArcadic.Cast
   alias AshArcadic.DataLayer.Info
   alias AshArcadic.Errors.CreateFailed
   alias AshArcadic.Errors.QueryFailed
+  alias AshArcadic.Errors.UpdateFailed
   alias AshArcadic.Query.Filter
   alias AshArcadic.Telemetry
 
@@ -390,6 +392,147 @@ defmodule AshArcadic.DataLayer do
       {Atom.to_string(key), Cast.serialize_value(value, Map.get(types, key))}
     end)
   end
+
+  @impl true
+  def update(resource, changeset) do
+    Telemetry.span(:update, %{resource: resource, multitenancy: strategy(resource)}, fn ->
+      result = do_update(resource, changeset)
+
+      {result,
+       %{
+         tenant?: tenant?(changeset),
+         stale?: stale?(result),
+         result: Telemetry.result_tag(result)
+       }}
+    end)
+  end
+
+  defp do_update(resource, changeset) do
+    case write_conn(resource, changeset) do
+      {:ok, conn} ->
+        label = validated_label(resource)
+        changed = changeset_to_properties(resource, changeset)
+        pk = pk_pairs(resource, changeset)
+        {where_clause, match_params} = pk_match_clause(pk)
+        params0 = Map.put(match_params, "set", changed)
+
+        case changeset_where(changeset, where_clause, params0) do
+          {:ok, full_where, params} ->
+            cypher = "MATCH (n:#{label}) WHERE #{full_where} SET n += $set RETURN n"
+
+            decode_update_result(
+              resource,
+              redacted_filter(pk),
+              Arcadic.command(conn, cypher, params)
+            )
+
+          {:error, _} ->
+            {:error,
+             UpdateFailed.exception(
+               resource: resource,
+               reason: "unsupported scoping filter on update"
+             )}
+        end
+
+      {:error, :tenant_required} ->
+        {:error,
+         UpdateFailed.exception(
+           resource: resource,
+           reason: "multitenancy tenant required for :context write"
+         )}
+    end
+  end
+
+  # [{pk_field, serialized_original_value}] — the identity of the row being
+  # mutated. get_data/2 (NOT get_attribute/2): a writable PK in `accept` makes
+  # get_attribute return the PENDING value, so the WHERE would match zero rows
+  # (the stored row still holds the old key) instead of the row being renamed.
+  defp pk_pairs(resource, changeset) do
+    types = Info.attribute_types(resource)
+
+    resource
+    |> Ash.Resource.Info.primary_key()
+    |> Enum.map(fn field ->
+      value = Ash.Changeset.get_data(changeset, field)
+      {field, Cast.serialize_value(value, Map.get(types, field))}
+    end)
+  end
+
+  # PK WHERE clause + `$match_<key>` params (keys identifier-validated, values
+  # parameterized). `$set`/`$paramN` never collide with the `match_` prefix.
+  defp pk_match_clause([]) do
+    raise ArgumentError, "AshArcadic requires a primary key to match on for update/destroy"
+  end
+
+  defp pk_match_clause(pk_pairs) do
+    {clauses, params} =
+      Enum.reduce(pk_pairs, {[], %{}}, fn {field, value}, {clauses, params} ->
+        key = field |> to_string() |> AshArcadic.Identifier.validate!()
+        param = "match_#{key}"
+        {["n.#{key} = $#{param}" | clauses], Map.put(params, param, value)}
+      end)
+
+    {clauses |> Enum.reverse() |> Enum.join(" AND "), params}
+  end
+
+  @doc false
+  # AND-composes the changeset scoping filter (tenant/policy) onto the PK match,
+  # reusing the read Filter translator. Fails CLOSED on an untranslatable filter —
+  # never silently drops scoping. `params` pre-seeds Filter's `$paramN` accumulator.
+  def changeset_where(changeset, base_where, params) do
+    case changeset.filter do
+      nil ->
+        {:ok, base_where, params}
+
+      filter ->
+        case Filter.translate(filter, %AshArcadic.Query{params: params}) do
+          {:ok, %AshArcadic.Query{params: params}, ""} ->
+            {:ok, base_where, params}
+
+          {:ok, %AshArcadic.Query{params: params}, clause} ->
+            {:ok, base_where <> " AND " <> clause, params}
+
+          {:error, _} = err ->
+            err
+        end
+    end
+  end
+
+  defp decode_update_result(resource, _filter, {:ok, [row]}) do
+    {:ok,
+     struct(
+       resource,
+       Cast.row_to_attrs(row, Info.attribute_map(resource), Info.attribute_types(resource))
+     )}
+  end
+
+  # ArcadeDB enforces no PK uniqueness → an update WHERE can match 2+ rows. Fail
+  # closed value-free; never silently pick one. (Ash update actions default
+  # transaction?: true — Plan 3's session rolls the multi-SET back; a
+  # transaction? false action keeps it and only surfaces this error.)
+  defp decode_update_result(resource, _filter, {:ok, [_, _ | _] = rows}) do
+    {:error,
+     UpdateFailed.exception(
+       resource: resource,
+       reason:
+         "update matched #{length(rows)} rows for one primary key (duplicate rows in graph?)"
+     )}
+  end
+
+  defp decode_update_result(resource, filter, {:ok, []}) do
+    {:error, StaleRecord.exception(resource: resource, filter: filter)}
+  end
+
+  defp decode_update_result(resource, _filter, {:error, error}) do
+    {:error, UpdateFailed.exception(resource: resource, reason: redact_db_error(error))}
+  end
+
+  # StaleRecord inspects its filter into logs — carry PK field NAMES only (values
+  # may be PII/ciphertext, AGENTS.md Rule 4).
+  defp redacted_filter(pairs), do: Map.new(pairs, fn {field, _value} -> {field, "<redacted>"} end)
+
+  defp stale?({:error, %StaleRecord{}}), do: true
+  defp stale?(_), do: false
 
   # Maps changeset.attributes (minus `skip`) to a JSON-safe string-keyed property
   # map, each value serialized by attribute type. Passed as ONE `$props` map param
