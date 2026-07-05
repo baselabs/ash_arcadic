@@ -22,6 +22,13 @@ defmodule AshArcadic.DataLayer.Info do
   @spec tenant_database(Ash.Resource.t()) :: {module(), atom(), list()} | nil
   def tenant_database(resource), do: Extension.get_opt(resource, [:arcade], :tenant_database, nil)
 
+  @spec edges(Ash.Resource.t()) :: [AshArcadic.Edge.t()]
+  def edges(resource) do
+    resource
+    |> Extension.get_entities([:arcade])
+    |> Enum.filter(&match?(%AshArcadic.Edge{}, &1))
+  end
+
   @spec attribute_map(Ash.Resource.t()) :: %{atom() => String.t()}
   def attribute_map(resource) do
     skip = skip(resource)

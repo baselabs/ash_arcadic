@@ -30,6 +30,46 @@ defmodule AshArcadic.DataLayer do
   alias AshArcadic.Telemetry
   alias Ecto.Schema.Metadata
 
+  @edge_entity %Spark.Dsl.Entity{
+    name: :edge,
+    describe: "Defines an edge mapping from this vertex to a destination resource.",
+    args: [:name],
+    target: AshArcadic.Edge,
+    schema: [
+      name: [
+        type: :atom,
+        required: true,
+        doc: "Edge name (referenced by CreateEdge/DestroyEdge `edge:`)."
+      ],
+      label: [
+        type: :atom,
+        required: true,
+        doc: "Edge label in the graph (a valid Arcadic.Identifier)."
+      ],
+      direction: [
+        type: {:one_of, [:outgoing, :incoming, :both]},
+        default: :outgoing,
+        doc: "Edge direction."
+      ],
+      destination: [
+        type: :atom,
+        required: true,
+        doc: "Destination resource module (single-attribute PK)."
+      ],
+      properties: [
+        type: {:list, :atom},
+        default: [],
+        doc: "Edge property keys, set from same-named declared action arguments."
+      ],
+      multiple?: [
+        type: :boolean,
+        default: false,
+        doc:
+          "false → idempotent MERGE (one edge per endpoint-pair+label); true → CREATE (parallel edges)."
+      ]
+    ]
+  }
+
   @arcade %Spark.Dsl.Section{
     name: :arcade,
     describe: "Configuration for the ArcadeDB data layer.",
@@ -67,7 +107,8 @@ defmodule AshArcadic.DataLayer do
           "MFA applied as `apply(m, f, [tenant | a])` returning the ArcadeDB database name for a " <>
             "`:context` tenant. Defaults to a built-in collision-free encoder."
       ]
-    ]
+    ],
+    entities: [@edge_entity]
   }
 
   @behaviour Ash.DataLayer
