@@ -26,3 +26,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `AGENTS.md` context docs, and a documented `AshArcadic.DataLayer` placeholder.
   No data-layer implementation yet — see `docs/CHARTER.md` for the architecture and
   the open Stage-0 decision (physical multitenancy strategy).
+- **Query + CRUD + multitenancy write path (Slice 1, Plan 2).** Query compilation:
+  `%AshArcadic.Query{}` → parameterized Cypher (filter/sort/limit/offset). Filter
+  push-down: eq/not_eq/gt/lt/gte/lte/in/is_nil + `contains`/`string_starts_with`/
+  `string_ends_with` (→ `CONTAINS`/`STARTS WITH`/`ENDS WITH`); identifier-validated;
+  value-free `UnsupportedFilter` for anything else. CRUD callbacks: `run_query`,
+  `create`, `upsert` (native `MERGE`), `update`, `destroy`, `bulk_create`, plus
+  `set_tenant`/`set_context`/`filter`/`sort`/`limit`/`offset`. Multitenancy write
+  path: `:context` re-targets the database (fail-closed on a blank tenant);
+  `:attribute` rides Ash-core's injected discriminator filter (cross-tenant
+  update/destroy denied as `StaleRecord`). `Cast` `:time` (ISO8601) and `:decimal`
+  (exact string) round-trip. Transactions/traversal land in Plans 3–4.
+
+### Notes
+
+- `:decimal` range operators (`gt/lt/gte/lte`) are rejected (`UnsupportedFilter`) and
+  `:decimal` is unsortable — ArcadeDB compares the exact-string wire form
+  lexicographically; model money as integer minor units for range/sort. `:context`
+  database names are operator-visible (use `tenant_database` to hash a classified
+  tenant space). ArcadeDB `CONTAINS`/`STARTS WITH`/`ENDS WITH` are case-sensitive (a
+  `:ci_string` attribute's case-insensitive semantics are not preserved).

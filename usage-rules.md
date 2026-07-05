@@ -2,8 +2,9 @@
 
 _An Ash DataLayer for ArcadeDB (native OpenCypher over HTTP)._
 
-> Scaffold stage — concrete DSL usage rules land once `AshArcadic.DataLayer` and
-> its `arcade do ... end` section exist. The binding facts today:
+> Slice 1, Plans 1–2 landed: the `arcade do ... end` DSL section, query
+> compilation, CRUD, and the multitenancy write path are live (transactions and
+> traversal land in Plans 3–4). The binding facts:
 
 ## What ash_arcadic owns (and what it does not)
 
@@ -25,6 +26,43 @@ _An Ash DataLayer for ArcadeDB (native OpenCypher over HTTP)._
   `sensitive` (it is a plaintext selector).
 - **`MERGE` is used** for idempotent upsert (ArcadeDB-verified) — unlike the
   `ash_age` sibling. Do not import AGE's "never MERGE" rule.
+
+## Query & filter push-down (Plan 2)
+
+- **Supported filter operators:** `==` / `!=` / `>` / `<` / `>=` / `<=` / `in` /
+  `is_nil`, boolean `and`/`or`/`not`, and the string-match functions `contains`,
+  `string_starts_with`, `string_ends_with` (→ ArcadeDB `CONTAINS` / `STARTS WITH` /
+  `ENDS WITH`). Anything else (`like`/`ilike`, attribute-to-attribute comparisons,
+  aggregates/exists) returns a value-free `UnsupportedFilter` — filters fail closed,
+  never silently drop scoping.
+- **String-match is case-SENSITIVE.** ArcadeDB `CONTAINS`/`STARTS WITH`/`ENDS WITH`
+  do not honor a `:ci_string` attribute's case-insensitive semantics.
+- **`:decimal` is money-safe but range/sort-restricted (D27).** Decimals are stored
+  as their exact string form, so equality / `in` / `is_nil` work, but `gt/lt/gte/lte`
+  are **rejected** (`UnsupportedFilter`) and `:decimal` is **unsortable** — ArcadeDB
+  compares the string form lexicographically, which would be silently wrong for a
+  numeric range/order. **Model money as integer minor units** when you need range
+  filtering or sorting. (`:binary` attributes are likewise unrangeable/unsortable —
+  base64 is not byte-order-preserving.)
+
+## Multitenancy (Plan 2)
+
+- **`:context` = database-per-tenant** (strongest isolation): `set_tenant/3`
+  re-targets a physically distinct ArcadeDB database. A nil/blank tenant fails
+  closed (no query runs) — never a silent base-database read/write. No cross-tenant
+  traversal. **`:context` database names are operator-visible** on the server; use a
+  `tenant_database` MFA to hash a classified tenant space if the tenant identity is
+  sensitive.
+- **`:attribute` = discriminator on a shared graph:** Ash core injects the
+  `<discriminator> == <tenant>` filter (read) and force-sets it (write); AshArcadic
+  compiles the injected filter to a scoped `WHERE`. A cross-tenant update/destroy
+  matches zero rows and fails closed as `StaleRecord` (the scoped query runs and
+  matches nothing — never a silent unscoped mutation). One graph, cross-tenant
+  traversal possible.
+- **Upsert via native `MERGE`:** an action with `upsert? true` maps to
+  `MERGE (n:Label {<identity>}) ON CREATE SET … ON MATCH SET …` — idempotent on the
+  primary key (or a composite identity). Bulk **upsert** is not supported; use a
+  single-row upsert action.
 
 See `docs/CHARTER.md` for architecture and the open multitenancy decision; `AGENTS.md`
 for the full working rules.
