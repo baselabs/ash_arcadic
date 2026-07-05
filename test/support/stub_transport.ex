@@ -17,6 +17,13 @@ defmodule AshArcadic.Test.StubTransport do
 
   def rollback(_conn) do
     send(self(), {:stub_transport, :rollback})
-    Process.get(:stub_rollback_result, :ok)
+
+    case Process.get(:stub_rollback_result, :ok) do
+      # `:raise` makes the transport rollback RAISE (not return a tuple), so unwind-path
+      # tests can prove the rollback failure is caught + logged value-free and never masks
+      # the original error. The sentinel below must never appear in a log line.
+      :raise -> raise "stub rollback boom (SENTINEL_RBK_RAISE_db_acme)"
+      other -> other
+    end
   end
 end

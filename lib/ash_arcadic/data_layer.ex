@@ -230,11 +230,15 @@ defmodule AshArcadic.DataLayer do
              QueryFailed.exception(query: "ArcadeDB read query", reason: redact_db_error(error))}
         end
 
-      {:error, reason} ->
+      # read_conn only ever yields :tenant_required here: resolve_conn/2 in :read mode never
+      # returns a transaction error (a cross-database read runs on its own conn; reads never
+      # open a session). Keep the read-accurate message rather than the write-oriented
+      # conn_error_reason/1 (a :context read that mislabels itself "write" is a regression).
+      {:error, :tenant_required} ->
         {:error,
          QueryFailed.exception(
            query: "ArcadeDB read query",
-           reason: conn_error_reason(reason)
+           reason: "multitenancy tenant required for :context read"
          )}
     end
   end

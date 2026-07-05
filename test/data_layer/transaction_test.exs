@@ -172,6 +172,20 @@ defmodule AshArcadic.TransactionTest do
       assert {:ok, %Arcadic.Conn{database: "t_acme", session_id: nil}} =
                DL.write_conn(TxContextRes, changeset)
     end
+
+    # REGRESSION (Plan-3 closeout): a blank-tenant :context READ must surface a value-free
+    # ":context read" reason. The slice routed the read site through the shared
+    # conn_error_reason(:tenant_required), which said "write" — mislabeling the read path.
+    # Value-free either way (no tenant name); this asserts operation accuracy.
+    test "a blank-tenant :context READ surfaces a value-free ':context read' reason (not 'write')" do
+      query = %AshArcadic.Query{resource: TxContextRes, database: nil}
+
+      assert {:error, %AshArcadic.Errors.QueryFailed{reason: reason}} =
+               DL.run_query(query, TxContextRes)
+
+      assert reason =~ ":context read"
+      refute reason =~ "write"
+    end
   end
 
   describe "transaction callbacks" do
@@ -371,6 +385,84 @@ defmodule AshArcadic.TransactionTest do
       assert {:ok, 42} = AshArcadic.Transaction.run(fn -> 42 end)
       refute_received {:stub_transport, :begin}
       refute_received {:stub_transport, :commit}
+    end
+
+    # spec §4 / decision #8: on the RESCUE unwind, a rollback failure is LOGGED value-free
+    # while the ORIGINAL exception is never masked. Non-vacuous: the sentinel db name rides
+    # in the failing rollback's %Arcadic.Error{}.message and must NOT reach the log (Rule 4).
+    test "a rollback FAILURE ({:error,_}) during a raising unwind logs value-free, never masks",
+         %{base: base} do
+      on_exit(fn -> Process.delete(:stub_rollback_result) end)
+
+      Process.put(
+        :stub_rollback_result,
+        {:error,
+         %Arcadic.Error{reason: :server_error, message: "rollback failed on db SENTINEL_RBK_9f3z"}}
+      )
+
+      log =
+        ExUnit.CaptureLog.capture_log(fn ->
+          assert_raise RuntimeError, "boom", fn ->
+            AshArcadic.Transaction.run(fn ->
+              {:ok, _} = AshArcadic.Transaction.resolve_conn(base, :write)
+              raise "boom"
+            end)
+          end
+        end)
+
+      assert_received {:stub_transport, :rollback}
+      assert log =~ "rollback failed"
+      refute log =~ "SENTINEL_RBK_9f3z"
+      refute AshArcadic.Transaction.in_transaction?()
+    end
+
+    # F5: a rollback that RAISES during unwind must be caught + logged value-free and must
+    # NOT replace/mask the original exception. Non-vacuous against the pre-fix code, where
+    # the raise inside the rescue arm propagates and masks "boom".
+    test "a rollback that RAISES during a raising unwind is caught, logged value-free, never masks",
+         %{base: base} do
+      on_exit(fn -> Process.delete(:stub_rollback_result) end)
+      Process.put(:stub_rollback_result, :raise)
+
+      log =
+        ExUnit.CaptureLog.capture_log(fn ->
+          assert_raise RuntimeError, "boom", fn ->
+            AshArcadic.Transaction.run(fn ->
+              {:ok, _} = AshArcadic.Transaction.resolve_conn(base, :write)
+              raise "boom"
+            end)
+          end
+        end)
+
+      assert_received {:stub_transport, :rollback}
+      assert log =~ "rollback"
+      refute log =~ "SENTINEL_RBK_RAISE"
+      refute AshArcadic.Transaction.in_transaction?()
+    end
+
+    # A rollback failure on the deliberate rollback_throw path is also logged value-free,
+    # and still returns {:error, reason} (the user's reason is preserved).
+    test "a rollback FAILURE on the rollback_throw path logs value-free, still returns {:error, reason}",
+         %{base: base} do
+      on_exit(fn -> Process.delete(:stub_rollback_result) end)
+
+      Process.put(
+        :stub_rollback_result,
+        {:error,
+         %Arcadic.Error{reason: :server_error, message: "rollback failed on db SENTINEL_RBK2_x"}}
+      )
+
+      log =
+        ExUnit.CaptureLog.capture_log(fn ->
+          assert {:error, :abort} =
+                   AshArcadic.Transaction.run(fn ->
+                     {:ok, _} = AshArcadic.Transaction.resolve_conn(base, :write)
+                     AshArcadic.Transaction.rollback_throw(:abort)
+                   end)
+        end)
+
+      assert log =~ "rollback failed"
+      refute log =~ "SENTINEL_RBK2_x"
     end
   end
 end

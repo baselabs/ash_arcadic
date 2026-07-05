@@ -10,6 +10,8 @@ defmodule AshArcadic.Transaction do
 
   alias Arcadic.Conn
 
+  require Logger
+
   @marker_key :ash_arcadic_tx_marker
   @session_key :ash_arcadic_tx_session
   @rollback_tag :ash_arcadic_rollback
@@ -109,16 +111,16 @@ defmodule AshArcadic.Transaction do
       end
     rescue
       exception ->
-        _ = rollback_if_open()
+        rollback_or_log()
         reraise exception, __STACKTRACE__
     catch
       :throw, {@rollback_tag, reason} ->
-        _ = rollback_if_open()
+        rollback_or_log()
         {:error, reason}
 
       # Any other non-local exit still rolls the session back before it propagates.
       kind, value when kind in [:throw, :exit] ->
-        _ = rollback_if_open()
+        rollback_or_log()
         :erlang.raise(kind, value, __STACKTRACE__)
     after
       clear()
@@ -141,5 +143,28 @@ defmodule AshArcadic.Transaction do
       nil -> :ok
       %Conn{} = conn -> Arcadic.Transaction.rollback(conn)
     end
+  end
+
+  # Roll back a lazily-opened session during unwind, logging a VALUE-FREE warning if the
+  # rollback itself fails ({:error, _}) or raises — never masking the original error
+  # (spec §4 / decision #8). The failure reason/exception is deliberately NOT interpolated:
+  # an %Arcadic.Error{}.message (or a transport raise) can name a tenant-derived database, so
+  # only a static line is logged (AGENTS.md Rule 4). Always returns :ok.
+  @spec rollback_or_log() :: :ok
+  defp rollback_or_log do
+    case rollback_if_open() do
+      :ok ->
+        :ok
+
+      {:error, _reason} ->
+        Logger.warning(
+          "AshArcadic: transaction rollback failed during unwind (original error preserved)"
+        )
+    end
+  rescue
+    _exception ->
+      Logger.warning(
+        "AshArcadic: transaction rollback raised during unwind (original error preserved)"
+      )
   end
 end
