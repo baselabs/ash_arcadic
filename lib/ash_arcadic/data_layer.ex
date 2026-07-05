@@ -92,4 +92,25 @@ defmodule AshArcadic.DataLayer do
       label: Info.label(resource)
     }
   end
+
+  @doc false
+  # Maps an arcadic error to a value-free structural reason. We interpolate `reason`
+  # ONLY under a `when is_atom(reason)` guard — the atom is guard-ENFORCED here, not
+  # trusted from the annotation. Both structs annotate `reason :: atom()`, but that is
+  # UNENFORCED: arcadic passes the underlying Req/Mint reason through verbatim
+  # (../arcadic transport/http.ex:85,153,197,209,239; bolt/connection.ex:20), and
+  # Mint's reason type is term() — a tuple/charlist/string reason can reach here and
+  # embed a host or value. Any non-atom reason (on EITHER struct) falls through to the
+  # static catch-all — fail CLOSED — which NEVER interpolates or inspects the term
+  # (String.Chars on a tuple would raise a value-carrying Protocol.UndefinedError; see
+  # the redaction-fail-path memory). Callers pass the result as the `reason:` of a
+  # Query/Create/UpdateFailed, which `inspect`s it — a structural string stays
+  # value-free through that inspect.
+  def redact_db_error(%Arcadic.Error{reason: reason}) when is_atom(reason),
+    do: "ArcadeDB error (#{reason})"
+
+  def redact_db_error(%Arcadic.TransportError{reason: reason}) when is_atom(reason),
+    do: "ArcadeDB transport error (#{reason})"
+
+  def redact_db_error(_other), do: "ArcadeDB error"
 end
