@@ -13,6 +13,7 @@ defmodule AshArcadic.DataLayer.CanTest do
           :filter,
           :limit,
           :offset,
+          :sort,
           :boolean_filter,
           :nested_expressions,
           :multitenancy,

@@ -19,8 +19,11 @@ defmodule AshArcadic.DataLayer do
   `:multitenancy`; CRUD/query/upsert/transact/traversal land in later plans.
   """
 
+  alias AshArcadic.Cast
   alias AshArcadic.DataLayer.Info
+  alias AshArcadic.Errors.QueryFailed
   alias AshArcadic.Query.Filter
+  alias AshArcadic.Telemetry
 
   @arcade %Spark.Dsl.Section{
     name: :arcade,
@@ -87,6 +90,11 @@ defmodule AshArcadic.DataLayer do
   def can?(_, :filter), do: true
   def can?(_, :limit), do: true
   def can?(_, :offset), do: true
+  # Bare `:sort` gates whether Ash pushes ANY sort down (Ash.Query.sort/3 checks it
+  # before building the ORDER BY); the `{:sort, storage_type}` clauses below then
+  # gate per-field sortability. Both are required — omitting the bare atom makes Ash
+  # raise "Data layer does not support sorting" and never reaches the per-type check.
+  def can?(_, :sort), do: true
   def can?(_, :boolean_filter), do: true
   def can?(_, :nested_expressions), do: true
   def can?(_, :multitenancy), do: true
@@ -173,6 +181,58 @@ defmodule AshArcadic.DataLayer do
 
   @impl true
   def offset(query, offset, _resource), do: {:ok, %{query | offset: offset}}
+
+  @impl true
+  def run_query(%AshArcadic.Query{} = query, resource) do
+    Telemetry.span(:read, %{resource: resource, multitenancy: strategy(resource)}, fn ->
+      result = do_run_query(query, resource)
+
+      {result,
+       %{
+         row_count: row_count(result),
+         result: Telemetry.result_tag(result),
+         tenant?: not is_nil(query.tenant)
+       }}
+    end)
+  end
+
+  defp do_run_query(query, resource) do
+    case read_conn(query, resource) do
+      {:ok, conn} ->
+        {cypher, params} = AshArcadic.Query.to_cypher(query)
+
+        case Arcadic.query(conn, cypher, params) do
+          {:ok, rows} ->
+            {:ok, decode_records(resource, rows)}
+
+          {:error, error} ->
+            {:error,
+             QueryFailed.exception(query: "ArcadeDB read query", reason: redact_db_error(error))}
+        end
+
+      {:error, :tenant_required} ->
+        {:error,
+         QueryFailed.exception(
+           query: "ArcadeDB read query",
+           reason: "multitenancy tenant required for :context read"
+         )}
+    end
+  end
+
+  # Rows are flat vertex maps (probe: RETURN n → %{"@rid" => .., "@cat" => "v", <props>}).
+  # Decode STRICTLY by attribute_map; @rid/@cat/@type and undeclared keys are ignored by
+  # Cast.row_to_attrs/3.
+  defp decode_records(resource, rows) do
+    attribute_map = Info.attribute_map(resource)
+    attribute_types = Info.attribute_types(resource)
+
+    Enum.map(rows, fn row ->
+      struct(resource, Cast.row_to_attrs(row, attribute_map, attribute_types))
+    end)
+  end
+
+  defp row_count({:ok, records}), do: length(records)
+  defp row_count(_), do: 0
 
   @doc false
   # Resolves the ArcadeDB database name for a WRITE. Gated on the multitenancy
