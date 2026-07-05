@@ -63,6 +63,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   fails with an MVCC `ConcurrentModificationException` leaves the session **open**
   server-side (retryable), so rolling it back frees it immediately instead of leaking it
   until idle expiry. Traversal lands in Plan 4.
+- **Bounded graph traversal (Slice 1, Plan 4).** `AshArcadic.ManualRelationships.Traverse`,
+  an Ash manual relationship emitting one parameterized `UNWIND $ids AS sid MATCH …
+  RETURN` statement (bounded variable-length; `direction` `:outgoing`/`:incoming`/`:both`;
+  required `max_depth`, no unbounded `*`). `:context` traversal is physically scoped to the
+  tenant database; `:attribute` traversal scopes **every node on the bound path** via
+  ArcadeDB's native predicate `ALL(x IN nodes(p) WHERE x.<attr> = $tenant)` — fail-closed on
+  a blank tenant or on traversal between resources with different discriminators
+  (`:mixed_attribute`). Params-only with identifier validation; value-free errors; a
+  `:traverse` telemetry span (`row_count`/`destination_count`/`depth`). `can?(:traverse)`
+  advertised. **Completes Slice 1** (the vertex-centric data layer).
 
 ### Fixed
 

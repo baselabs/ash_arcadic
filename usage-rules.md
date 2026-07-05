@@ -2,9 +2,9 @@
 
 _An Ash DataLayer for ArcadeDB (native OpenCypher over HTTP)._
 
-> Slice 1, Plans 1–3 landed: the `arcade do ... end` DSL section, query
-> compilation, CRUD, the multitenancy write path, and transactions are live
-> (traversal lands in Plan 4). The binding facts:
+> Slice 1 (Plans 1–4) landed: the `arcade do ... end` DSL section, query
+> compilation, CRUD, the multitenancy write path, transactions, and bounded
+> traversal are live. The binding facts:
 
 ## What ash_arcadic owns (and what it does not)
 
@@ -104,6 +104,31 @@ _An Ash DataLayer for ArcadeDB (native OpenCypher over HTTP)._
   half-written). To prevent the duplicate rows in the first place, add a **unique
   index on the primary key** in your host-app `arcadic` migration — that removes the
   residual entirely rather than relying on the transaction to clean it up.
+
+## Traversal (Plan 4)
+
+- **Bounded graph reach as a manual relationship.** Declare a `has_many` whose
+  `manual` is `AshArcadic.ManualRelationships.Traverse` to traverse edges:
+
+      has_many :descendants, MyApp.Node do
+        manual {AshArcadic.ManualRelationships.Traverse,
+                edge_label: :PARENT_OF, direction: :outgoing, min_depth: 1, max_depth: 3}
+      end
+
+  `edge_label` is required and identifier-validated; `direction` is
+  `:outgoing | :incoming | :both`; `max_depth` is a required integer ≥ 1 (unbounded
+  `*` is forbidden); `min_depth` defaults to 1. Loading the relationship returns the
+  reachable destination records, deduped per source.
+- **Slice 1 does not write edges.** Traversal reads edges written out-of-band
+  (host-app ingestion / raw `arcadic` Cypher). Edge *writes* (an `edge` DSL entity)
+  are a later slice.
+- **Traversal is fail-closed multitenant.** A blank tenant runs no query. `:context`
+  traversal is physically scoped to the tenant's database (no cross-tenant reach).
+  `:attribute` traversal scopes **every node on the path** via the native predicate
+  `ALL(x IN nodes(p) WHERE x.<attr> = $tenant)` — an in-tenant node reachable only
+  through an out-of-tenant intermediate is **excluded**, not just the endpoints.
+  Traversing between two `:attribute` resources with **different** discriminators
+  fails closed (`:mixed_attribute`) — one tenant value cannot honor two dimensions.
 
 See `docs/CHARTER.md` for architecture and the open multitenancy decision; `AGENTS.md`
 for the full working rules.
