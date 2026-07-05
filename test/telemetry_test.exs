@@ -30,4 +30,11 @@ defmodule AshArcadic.TelemetryTest do
     assert Telemetry.result_tag({:error, :x}) == :error
     assert Telemetry.result_tag({:ok, []}) == :ok
   end
+
+  test "properties? is on the value-free allowlist (create_edge metadata)" do
+    assert :properties? in AshArcadic.Telemetry.allowed_meta_keys()
+
+    assert AshArcadic.Telemetry.validate!(%{resource: Foo, properties?: true}) ==
+             %{resource: Foo, properties?: true}
+  end
 end
