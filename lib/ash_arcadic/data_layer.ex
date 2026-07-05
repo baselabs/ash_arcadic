@@ -281,6 +281,116 @@ defmodule AshArcadic.DataLayer do
     end
   end
 
+  @impl true
+  def upsert(resource, changeset, keys) do
+    Telemetry.span(:upsert, %{resource: resource, multitenancy: strategy(resource)}, fn ->
+      result = do_upsert(resource, changeset, keys)
+      {result, %{tenant?: tenant?(changeset), result: Telemetry.result_tag(result)}}
+    end)
+  end
+
+  # Native MERGE upsert — the ArcadeDB divergence from the AGE sibling (which BANS
+  # MERGE). MATCH on the identity pattern; ON CREATE seeds the full property map, ON
+  # MATCH sets only the upsert-fields subset (never re-setting the matched identity).
+  # Idempotent by construction: a replay on the same identity matches the SAME @rid.
+  defp do_upsert(resource, changeset, keys) do
+    identity_keys = keys || Ash.Resource.Info.primary_key(resource)
+
+    if identity_keys == [] do
+      # Fail closed: an empty identity would emit `MERGE (n:L {})`, matching ANY node
+      # (a catastrophic ON MATCH clobber). Ash structurally guarantees a non-empty PK,
+      # but we never rely on an unenforced upstream invariant for a scoping pattern.
+      {:error,
+       CreateFailed.exception(
+         resource: resource,
+         reason: "upsert requires a non-empty identity (no primary key or upsert keys)"
+       )}
+    else
+      do_upsert(resource, changeset, keys, identity_keys)
+    end
+  end
+
+  defp do_upsert(resource, changeset, _keys, identity_keys) do
+    case write_conn(resource, changeset) do
+      {:ok, conn} ->
+        label = validated_label(resource)
+        {match_pattern, match_params} = merge_identity(resource, changeset, identity_keys)
+        props = changeset_to_properties(resource, changeset)
+        on_match = upsert_set_map(resource, changeset, identity_keys)
+
+        cypher =
+          "MERGE (n:#{label} #{match_pattern}) " <>
+            "ON CREATE SET n += $props ON MATCH SET n += $on_match RETURN n"
+
+        params = Map.merge(match_params, %{"props" => props, "on_match" => on_match})
+
+        case Arcadic.command(conn, cypher, params) do
+          {:ok, [row]} ->
+            {:ok,
+             struct(
+               resource,
+               Cast.row_to_attrs(
+                 row,
+                 Info.attribute_map(resource),
+                 Info.attribute_types(resource)
+               )
+             )}
+
+          {:ok, rows} ->
+            {:error,
+             CreateFailed.exception(
+               resource: resource,
+               reason: "upsert matched #{length(rows)} rows (duplicate identity in graph?)"
+             )}
+
+          {:error, error} ->
+            {:error, CreateFailed.exception(resource: resource, reason: redact_db_error(error))}
+        end
+
+      {:error, :tenant_required} ->
+        {:error,
+         CreateFailed.exception(
+           resource: resource,
+           reason: "multitenancy tenant required for :context write"
+         )}
+    end
+  end
+
+  # Builds the MERGE identity pattern `{k1: $mk_k1, ...}` — each key validated as an
+  # identifier (only the field NAME is interpolated), each value serialized + bound to
+  # `$mk_<key>` (NEVER interpolated). Composite identities supported.
+  defp merge_identity(resource, changeset, identity_keys) do
+    types = Info.attribute_types(resource)
+
+    {pairs, params} =
+      Enum.reduce(identity_keys, {[], %{}}, fn key, {pairs, params} ->
+        field = key |> to_string() |> AshArcadic.Identifier.validate!()
+
+        value =
+          Cast.serialize_value(Ash.Changeset.get_attribute(changeset, key), Map.get(types, key))
+
+        param = "mk_#{field}"
+        {["#{field}: $#{param}" | pairs], Map.put(params, param, value)}
+      end)
+
+    {"{" <> Enum.join(Enum.reverse(pairs), ", ") <> "}", params}
+  end
+
+  # The ON MATCH property set — the Ash upsert-fields subset (`set_on_upsert/2`),
+  # minus the identity keys (never re-set the match key) and `skip`ped attrs, each
+  # value serialized to its wire form.
+  defp upsert_set_map(resource, changeset, identity_keys) do
+    skip = Info.skip(resource)
+    types = Info.attribute_types(resource)
+
+    changeset
+    |> Ash.Changeset.set_on_upsert(identity_keys)
+    |> Enum.reject(fn {key, _value} -> key in identity_keys or key in skip end)
+    |> Map.new(fn {key, value} ->
+      {Atom.to_string(key), Cast.serialize_value(value, Map.get(types, key))}
+    end)
+  end
+
   # Maps changeset.attributes (minus `skip`) to a JSON-safe string-keyed property
   # map, each value serialized by attribute type. Passed as ONE `$props` map param
   # (ArcadeDB accepts CREATE (n:L $props) — the AGE per-key-SET divergence). Only the
