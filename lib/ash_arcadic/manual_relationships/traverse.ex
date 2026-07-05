@@ -186,6 +186,37 @@ defmodule AshArcadic.ManualRelationships.Traverse do
   end
 
   @doc false
+  # Phase-1 decode (Option B, §7.2). Flat reachability rows (%{"s1" => .., ["s2" => .., ]
+  # "d" => ..}) → {reach_map, dest_pk_union}. reach_map keys are the source-PK map
+  # (Cast.load_value-coerced so key === Map.take(record, src_pkey) for Ash's
+  # normalize_manual_results); values are that source's reachable dest-PK values, coerced to
+  # the dest PK's runtime shape, PRE-DEDUP (genuine fan-out — telemetry row_count). dest_pk_union
+  # is the de-duplicated UNION across all sources — the `pk in ^union` set for the authorized
+  # read. NO destination vertex is decoded here (the authorized read materializes records).
+  # reach_spec = %{src_pkey, src_types, dest_pk_type}.
+  def assemble_reachability(rows, %{
+        src_pkey: src_pkey,
+        src_types: src_types,
+        dest_pk_type: dest_pk_type
+      }) do
+    indexed_pkey = Enum.with_index(src_pkey, 1)
+
+    {reach_map, union_rev} =
+      Enum.reduce(rows, {%{}, []}, fn row, {acc, union} ->
+        src_key =
+          Map.new(indexed_pkey, fn {atom, i} ->
+            {atom, Cast.load_value(Map.get(row, "s#{i}"), Map.get(src_types, atom))}
+          end)
+
+        dval = Cast.load_value(Map.get(row, "d"), dest_pk_type)
+        {Map.update(acc, src_key, [dval], &[dval | &1]), [dval | union]}
+      end)
+
+    {Map.new(reach_map, fn {k, v} -> {k, Enum.reverse(v)} end),
+     union_rev |> Enum.reverse() |> Enum.uniq()}
+  end
+
+  @doc false
   # Assembles the F3 source-PK-keyed map from the flat map-rows Arcadic.query
   # returns (`%{"s1" => .., "b" => %{..vertex..}}`). Source-PK scalars coerce back
   # to runtime shape via Cast.load_value (so the key === Map.take(record, src_pkey)

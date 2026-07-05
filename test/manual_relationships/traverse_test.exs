@@ -328,6 +328,58 @@ defmodule AshArcadic.ManualRelationships.TraverseTest do
     end
   end
 
+  describe "assemble_reachability/2" do
+    defp reach_spec do
+      %{
+        src_pkey: [:id],
+        src_types: %{id: {Ash.Type.String, []}},
+        dest_pk_type: {Ash.Type.String, []}
+      }
+    end
+
+    defp reach_rows do
+      # p1 reaches d1, d2, d1-again (fan-out dup); p2 reaches d3 and d1 (shared dest).
+      [
+        %{"s1" => "p1", "d" => "d1"},
+        %{"s1" => "p1", "d" => "d2"},
+        %{"s1" => "p1", "d" => "d1"},
+        %{"s1" => "p2", "d" => "d3"},
+        %{"s1" => "p2", "d" => "d1"}
+      ]
+    end
+
+    test "source-PK-keyed reachability map (Ash Map.take shape) + per-source pre-dedup list" do
+      {reach_map, _union} = Traverse.assemble_reachability(reach_rows(), reach_spec())
+
+      assert reach_map[%{id: "p1"}] == ["d1", "d2", "d1"]
+      assert reach_map[%{id: "p2"}] == ["d3", "d1"]
+    end
+
+    test "dest-PK UNION is de-duplicated across sources (the `pk in ^union` read set)" do
+      {_reach_map, union} = Traverse.assemble_reachability(reach_rows(), reach_spec())
+      # d1/d2/d3 unique across the fan-out (d1 appears 3x total, once in the union).
+      assert Enum.sort(union) == ["d1", "d2", "d3"]
+    end
+
+    test "composite src PK builds a multi-field key from s1/s2" do
+      spec = %{
+        src_pkey: [:org_id, :node_id],
+        src_types: %{org_id: {Ash.Type.String, []}, node_id: {Ash.Type.String, []}},
+        dest_pk_type: {Ash.Type.String, []}
+      }
+
+      rows = [%{"s1" => "acme", "s2" => "n1", "d" => "d1"}]
+      {reach_map, union} = Traverse.assemble_reachability(rows, spec)
+
+      assert reach_map[%{org_id: "acme", node_id: "n1"}] == ["d1"]
+      assert union == ["d1"]
+    end
+
+    test "empty rows → empty map + empty union" do
+      assert Traverse.assemble_reachability([], reach_spec()) == {%{}, []}
+    end
+  end
+
   describe "first_unencodable_id_field/1 ($ids encode-gate, Rule 4)" do
     test "nil when all id values are JSON-encodable scalars" do
       assert Traverse.first_unencodable_id_field([%{"id" => "p1"}]) == nil
