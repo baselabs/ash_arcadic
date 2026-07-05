@@ -48,4 +48,21 @@ defmodule AshArcadic.Changes.DestroyEdgeTest do
 
     assert cypher =~ "MATCH (a:EAPerson)<-[r:KNOWS]-(b:EAPerson)"
   end
+
+  test ":both direction uses an undirected match (deletes EITHER orientation, spec §6.2)" do
+    {cypher, _} =
+      DestroyEdge.build_destroy(
+        EdgeAttrPerson,
+        edge(direction: :both),
+        %{"id" => "p1"},
+        "p2",
+        nil
+      )
+
+    # Undirected `-[r]-` matches an edge in either orientation between the two
+    # PK-and-tenant-pinned endpoints; outgoing-only would miss a reverse-oriented edge.
+    assert cypher =~ "MATCH (a:EAPerson)-[r:KNOWS]-(b:EAPerson) WHERE"
+    refute cypher =~ "->(b:EAPerson)"
+    refute cypher =~ "(a:EAPerson)<-"
+  end
 end

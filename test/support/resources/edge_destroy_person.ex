@@ -13,6 +13,12 @@ defmodule AshArcadic.Test.EdgeDestroyPerson do
       direction(:outgoing)
       destination(AshArcadic.Test.EdgeDestroyPerson)
     end
+
+    edge :pals do
+      label(:PALS)
+      direction(:both)
+      destination(AshArcadic.Test.EdgeDestroyPerson)
+    end
   end
 
   multitenancy do
@@ -40,6 +46,18 @@ defmodule AshArcadic.Test.EdgeDestroyPerson do
       require_atomic? false
       argument :to, {:array, :string}
       change {AshArcadic.Changes.DestroyEdge, edge: :friends, to: :to}
+    end
+
+    update :befriend_pals do
+      require_atomic? false
+      argument :to, {:array, :string}
+      change {AshArcadic.Changes.CreateEdge, edge: :pals, to: :to}
+    end
+
+    update :unfriend_pals do
+      require_atomic? false
+      argument :to, {:array, :string}
+      change {AshArcadic.Changes.DestroyEdge, edge: :pals, to: :to}
     end
   end
 end

@@ -129,6 +129,10 @@ defmodule AshArcadic.Changes.DestroyEdge do
     pattern =
       case edge.direction do
         :incoming -> "(a:#{src_label})<-[r:#{edge_label}]-(b:#{dest_label})"
+        # `:both` deletes EITHER orientation (spec §6.2): an undirected match removes an
+        # edge written from either endpoint. The endpoints stay PK- and tenant-pinned in
+        # the WHERE, so undirecting the relationship cannot widen the delete's scope.
+        :both -> "(a:#{src_label})-[r:#{edge_label}]-(b:#{dest_label})"
         _ -> "(a:#{src_label})-[r:#{edge_label}]->(b:#{dest_label})"
       end
 

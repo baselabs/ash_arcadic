@@ -84,10 +84,40 @@ defmodule AshArcadic.Integration.DestroyEdgeTest do
     refute message =~ "0xFF"
   end
 
+  test "a :both edge is deletable from the OTHER endpoint (either orientation, spec §6.2)", %{
+    admin: admin
+  } do
+    {:ok, a} = create_person("a", "org1")
+    {:ok, b} = create_person("b", "org1")
+    # A befriends B → a :both edge is written outgoing as (a)-[PALS]->(b) (§6.1).
+    {:ok, _} = befriend_pals(a, ["b"], "org1")
+
+    # B unfriends A. The edge is INCOMING from B's perspective; an outgoing-only
+    # DELETE would miss it. Undirected `:both` match must remove it.
+    assert {:ok, _} = unfriend_pals(b, ["a"], "org1")
+
+    {:ok, [%{"c" => c}]} =
+      Arcadic.query(admin, "MATCH (:EDPerson)-[e:PALS]-(:EDPerson) RETURN count(e) AS c", %{})
+
+    assert c == 0
+  end
+
   defp create_person(id, tenant) do
     EdgeDestroyPerson
     |> Ash.Changeset.for_create(:create, %{id: id, name: id, tenant: tenant}, tenant: tenant)
     |> Ash.create()
+  end
+
+  defp befriend_pals(actor, to, tenant) do
+    actor
+    |> Ash.Changeset.for_update(:befriend_pals, %{to: to}, tenant: tenant)
+    |> Ash.update()
+  end
+
+  defp unfriend_pals(actor, to, tenant) do
+    actor
+    |> Ash.Changeset.for_update(:unfriend_pals, %{to: to}, tenant: tenant)
+    |> Ash.update()
   end
 
   defp befriend(actor, to, tenant) do
