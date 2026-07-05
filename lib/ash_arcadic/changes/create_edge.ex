@@ -195,13 +195,17 @@ defmodule AshArcadic.Changes.CreateEdge do
     |> Enum.reject(fn {_key, value} -> is_nil(value) end)
     |> Enum.reduce_while({:ok, %{}}, fn {key, value}, {:ok, acc} ->
       {type, constraints} = Map.get(arg_types, key, {nil, []})
+      # An undeclared/injected arg has no type. Serialize it through a BARE `nil`
+      # spec (Cast.normalize_spec(nil) → :untyped pass-through), NOT the `{nil, []}`
+      # tuple — the tuple routes into Ash.Type.storage_type(nil, _), which raises
+      # for a non-sensitive binary property. The R4 sensitive guard below still
+      # fails closed on the nil type.
+      spec = if is_nil(type), do: nil, else: {type, constraints}
 
       if key in sensitive and (is_nil(type) or not Cast.binary_storage?(type, constraints)) do
         {:halt, {:error, key}}
       else
-        {:cont,
-         {:ok,
-          Map.put(acc, Atom.to_string(key), Cast.serialize_value(value, {type, constraints}))}}
+        {:cont, {:ok, Map.put(acc, Atom.to_string(key), Cast.serialize_value(value, spec))}}
       end
     end)
   end

@@ -120,5 +120,16 @@ defmodule AshArcadic.Changes.CreateEdgeTest do
       assert {:error, :secret} =
                CreateEdge.edge_properties(cs, %AshArcadic.Edge{properties: [:secret]})
     end
+
+    test "a non-sensitive UNDECLARED string property serializes value-free (no crash on nil type)" do
+      # :extra is a non-sensitive edge property with a string value but NO declared
+      # action argument (only reachable via set_argument-injection) → type resolves
+      # nil. Must serialize the raw scalar (untyped pass-through), NOT raise
+      # (UndefinedFunctionError) nil.storage_type/1 from the unguarded else branch.
+      cs = changeset(%{extra: "hello"}, [])
+
+      assert {:ok, %{"extra" => "hello"}} =
+               CreateEdge.edge_properties(cs, %AshArcadic.Edge{properties: [:extra]})
+    end
   end
 end
