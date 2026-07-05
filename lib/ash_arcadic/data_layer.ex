@@ -121,7 +121,8 @@ defmodule AshArcadic.DataLayer do
       AshArcadic.DataLayer.Verifiers.ValidateDatabase,
       AshArcadic.DataLayer.Verifiers.ValidateSensitive,
       AshArcadic.DataLayer.Verifiers.ValidateSkip,
-      AshArcadic.DataLayer.Verifiers.ValidateMultitenancyAttr
+      AshArcadic.DataLayer.Verifiers.ValidateMultitenancyAttr,
+      AshArcadic.DataLayer.Verifiers.ValidateEdge
     ]
 
   # === Capability matrix (read + write + query-building) ===
