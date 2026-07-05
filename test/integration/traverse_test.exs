@@ -19,11 +19,11 @@ defmodule AshArcadic.Integration.TraverseTest do
     rec
   end
 
-  defp attr_edge(admin, from, to) do
+  defp attr_edge(admin, from, to, org) do
     Arcadic.command!(
       admin,
       "MATCH (a:TravAttrNode{id:'#{from}'}),(b:TravAttrNode{id:'#{to}'}) " <>
-        "CREATE (a)-[:PARENT_OF]->(b)"
+        "CREATE (a)-[:PARENT_OF{org_id:'#{org}'}]->(b)"
     )
   end
 
@@ -34,12 +34,12 @@ defmodule AshArcadic.Integration.TraverseTest do
     for {id, n} <- [{"p2", "P2"}, {"p3", "P3"}, {"p4", "P4"}], do: create_attr(id, "org1", n)
     for {id, n} <- [{"y1", "Y1"}, {"x2", "X2"}, {"x3", "X3"}], do: create_attr(id, "org2", n)
 
-    attr_edge(admin, "p1", "p2")
-    attr_edge(admin, "p2", "p3")
-    attr_edge(admin, "p3", "p4")
-    attr_edge(admin, "p1", "y1")
-    attr_edge(admin, "p2", "x2")
-    attr_edge(admin, "p3", "x3")
+    attr_edge(admin, "p1", "p2", "org1")
+    attr_edge(admin, "p2", "p3", "org1")
+    attr_edge(admin, "p3", "p4", "org1")
+    attr_edge(admin, "p1", "y1", "org1")
+    attr_edge(admin, "p2", "x2", "org1")
+    attr_edge(admin, "p3", "x3", "org1")
 
     {:ok, loaded} = Ash.load(p1, :descendants, tenant: "org1")
     names = loaded.descendants |> Enum.map(& &1.name) |> Enum.sort()
@@ -65,9 +65,9 @@ defmodule AshArcadic.Integration.TraverseTest do
     create_attr("p2", "org1", "P2")
     create_attr("xm", "org2", "XM")
     create_attr("pl", "org1", "PL")
-    attr_edge(admin, "p1", "p2")
-    attr_edge(admin, "p1", "xm")
-    attr_edge(admin, "xm", "pl")
+    attr_edge(admin, "p1", "p2", "org1")
+    attr_edge(admin, "p1", "xm", "org1")
+    attr_edge(admin, "xm", "pl", "org1")
 
     {:ok, loaded} = Ash.load(p1, :descendants, tenant: "org1")
     names = loaded.descendants |> Enum.map(& &1.name) |> Enum.sort()
@@ -88,9 +88,9 @@ defmodule AshArcadic.Integration.TraverseTest do
     create_attr("p2", "org1", "P2")
     create_attr("xm", "org2", "XM")
     create_attr("pl", "org1", "PL")
-    attr_edge(admin, "p1", "p2")
-    attr_edge(admin, "p1", "xm")
-    attr_edge(admin, "xm", "pl")
+    attr_edge(admin, "p1", "p2", "org1")
+    attr_edge(admin, "p1", "xm", "org1")
+    attr_edge(admin, "xm", "pl", "org1")
 
     {:ok, loaded} = Ash.load(p1, :connected, tenant: "org1")
     names = loaded.connected |> Enum.map(& &1.name) |> Enum.sort()
@@ -106,7 +106,7 @@ defmodule AshArcadic.Integration.TraverseTest do
        %{admin: admin} do
     p1 = create_attr("p1", "org1", "P1")
     create_attr("p2", "org1", "P2")
-    attr_edge(admin, "p1", "p2")
+    attr_edge(admin, "p1", "p2", "org1")
 
     # Sanity: the correct tenant sees the child (proves the graph + edge exist).
     {:ok, ok} = Ash.load(p1, :descendants, tenant: "org1")

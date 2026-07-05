@@ -117,6 +117,7 @@ defmodule AshArcadic.ManualRelationships.TraverseTest do
           tenant_attr: nil,
           tenant: nil,
           per_hop_scope?: false,
+          scope_edges?: true,
           ids: [%{"id" => "p1"}]
         },
         Map.new(overrides)
@@ -133,7 +134,7 @@ defmodule AshArcadic.ManualRelationships.TraverseTest do
       assert params == %{"ids" => [%{"id" => "p1"}]}
     end
 
-    test ":attribute — bound path p + native ALL(nodes(p)) predicate + $tenant param" do
+    test ":attribute default — bound path p + ALL(nodes(p)) AND ALL(relationships(p)) + $tenant" do
       {cypher, params} =
         Traverse.build_traverse(
           base_spec(%{per_hop_scope?: true, tenant_attr: "org_id", tenant: "acme"})
@@ -142,9 +143,29 @@ defmodule AshArcadic.ManualRelationships.TraverseTest do
       assert cypher ==
                "UNWIND $ids AS sid MATCH p=(a:Node)-[:PARENT_OF*1..3]->(b:Node) " <>
                  "WHERE a.id = sid.id AND ALL(x IN nodes(p) WHERE x.org_id = $tenant) " <>
+                 "AND ALL(r IN relationships(p) WHERE r.org_id = $tenant) " <>
                  "RETURN a.id AS s1, b"
 
       assert params == %{"ids" => [%{"id" => "p1"}], "tenant" => "acme"}
+    end
+
+    test ":attribute scope_edges? false — node-only predicate (the documented opt-out)" do
+      {cypher, _params} =
+        Traverse.build_traverse(
+          base_spec(%{
+            per_hop_scope?: true,
+            scope_edges?: false,
+            tenant_attr: "org_id",
+            tenant: "acme"
+          })
+        )
+
+      assert cypher ==
+               "UNWIND $ids AS sid MATCH p=(a:Node)-[:PARENT_OF*1..3]->(b:Node) " <>
+                 "WHERE a.id = sid.id AND ALL(x IN nodes(p) WHERE x.org_id = $tenant) " <>
+                 "RETURN a.id AS s1, b"
+
+      refute cypher =~ "relationships(p)"
     end
 
     test "direction :incoming / :both emit the correct edge arrows" do

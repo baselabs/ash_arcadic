@@ -122,12 +122,11 @@ defmodule AshArcadic.ManualRelationships.Traverse do
   end
 
   @doc false
-  # Pure Cypher builder. `:attribute` (per_hop_scope? true) emits ONE bound-path
-  # MATCH with the native predicate ALL(x IN nodes(p) WHERE x.<attr> = $tenant)
-  # (probe P7 — replaces ash_age's UNION-ALL, which AGE forced). No SQL DISTINCT:
-  # per-path rows are raw so row_count is the genuine pre-dedup fan-out; Elixir
-  # dedup (Task 4) yields destination_count. Every identifier is validated; only
-  # $ids/$tenant carry values.
+  # Pure Cypher builder. :attribute (per_hop_scope? true) emits a bound-path MATCH scoping
+  # nodes AND edges by default: ALL(x IN nodes(p) WHERE x.<attr>=$tenant) AND
+  # ALL(r IN relationships(p) WHERE r.<attr>=$tenant) (probe E4). scope_edges? false drops
+  # the edge clause (node-only opt-out for out-of-band-edge graphs). :context/none: unscoped.
+  # Every identifier validated; only $ids/$tenant carry values.
   def build_traverse(spec) do
     edge = Identifier.validate!(spec.edge_label)
     src = Identifier.validate!(spec.src_label)
@@ -138,10 +137,18 @@ defmodule AshArcadic.ManualRelationships.Traverse do
 
     if spec.per_hop_scope? do
       attr = Identifier.validate!(spec.tenant_attr)
+      node_scope = "ALL(x IN nodes(p) WHERE x.#{attr} = $tenant)"
+
+      scope =
+        if spec.scope_edges? do
+          node_scope <> " AND ALL(r IN relationships(p) WHERE r.#{attr} = $tenant)"
+        else
+          node_scope
+        end
 
       cypher =
         "UNWIND $ids AS sid MATCH p=#{pat} " <>
-          "WHERE #{src_match} AND ALL(x IN nodes(p) WHERE x.#{attr} = $tenant) " <>
+          "WHERE #{src_match} AND #{scope} " <>
           "RETURN #{src_return}, b"
 
       {cypher, %{"ids" => spec.ids, "tenant" => spec.tenant}}
@@ -227,7 +234,7 @@ defmodule AshArcadic.ManualRelationships.Traverse do
          source,
          dest,
          card,
-         {edge_label, direction, min_depth, max_depth, _scope_edges?}
+         {edge_label, direction, min_depth, max_depth, scope_edges?}
        ) do
     with {:ok, database} <- resolve_database(source, context.tenant),
          {:ok, tenant_attr, tenant} <- resolve_tenant(source, dest, context.tenant),
@@ -247,6 +254,7 @@ defmodule AshArcadic.ManualRelationships.Traverse do
         tenant_attr: tenant_attr,
         tenant: tenant,
         per_hop_scope?: not is_nil(tenant_attr),
+        scope_edges?: scope_edges?,
         ids: ids
       }
 
