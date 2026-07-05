@@ -15,7 +15,7 @@ defmodule AshArcadic.Test.UpsertComposite do
 
   actions do
     default_accept [:region, :code, :name]
-    defaults [:read, :create]
+    defaults [:read, :create, :update]
 
     create :upsert do
       upsert? true
