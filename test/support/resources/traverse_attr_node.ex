@@ -34,6 +34,19 @@ defmodule AshArcadic.Test.TraverseAttrNode do
          edge_label: :PARENT_OF, direction: :both, min_depth: 1, max_depth: 3}
       )
     end
+
+    # scope_edges: false — the documented opt-out: node scoping still applies, but edges
+    # are NOT scoped (for graphs whose edges are written out-of-band without the stamp).
+    has_many :descendants_unscoped_edges, __MODULE__ do
+      manual(
+        {AshArcadic.ManualRelationships.Traverse,
+         edge_label: :PARENT_OF,
+         direction: :outgoing,
+         min_depth: 1,
+         max_depth: 3,
+         scope_edges: false}
+      )
+    end
   end
 
   actions do
