@@ -154,6 +154,15 @@ _An Ash DataLayer for ArcadeDB (native OpenCypher over HTTP)._
   path predicate + the read's `:attribute` filter / `:context` database), both
   fail-closed. NOTE: a caller/relationship **`limit` applies over the UNION** of all
   sources' reachable destinations, not per-source (a Slice-3+ lateral-join concern).
+- **Authorization is PER-HOP (row policy on every node of the path).** The authorized
+  read covers **every node on each path** (destinations *and* intermediates), and a
+  destination is returned only if it has a path whose **every** node is authorized. So a
+  destination reachable **only** through a row-policy-denied intermediate is **dropped**
+  (the intermediate is never returned); a destination with any fully-authorized path
+  survives. This covers **self-referential** traversal (the shipped norm). A path through
+  an intermediate of a **different resource** carrying a **different** policy is a Slice-3
+  concern and **fails closed** here (such a destination is dropped). Field-policy redaction
+  still applies to the returned destinations.
 
 ## Edge writes (Slice 2, Plan 1)
 

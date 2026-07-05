@@ -54,6 +54,41 @@ defmodule AshArcadic.Integration.TraversePolicyTest do
     assert unauth.descendants |> Enum.map(& &1.name) |> Enum.sort() == ["OK", "SECRET"]
   end
 
+  test "PER-HOP: a destination reachable only through a row-policy-denied INTERMEDIATE is dropped; an authorized multi-hop path survives",
+       %{admin: admin} do
+    # p1 -> mid(DENIED) -> leaf(visible)   : leaf reachable ONLY via denied mid
+    # p1 -> ok(visible) -> deep(visible)    : deep reachable via a fully-authorized path
+    p1 = create_attr("p1", "org1", "P1", true)
+    create_attr("mid", "org1", "MID", false)
+    create_attr("leaf", "org1", "LEAF", true)
+    create_attr("ok", "org1", "OK", true)
+    create_attr("deep", "org1", "DEEP", true)
+    pol_edge(admin, "p1", "mid", "org1")
+    pol_edge(admin, "mid", "leaf", "org1")
+    pol_edge(admin, "p1", "ok", "org1")
+    pol_edge(admin, "ok", "deep", "org1")
+
+    {:ok, loaded} = Ash.load(p1, :descendants, tenant: "org1", actor: @user, authorize?: true)
+    names = loaded.descendants |> Enum.map(& &1.name) |> Enum.sort()
+
+    # OK (direct) + DEEP (authorized 2-hop path) survive; MID denied; LEAF dropped because its
+    # ONLY path crosses the denied MID. This distinguishes per-hop authz from "drop past depth 1".
+    assert names == ["DEEP", "OK"]
+    refute "MID" in names
+    refute "LEAF" in names
+
+    # Non-vacuity: authorize?: false traverses the same graph unrestricted → all four appear
+    # (proves LEAF's exclusion is the intermediate policy, not the graph shape).
+    {:ok, unauth} = Ash.load(p1, :descendants, tenant: "org1", actor: @user, authorize?: false)
+
+    assert unauth.descendants |> Enum.map(& &1.name) |> Enum.sort() == [
+             "DEEP",
+             "LEAF",
+             "MID",
+             "OK"
+           ]
+  end
+
   test "a caller filter on the loaded relationship is honored (Option-B delegates filter to the read)",
        %{admin: admin} do
     p1 = create_attr("p1", "org1", "P1", true)

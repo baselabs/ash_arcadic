@@ -125,12 +125,13 @@ defmodule AshArcadic.ManualRelationships.TraverseTest do
       )
     end
 
-    test ":context / no-scope — single MATCH, no path binding, ids-only params" do
+    test ":none / no tenant scope — bound path p, ids-only params, path returned for per-hop authz" do
       {cypher, params} = Traverse.build_traverse(base_spec(%{}))
 
       assert cypher ==
-               "UNWIND $ids AS sid MATCH (a:Node)-[:PARENT_OF*1..3]->(b:Node) " <>
-                 "WHERE a.id = sid.id RETURN a.id AS s1, b.id AS d"
+               "UNWIND $ids AS sid MATCH p=(a:Node)-[:PARENT_OF*1..3]->(b:Node) " <>
+                 "WHERE a.id = sid.id " <>
+                 "RETURN a.id AS s1, b.id AS d, [n IN nodes(p) | n.id] AS path"
 
       assert params == %{"ids" => [%{"id" => "p1"}]}
     end
@@ -145,7 +146,7 @@ defmodule AshArcadic.ManualRelationships.TraverseTest do
                "UNWIND $ids AS sid MATCH p=(a:Node)-[:PARENT_OF*1..3]->(b:Node) " <>
                  "WHERE a.id = sid.id AND ALL(x IN nodes(p) WHERE x.org_id = $tenant) " <>
                  "AND ALL(r IN relationships(p) WHERE r.org_id = $tenant) " <>
-                 "RETURN a.id AS s1, b.id AS d"
+                 "RETURN a.id AS s1, b.id AS d, [n IN nodes(p) | n.id] AS path"
 
       assert params == %{"ids" => [%{"id" => "p1"}], "tenant" => "acme"}
     end
@@ -164,9 +165,9 @@ defmodule AshArcadic.ManualRelationships.TraverseTest do
       assert cypher ==
                "UNWIND $ids AS sid MATCH p=(a:Node)-[:PARENT_OF*1..3]->(b:Node) " <>
                  "WHERE a.id = sid.id AND ALL(x IN nodes(p) WHERE x.org_id = $tenant) " <>
-                 "RETURN a.id AS s1, b.id AS d"
+                 "RETURN a.id AS s1, b.id AS d, [n IN nodes(p) | n.id] AS path"
 
-      refute cypher =~ "relationships(p)"
+      refute cypher =~ "WHERE r.org_id"
     end
 
     test "direction :incoming / :both emit the correct edge arrows" do
@@ -180,7 +181,9 @@ defmodule AshArcadic.ManualRelationships.TraverseTest do
     test "composite PK expands src-match (AND) and src-return (s1, s2)" do
       {cypher, _} = Traverse.build_traverse(base_spec(%{src_pkey: [:org_id, :node_id]}))
       assert cypher =~ "WHERE a.org_id = sid.org_id AND a.node_id = sid.node_id"
-      assert cypher =~ "RETURN a.org_id AS s1, a.node_id AS s2, b.id AS d"
+
+      assert cypher =~
+               "RETURN a.org_id AS s1, a.node_id AS s2, b.id AS d, [n IN nodes(p) | n.id] AS path"
     end
 
     test "min_depth honored in the varlen bound" do
@@ -257,27 +260,38 @@ defmodule AshArcadic.ManualRelationships.TraverseTest do
     end
 
     defp reach_rows do
-      # p1 reaches d1, d2, d1-again (fan-out dup); p2 reaches d3 and d1 (shared dest).
+      # p1: ->d1 direct ([p1,d1]); ->d2 through intermediate `m` ([p1,m,d2]); ->d1 again (dup).
+      # p2: ->d3 ([p2,d3]); ->d1 ([p2,d1]).
       [
-        %{"s1" => "p1", "d" => "d1"},
-        %{"s1" => "p1", "d" => "d2"},
-        %{"s1" => "p1", "d" => "d1"},
-        %{"s1" => "p2", "d" => "d3"},
-        %{"s1" => "p2", "d" => "d1"}
+        %{"s1" => "p1", "d" => "d1", "path" => ["p1", "d1"]},
+        %{"s1" => "p1", "d" => "d2", "path" => ["p1", "m", "d2"]},
+        %{"s1" => "p1", "d" => "d1", "path" => ["p1", "d1"]},
+        %{"s1" => "p2", "d" => "d3", "path" => ["p2", "d3"]},
+        %{"s1" => "p2", "d" => "d1", "path" => ["p2", "d1"]}
       ]
     end
 
-    test "source-PK-keyed reachability map (Ash Map.take shape) + per-source pre-dedup list" do
+    test "source-PK-keyed reach map of path-entries (Ash Map.take shape), PRE-DEDUP fan-out" do
       {reach_map, _union} = Traverse.assemble_reachability(reach_rows(), reach_spec())
 
-      assert reach_map[%{id: "p1"}] == ["d1", "d2", "d1"]
-      assert reach_map[%{id: "p2"}] == ["d3", "d1"]
+      assert reach_map[%{id: "p1"}] == [
+               %{dest: "d1", path: ["p1", "d1"]},
+               %{dest: "d2", path: ["p1", "m", "d2"]},
+               %{dest: "d1", path: ["p1", "d1"]}
+             ]
+
+      assert reach_map[%{id: "p2"}] == [
+               %{dest: "d3", path: ["p2", "d3"]},
+               %{dest: "d1", path: ["p2", "d1"]}
+             ]
     end
 
-    test "dest-PK UNION is de-duplicated across sources (the `pk in ^union` read set)" do
+    test "node UNION is EVERY path node (destinations AND intermediates), de-duplicated" do
       {_reach_map, union} = Traverse.assemble_reachability(reach_rows(), reach_spec())
-      # d1/d2/d3 unique across the fan-out (d1 appears 3x total, once in the union).
-      assert Enum.sort(union) == ["d1", "d2", "d3"]
+
+      # The intermediate `m` MUST be in the union so the authorized read covers it (per-hop authz);
+      # a union of destinations only would let a denied intermediate go unauthorized.
+      assert Enum.sort(union) == ["d1", "d2", "d3", "m", "p1", "p2"]
     end
 
     test "composite src PK builds a multi-field key from s1/s2" do
@@ -287,11 +301,14 @@ defmodule AshArcadic.ManualRelationships.TraverseTest do
         dest_pk_type: {Ash.Type.String, []}
       }
 
-      rows = [%{"s1" => "acme", "s2" => "n1", "d" => "d1"}]
+      rows = [%{"s1" => "acme", "s2" => "n1", "d" => "d1", "path" => ["acme_n1", "d1"]}]
       {reach_map, union} = Traverse.assemble_reachability(rows, spec)
 
-      assert reach_map[%{org_id: "acme", node_id: "n1"}] == ["d1"]
-      assert union == ["d1"]
+      assert reach_map[%{org_id: "acme", node_id: "n1"}] == [
+               %{dest: "d1", path: ["acme_n1", "d1"]}
+             ]
+
+      assert Enum.sort(union) == ["acme_n1", "d1"]
     end
 
     test "empty rows → empty map + empty union" do
@@ -299,36 +316,50 @@ defmodule AshArcadic.ManualRelationships.TraverseTest do
     end
   end
 
-  describe "regroup/4" do
+  describe "regroup/4 (per-hop authorization)" do
     defmodule RDst do
       @moduledoc false
       defstruct [:id, :name]
     end
 
+    # p1: d1 via a fully-authorized path [p1,d1]; d2 via [p1,mid,d2] crossing DENIED `mid`;
+    #     d1 again (dup). p2: d3 via [p2,d3]; d1 via [p2,d1].
     defp reach_map do
-      %{%{id: "p1"} => ["d1", "d2", "d1"], %{id: "p2"} => ["d3", "d1"]}
+      %{
+        %{id: "p1"} => [
+          %{dest: "d1", path: ["p1", "d1"]},
+          %{dest: "d2", path: ["p1", "mid", "d2"]},
+          %{dest: "d1", path: ["p1", "d1"]}
+        ],
+        %{id: "p2"} => [
+          %{dest: "d3", path: ["p2", "d3"]},
+          %{dest: "d1", path: ["p2", "d1"]}
+        ]
+      }
     end
 
-    # Authorized read result, IN READ ORDER (e.g. sorted by name). d2 is ABSENT here —
-    # simulating a policy-denied / filtered-out destination that Phase 1 reached but the
-    # authorized read dropped.
+    # Authorized read over the node union, IN READ ORDER (e.g. sorted by name). `mid` (and `d2`)
+    # are ABSENT — `mid` is policy-denied, so d2 (reachable ONLY through mid) must be dropped.
     defp authorized do
-      [%RDst{id: "d1", name: "A"}, %RDst{id: "d3", name: "C"}]
+      [
+        %RDst{id: "p1", name: "P1"},
+        %RDst{id: "p2", name: "P2"},
+        %RDst{id: "d1", name: "A"},
+        %RDst{id: "d3", name: "C"}
+      ]
     end
 
-    test ":many — per-source records = reachable ∩ authorized, in READ order; denied dest dropped" do
+    test ":many — dest via a denied intermediate is dropped; fully-authorized paths survive, in READ order" do
       result = Traverse.regroup(reach_map(), authorized(), :id, :many)
 
-      # p1 reached d1 (auth), d2 (DENIED → dropped), d1 (dup → inherent dedup) => [d1].
+      # p1: d1 kept (path [p1,d1] all authorized); d2 DROPPED (only path crosses denied `mid`).
       assert result[%{id: "p1"}] == [%RDst{id: "d1", name: "A"}]
-
-      # p2 reached d3 (auth) and d1 (auth); read order is [d1(A), d3(C)] → filtered keeps that order.
+      # p2: d3 + d1 kept (direct authorized paths); READ order [d1(A), d3(C)].
       assert result[%{id: "p2"}] == [%RDst{id: "d1", name: "A"}, %RDst{id: "d3", name: "C"}]
     end
 
     test "read-order is preserved (sort survives) — not reachability order" do
-      # p2's reachability list is ["d3","d1"] but the authorized read order is [d1, d3];
-      # regroup follows the READ order, so d1 precedes d3.
+      # p2's reachability order is d3,d1 but the authorized read order is d1,d3; regroup follows READ order.
       result = Traverse.regroup(reach_map(), authorized(), :id, :many)
       assert Enum.map(result[%{id: "p2"}], & &1.id) == ["d1", "d3"]
     end
@@ -339,8 +370,18 @@ defmodule AshArcadic.ManualRelationships.TraverseTest do
       assert result[%{id: "p2"}] == %RDst{id: "d1", name: "A"}
     end
 
-    test "a source whose reachable dests were ALL denied → [] (:many) / nil (:one)" do
-      rmap = %{%{id: "p3"} => ["d2"]}
+    test "TRIPWIRE: a dest that IS authorized as a node but whose ONLY path crosses a denied node is dropped" do
+      # d2's node is authorized here, but its only path [p1,mid,d2] crosses denied `mid`.
+      # This isolates per-hop (path) authz from destination authz — a destination-only check keeps d2.
+      auth = authorized() ++ [%RDst{id: "d2", name: "B"}]
+      result = Traverse.regroup(reach_map(), auth, :id, :many)
+      refute Enum.any?(result[%{id: "p1"}], &(&1.id == "d2"))
+      assert Enum.map(result[%{id: "p1"}], & &1.id) == ["d1"]
+    end
+
+    test "a source whose reachable dests are ALL path-denied → [] (:many) / nil (:one)" do
+      # source p1 authorized, but the only path to d9 crosses denied `mid`.
+      rmap = %{%{id: "p3"} => [%{dest: "d9", path: ["p1", "mid", "d9"]}]}
       assert Traverse.regroup(rmap, authorized(), :id, :many) == %{%{id: "p3"} => []}
       assert Traverse.regroup(rmap, authorized(), :id, :one) == %{%{id: "p3"} => nil}
     end
