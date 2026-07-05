@@ -105,20 +105,24 @@ _An Ash DataLayer for ArcadeDB (native OpenCypher over HTTP)._
   index on the primary key** in your host-app `arcadic` migration — that removes the
   residual entirely rather than relying on the transaction to clean it up.
 
-## Traversal (Plan 4)
+## Traversal (Plan 4; upgraded in Slice 2, Plan 2 — spec §7)
 
 - **Bounded graph reach as a manual relationship.** Declare a `has_many` whose
   `manual` is `AshArcadic.ManualRelationships.Traverse` to traverse edges:
 
       has_many :descendants, MyApp.Node do
         manual {AshArcadic.ManualRelationships.Traverse,
-                edge_label: :PARENT_OF, direction: :outgoing, min_depth: 1, max_depth: 3}
+                edge_label: :PARENT_OF, direction: :outgoing, min_depth: 1, max_depth: 3,
+                scope_edges: true}
       end
 
   `edge_label` is required and identifier-validated; `direction` is
   `:outgoing | :incoming | :both`; `max_depth` is a required integer ≥ 1 (unbounded
-  `*` is forbidden); `min_depth` defaults to 1. Loading the relationship returns the
-  reachable destination records, deduped per source.
+  `*` is forbidden); `min_depth` defaults to 1; `scope_edges` defaults to `true`
+  (see edge scoping below). The **destination resource must have a single-attribute
+  primary key** (composite → fail-closed value-free). Loading the relationship returns
+  the reachable **and authorized** destination records, deduped per source,
+  cardinality-aware.
 - **Edge writes landed in Slice 2** (see "Edge writes" below). Traversal also reads
   edges written out-of-band (host-app ingestion / raw `arcadic` Cypher).
 - **Traversal is fail-closed multitenant.** A blank tenant runs no query. `:context`
@@ -128,16 +132,28 @@ _An Ash DataLayer for ArcadeDB (native OpenCypher over HTTP)._
   through an out-of-tenant intermediate is **excluded**, not just the endpoints.
   Traversing between two `:attribute` resources with **different** discriminators
   fails closed (`:mixed_attribute`) — one tenant value cannot honor two dimensions.
-- **Traversal applies tenant scoping ONLY — not the related query's filters or Ash
-  policies.** Like the `ash_age` manual-relationship pattern it ports, traversal
-  returns all edge-reachable, tenant-scoped destinations and does **not** apply the
-  loaded relationship's `filter`/`sort`/`limit`, a caller-supplied query filter, or
-  the destination resource's **Ash read policies** (those ride Ash's `context.query`,
-  which the manual relationship does not consume). Multitenant isolation is enforced
-  (via the path predicate above), but authorization/field policies are **not** —
-  enforce non-tenant authorization via the graph structure, the tenant boundary, or a
-  post-load filter on the returned records. Policy-/filter-aware traversal is a
-  deliberate future-slice item, not a Slice-1 capability.
+- **Edge-property scoping is DEFAULT-ON for `:attribute`.** In addition to node
+  scoping, the path predicate also scopes **every edge** via
+  `ALL(r IN relationships(p) WHERE r.<attr> = $tenant)`. Library-written edges carry
+  the `<attr>` stamp (see "Edge writes"), so this is fail-closed: an out-of-band edge
+  **lacking** the stamp is *excluded* (never silently traversed into a cross-tenant
+  reachability leak). Opt out with **`scope_edges: false`** for graphs whose edges are
+  written out-of-band and rely on node-structure scoping only. `:context` traversal
+  needs no edge scoping (physical DB isolation).
+- **Traversal delegates filter / sort / limit / row-policy / field-policy to a
+  standard authorized read (Option B, spec §7.2 — resolves the Plan-4 CV1 carry).**
+  The traversal is a two-phase primitive: (1) a tenant-scoped reachability query
+  returns each source's reachable destination PKs (scoping the whole path — nodes +
+  edges); (2) a standard authorized `Ash.read` over those PKs, carrying the caller's
+  `actor` / `authorize?` / `tenant` / `domain` and the loaded relationship's
+  `context.query`, applies **row policy** (→ Cypher `WHERE`), **field policy**
+  (redaction), and the relationship/caller **filter + sort + limit** — all by Ash's
+  existing, tested read pipeline. Authorization is now enforced (a policy-denied
+  destination is dropped **even on the PK-only load** where Ash's post-load
+  short-circuits policy), and the tenant boundary is enforced **twice over** (the
+  path predicate + the read's `:attribute` filter / `:context` database), both
+  fail-closed. NOTE: a caller/relationship **`limit` applies over the UNION** of all
+  sources' reachable destinations, not per-source (a Slice-3+ lateral-join concern).
 
 ## Edge writes (Slice 2, Plan 1)
 

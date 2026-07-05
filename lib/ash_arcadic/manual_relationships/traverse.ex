@@ -22,7 +22,9 @@ defmodule AshArcadic.ManualRelationships.Traverse do
       dest-PK union, narrowing `context.query` (which already carries the relationship/caller
       filter + sort + limit + domain + tenant). Row policy, field policy (redaction), and the
       `:attribute` tenant filter / `:context` tenant DB are all delegated to Ash — this module
-      never decodes a destination vertex.
+      never decodes a destination vertex. NOTE: a caller/relationship `limit` applies over the
+      UNION of all sources' reachable destinations, not per-source (a Slice-3+ lateral-join
+      concern).
     * **Phase 3 (regroup).** Intersects each source's reachable dest PKs with the authorized
       record set, preserving read order (so sort/limit survive), deduped per source and
       cardinality-aware.
@@ -381,7 +383,7 @@ defmodule AshArcadic.ManualRelationships.Traverse do
   @doc false
   # Option B requires a single-attribute destination PK (the reachability RETURN is
   # `b.<pk> AS d`; the authorized read filters `pk in ^union`) — mirroring the edge-write
-  # dest-PK rule (spec §6.3/S2-9, edge_cypher.ex:32-38). A composite dest PK fails CLOSED
+  # dest-PK rule (spec §6.3/S2-9, edge_cypher.ex:30-38). A composite dest PK fails CLOSED
   # value-free (never a MatchError, never the PK values). This drops NO shipped capability:
   # Slice-1 never wired a composite-dest traversal relationship (every traverse support
   # resource has a single-attribute PK; the only composite-dest reference was the pure

@@ -95,6 +95,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   declared argument). Adds `Info.edges/1` and `:create_edge`/`:destroy_edge` telemetry
   spans (`properties?` added to the value-free allowlist). Plan 2 (traversal upgrade —
   `relationships(p)` edge scoping + the Option-B authorized read) is pending.
+- **Traversal upgrade (Slice 2, Plan 2 — spec §7).** Makes the bounded traversal
+  (`AshArcadic.ManualRelationships.Traverse`) edge- and authorization-correct.
+  (1) **`relationships(p)` edge-property scoping**, DEFAULT-ON for `:attribute`: the
+  path predicate now scopes every **edge** as well as every node
+  (`ALL(r IN relationships(p) WHERE r.<attr> = $tenant)`, probe E4) — an out-of-band
+  edge lacking the tenant stamp is *excluded* (fail-closed, not a cross-tenant
+  reachability leak); the new manual opt **`scope_edges: false`** opts out for
+  node-structure-only graphs. (2) **Option-B two-phase authorized read** (resolves the
+  Plan-4 CV1 carry): the traversal becomes a tenant-scoped reachability primitive that
+  returns destination PKs, then delegates all authorization/query concerns to a
+  standard authorized `Ash.read` over those PKs — applying **row policy** (→ Cypher
+  `WHERE`), **field policy** (redaction), and the relationship/caller **filter + sort +
+  limit** by Ash's own read pipeline. A policy-denied destination is now dropped **even
+  on the PK-only load**; the tenant boundary is enforced twice over (path predicate +
+  the read's `:attribute` filter / `:context` database), both fail-closed. Destinations
+  must have a single-attribute primary key (composite → fail-closed value-free). Adds
+  `{:simple_sat, "~> 0.1"}` (the SAT solver `Ash.Policy.Authorizer` requires). **Slice 2
+  is now feature-complete** (edge writes + traversal upgrade); closeout review pending.
 
 ### Fixed
 
