@@ -261,10 +261,18 @@ defmodule AshArcadic.DataLayer do
   end
 
   defp do_create(resource, changeset) do
+    props = changeset_to_properties(resource, changeset)
+
+    case encode_gate(resource, props, CreateFailed) do
+      {:error, _} = err -> err
+      :ok -> do_create(resource, changeset, props)
+    end
+  end
+
+  defp do_create(resource, changeset, props) do
     case write_conn(resource, changeset) do
       {:ok, conn} ->
         label = validated_label(resource)
-        props = changeset_to_properties(resource, changeset)
 
         case Arcadic.command(conn, "CREATE (n:#{label} $props) RETURN n", %{"props" => props}) do
           {:ok, [row]} ->
@@ -334,6 +342,19 @@ defmodule AshArcadic.DataLayer do
   end
 
   defp do_bulk_create(resource, entries, options) do
+    # Fail closed value-free (naming the attribute) if ANY row carries a
+    # non-JSON-encodable value — one poisoned row would otherwise raise
+    # Jason.EncodeError with the bytes in the message at the wire.
+    case first_encode_failure(entries) do
+      nil ->
+        run_bulk_create(resource, entries, options)
+
+      key ->
+        {:error, CreateFailed.exception(resource: resource, reason: encode_error_reason(key))}
+    end
+  end
+
+  defp run_bulk_create(resource, entries, options) do
     # Ash batches by tenant, so all changesets share one database — resolve off the
     # first, reusing the fail-closed nil-:context-tenant path.
     case bulk_conn(resource, entries) do
@@ -435,12 +456,22 @@ defmodule AshArcadic.DataLayer do
   end
 
   defp do_upsert(resource, changeset, _keys, identity_keys) do
+    props = changeset_to_properties(resource, changeset)
+    on_match = upsert_set_map(resource, changeset, identity_keys)
+
+    # Both maps ride the wire ($props for ON CREATE, $on_match for ON MATCH); props
+    # already carries the identity values too. Gate them together before any DB touch.
+    case encode_gate(resource, Map.merge(props, on_match), CreateFailed) do
+      {:error, _} = err -> err
+      :ok -> run_upsert(resource, changeset, identity_keys, props, on_match)
+    end
+  end
+
+  defp run_upsert(resource, changeset, identity_keys, props, on_match) do
     case write_conn(resource, changeset) do
       {:ok, conn} ->
         label = validated_label(resource)
         {match_pattern, match_params} = merge_identity(resource, changeset, identity_keys)
-        props = changeset_to_properties(resource, changeset)
-        on_match = upsert_set_map(resource, changeset, identity_keys)
 
         cypher =
           "MERGE (n:#{label} #{match_pattern}) " <>
@@ -550,10 +581,18 @@ defmodule AshArcadic.DataLayer do
   end
 
   defp do_update(resource, changeset) do
+    changed = changeset_to_properties(resource, changeset)
+
+    case encode_gate(resource, changed, UpdateFailed) do
+      {:error, _} = err -> err
+      :ok -> run_update(resource, changeset, changed)
+    end
+  end
+
+  defp run_update(resource, changeset, changed) do
     case write_conn(resource, changeset) do
       {:ok, conn} ->
         label = validated_label(resource)
-        changed = changeset_to_properties(resource, changeset)
         pk = pk_pairs(resource, changeset)
         {where_clause, match_params} = pk_match_clause(pk)
         params0 = Map.put(match_params, "set", changed)
@@ -756,6 +795,51 @@ defmodule AshArcadic.DataLayer do
     |> Map.new(fn {key, value} ->
       {Atom.to_string(key), Cast.serialize_value(value, Map.get(types, key))}
     end)
+  end
+
+  # Fail-closed pre-gate for the write surface. serialize_value/2 only base64s
+  # TOP-LEVEL binaries; a raw non-UTF8 binary nested inside a `:map`/`:list` value
+  # reaches the wire verbatim, where Req's JSON encoder raises `Jason.EncodeError`
+  # with the bytes in the message — a value leak (AGENTS.md Rule 4) AND an uncaught
+  # crash instead of a value-free {:error, _}. `encode_gate/3` catches it BEFORE any
+  # DB touch and returns a value-free error naming only the offending ATTRIBUTE.
+  # (Ported from the ash_age sibling's encode_check/first_encode_failure.)
+  defp encode_gate(resource, props, error_module) do
+    case encode_check(props) do
+      :ok ->
+        :ok
+
+      {:error, key} ->
+        {:error, error_module.exception(resource: resource, reason: encode_error_reason(key))}
+    end
+  end
+
+  # First property whose serialized value is not JSON-encodable, as `{:error, key}`
+  # (the attribute NAME — structural, safe to surface), or `:ok`.
+  defp encode_check(props) do
+    Enum.find_value(props, :ok, fn {key, value} ->
+      case Jason.encode(value) do
+        {:ok, _} -> nil
+        {:error, _} -> {:error, key}
+      end
+    end)
+  end
+
+  # First offending attribute name across a bulk batch's `{changeset, props}`
+  # entries, or nil when every row is encodable.
+  defp first_encode_failure(entries) do
+    Enum.find_value(entries, fn {_changeset, props} ->
+      case encode_check(props) do
+        {:error, key} -> key
+        :ok -> nil
+      end
+    end)
+  end
+
+  defp encode_error_reason(key) do
+    "attribute #{inspect(key)} is not JSON-encodable " <>
+      "(raw binary nested in a :map/:list value? encode it app-side, e.g. Base.encode64, " <>
+      "or use a :binary-typed attribute)"
   end
 
   defp validated_label(resource),
