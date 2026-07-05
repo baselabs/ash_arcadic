@@ -44,8 +44,81 @@ defmodule AshArcadic.Query do
     {%{query | params: Map.put(params, key, value)}, "$#{key}"}
   end
 
+  @doc """
+  Compiles the query to `{cypher, params}`. Emits
+  `MATCH (n:<label>) [WHERE …] RETURN n [ORDER BY …] [SKIP n] [LIMIT n]`.
+  `label` and every sort field are re-validated as identifiers here
+  (defense-in-depth — they feed the statement body; values ride `params`).
+  """
+  @spec to_cypher(t()) :: {String.t(), map()}
+  def to_cypher(%__MODULE__{} = query) do
+    label = AshArcadic.Identifier.validate!(query.label)
+    {where_parts, query} = build_where(query)
+
+    parts =
+      ["MATCH (n:#{label})"] ++
+        build_where_clause(where_parts) ++
+        ["RETURN n"] ++
+        build_order_by(query.sort) ++
+        build_skip(query.offset) ++
+        build_limit(query.limit)
+
+    {Enum.join(parts, " "), query.params}
+  end
+
   defp next_param_key(params, n) do
     key = "param#{n}"
     if Map.has_key?(params, key), do: next_param_key(params, n + 1), else: key
+  end
+
+  defp build_where(query) do
+    {expression_clauses, query} =
+      if query.expression do
+        case AshArcadic.Query.Filter.translate(query.expression, query) do
+          {:ok, query, ""} -> {[], query}
+          {:ok, query, clause} -> {[clause], query}
+          # FAIL CLOSED: a rejectable expression must NEVER silently drop its WHERE
+          # clause → an unscoped all-rows read (fail-open scoping bug, AGENTS.md Rule 2).
+          # Raise the value-free UnsupportedFilter — consistent with to_cypher's
+          # invalid-label/offset/limit raises. Latent today (runtime scoping goes
+          # filter/3 → query.filters, fail-closed; :expression is never written in lib/),
+          # but this closes the trap for any future lazy-expression wiring.
+          {:error, err} -> raise err
+        end
+      else
+        {[], query}
+      end
+
+    {query.filters ++ expression_clauses, query}
+  end
+
+  defp build_where_clause([]), do: []
+  defp build_where_clause(parts), do: ["WHERE " <> Enum.join(parts, " AND ")]
+
+  defp build_order_by([]), do: []
+
+  defp build_order_by(sort_clauses) do
+    order =
+      Enum.map_join(sort_clauses, ", ", fn {field, direction} ->
+        field = AshArcadic.Identifier.validate!(field)
+        dir = if direction == :desc, do: "DESC", else: "ASC"
+        "n.#{field} #{dir}"
+      end)
+
+    ["ORDER BY " <> order]
+  end
+
+  defp build_skip(nil), do: []
+  defp build_skip(offset) when is_integer(offset) and offset >= 0, do: ["SKIP #{offset}"]
+
+  defp build_skip(offset) do
+    raise ArgumentError, "invalid offset: #{inspect(offset)} (expected a non-negative integer)"
+  end
+
+  defp build_limit(nil), do: []
+  defp build_limit(limit) when is_integer(limit) and limit >= 0, do: ["LIMIT #{limit}"]
+
+  defp build_limit(limit) do
+    raise ArgumentError, "invalid limit: #{inspect(limit)} (expected a non-negative integer)"
   end
 end
