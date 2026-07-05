@@ -21,6 +21,7 @@ defmodule AshArcadic.DataLayer do
 
   alias AshArcadic.Cast
   alias AshArcadic.DataLayer.Info
+  alias AshArcadic.Errors.CreateFailed
   alias AshArcadic.Errors.QueryFailed
   alias AshArcadic.Query.Filter
   alias AshArcadic.Telemetry
@@ -233,6 +234,72 @@ defmodule AshArcadic.DataLayer do
 
   defp row_count({:ok, records}), do: length(records)
   defp row_count(_), do: 0
+
+  @impl true
+  def create(resource, changeset) do
+    Telemetry.span(:create, %{resource: resource, multitenancy: strategy(resource)}, fn ->
+      result = do_create(resource, changeset)
+      {result, %{tenant?: tenant?(changeset), result: Telemetry.result_tag(result)}}
+    end)
+  end
+
+  defp do_create(resource, changeset) do
+    case write_conn(resource, changeset) do
+      {:ok, conn} ->
+        label = validated_label(resource)
+        props = changeset_to_properties(resource, changeset)
+
+        case Arcadic.command(conn, "CREATE (n:#{label} $props) RETURN n", %{"props" => props}) do
+          {:ok, [row]} ->
+            {:ok,
+             struct(
+               resource,
+               Cast.row_to_attrs(
+                 row,
+                 Info.attribute_map(resource),
+                 Info.attribute_types(resource)
+               )
+             )}
+
+          {:ok, rows} ->
+            {:error,
+             CreateFailed.exception(
+               resource: resource,
+               reason: "create returned #{length(rows)} rows (expected 1)"
+             )}
+
+          {:error, error} ->
+            {:error, CreateFailed.exception(resource: resource, reason: redact_db_error(error))}
+        end
+
+      {:error, :tenant_required} ->
+        {:error,
+         CreateFailed.exception(
+           resource: resource,
+           reason: "multitenancy tenant required for :context write"
+         )}
+    end
+  end
+
+  # Maps changeset.attributes (minus `skip`) to a JSON-safe string-keyed property
+  # map, each value serialized by attribute type. Passed as ONE `$props` map param
+  # (ArcadeDB accepts CREATE (n:L $props) — the AGE per-key-SET divergence). Only the
+  # identifier-validated label is interpolated; every VALUE rides `$props` bound.
+  defp changeset_to_properties(resource, changeset) do
+    skip = Info.skip(resource)
+    types = Info.attribute_types(resource)
+
+    changeset.attributes
+    |> Enum.reject(fn {key, _value} -> key in skip end)
+    |> Map.new(fn {key, value} ->
+      {Atom.to_string(key), Cast.serialize_value(value, Map.get(types, key))}
+    end)
+  end
+
+  defp validated_label(resource),
+    do: resource |> Info.label() |> AshArcadic.Identifier.validate!()
+
+  defp tenant?(changeset), do: not is_nil(Map.get(changeset, :to_tenant))
 
   @doc false
   # Resolves the ArcadeDB database name for a WRITE. Gated on the multitenancy
