@@ -19,6 +19,7 @@ defmodule AshArcadic.DataLayer do
   `:multitenancy`; CRUD/query/upsert/transact/traversal land in later plans.
   """
 
+  alias Ash.Actions.Helpers.Bulk, as: BulkHelpers
   alias Ash.Error.Changes.StaleRecord
   alias AshArcadic.Cast
   alias AshArcadic.DataLayer.Info
@@ -27,6 +28,7 @@ defmodule AshArcadic.DataLayer do
   alias AshArcadic.Errors.UpdateFailed
   alias AshArcadic.Query.Filter
   alias AshArcadic.Telemetry
+  alias Ecto.Schema.Metadata
 
   @arcade %Spark.Dsl.Section{
     name: :arcade,
@@ -281,6 +283,99 @@ defmodule AshArcadic.DataLayer do
            reason: "multitenancy tenant required for :context write"
          )}
     end
+  end
+
+  @impl true
+  def bulk_create(resource, changesets, options) do
+    entries =
+      Enum.map(changesets, fn changeset ->
+        {changeset, changeset_to_properties(resource, changeset)}
+      end)
+
+    Telemetry.span(:bulk_create, %{resource: resource, multitenancy: strategy(resource)}, fn ->
+      result = do_bulk_create(resource, entries, options)
+
+      {result,
+       %{
+         batch_size: length(entries),
+         tenant?: bulk_tenant?(entries),
+         result: Telemetry.result_tag(result)
+       }}
+    end)
+  end
+
+  # An empty batch writes nothing (no scoping surface) → :ok without touching the DB.
+  defp do_bulk_create(_resource, [], _options), do: :ok
+
+  defp do_bulk_create(resource, entries, options) do
+    # Ash batches by tenant, so all changesets share one database — resolve off the
+    # first, reusing the fail-closed nil-:context-tenant path.
+    case bulk_conn(resource, entries) do
+      {:ok, conn} ->
+        label = validated_label(resource)
+        rows = Enum.map(entries, fn {_changeset, props} -> props end)
+        return_records? = Map.get(options, :return_records?, false)
+
+        conn
+        |> Arcadic.command("UNWIND $rows AS row CREATE (n:#{label}) SET n += row RETURN n", %{
+          "rows" => rows
+        })
+        |> decode_bulk_result(resource, entries, return_records?)
+
+      {:error, :tenant_required} ->
+        {:error,
+         CreateFailed.exception(
+           resource: resource,
+           reason: "multitenancy tenant required for :context write"
+         )}
+    end
+  end
+
+  # `return_records? == false` short-circuits to :ok — Ash discards the rows.
+  defp decode_bulk_result({:ok, _result_rows}, _resource, _entries, false), do: :ok
+
+  # CREATE per UNWIND row is 1:1; a mismatch would misalign the record→changeset
+  # stamping — fail the batch LOUD, never zip-truncate.
+  defp decode_bulk_result({:ok, result_rows}, resource, entries, true)
+       when length(result_rows) != length(entries) do
+    {:error,
+     CreateFailed.exception(
+       resource: resource,
+       reason:
+         "bulk create returned #{length(result_rows)} rows for " <>
+           "#{length(entries)} changesets (row-count mismatch)"
+     )}
+  end
+
+  defp decode_bulk_result({:ok, result_rows}, resource, entries, true) do
+    {:ok, decode_bulk_records(resource, entries, result_rows)}
+  end
+
+  defp decode_bulk_result({:error, error}, resource, _entries, _return_records?) do
+    {:error, CreateFailed.exception(resource: resource, reason: redact_db_error(error))}
+  end
+
+  defp bulk_conn(resource, [{changeset, _props} | _]), do: write_conn(resource, changeset)
+
+  defp bulk_tenant?([]), do: false
+  defp bulk_tenant?([{changeset, _props} | _]), do: tenant?(changeset)
+
+  # Decodes each returned flat vertex and stamps it with its originating changeset's
+  # bulk metadata. Probe: UNWIND preserves input order, so the Nth returned vertex
+  # corresponds to the Nth entry; Ash reassembles cross-batch order via
+  # `bulk_create_index`.
+  defp decode_bulk_records(resource, entries, result_rows) do
+    attribute_map = Info.attribute_map(resource)
+    attribute_types = Info.attribute_types(resource)
+
+    entries
+    |> Enum.zip(result_rows)
+    |> Enum.map(fn {{changeset, _props}, row} ->
+      record = struct(resource, Cast.row_to_attrs(row, attribute_map, attribute_types))
+
+      %{record | __meta__: %Metadata{state: :loaded, schema: resource}}
+      |> BulkHelpers.put_metadata(changeset)
+    end)
   end
 
   @impl true
