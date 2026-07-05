@@ -50,4 +50,28 @@ defmodule AshArcadic.ManualRelationships.Traverse do
 
     {edge_label, direction, min_depth, max_depth}
   end
+
+  @doc false
+  # Pure per-node-scope decision from both endpoints' strategies/attrs:
+  #   :none                      — no :attribute endpoint; no scoping.
+  #   {:ok, attr}                — scope every path node by `attr` ($tenant).
+  #   {:error, :mixed_attribute} — both endpoints :attribute with DIFFERENT attrs;
+  #     one $tenant cannot honor two dimensions → fail closed (D21). Same-attr
+  #     (the self-referential norm) scopes normally. Keying on BOTH endpoints (not
+  #     dest alone) scopes a source-:attribute / dest-non-:attribute pair.
+  def scope_decision(src_strategy, src_attr, dest_strategy, dest_attr) do
+    cond do
+      src_strategy == :attribute and dest_strategy == :attribute and src_attr != dest_attr ->
+        {:error, :mixed_attribute}
+
+      dest_strategy == :attribute ->
+        {:ok, dest_attr}
+
+      src_strategy == :attribute ->
+        {:ok, src_attr}
+
+      true ->
+        :none
+    end
+  end
 end

@@ -60,4 +60,29 @@ defmodule AshArcadic.ManualRelationships.TraverseTest do
       refute err.message =~ "bad-label"
     end
   end
+
+  describe "scope_decision/4" do
+    test ":none when neither endpoint is :attribute" do
+      assert Traverse.scope_decision(:context, nil, :context, nil) == :none
+      assert Traverse.scope_decision(nil, nil, nil, nil) == :none
+    end
+
+    test "scopes by dest attr when dest is :attribute" do
+      assert Traverse.scope_decision(:context, nil, :attribute, "org_id") == {:ok, "org_id"}
+    end
+
+    test "scopes by source attr when only source is :attribute (closes the source-attr hole)" do
+      assert Traverse.scope_decision(:attribute, "org_id", :context, nil) == {:ok, "org_id"}
+    end
+
+    test "same discriminator on both endpoints scopes normally (self-referential norm)" do
+      assert Traverse.scope_decision(:attribute, "org_id", :attribute, "org_id") ==
+               {:ok, "org_id"}
+    end
+
+    test "TRIPWIRE: both :attribute with DIFFERENT discriminators fails closed" do
+      assert Traverse.scope_decision(:attribute, "org_id", :attribute, "team_id") ==
+               {:error, :mixed_attribute}
+    end
+  end
 end
