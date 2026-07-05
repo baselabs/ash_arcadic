@@ -320,6 +320,19 @@ defmodule AshArcadic.DataLayer do
   # An empty batch writes nothing (no scoping surface) → :ok without touching the DB.
   defp do_bulk_create(_resource, [], _options), do: :ok
 
+  # Bulk UPSERT is unsupported (native MERGE is single-row; documented non-goal).
+  # Ash routes a bulk `upsert? true` action here with `options.upsert? == true`; the
+  # normal CREATE path would silently emit `UNWIND ... CREATE` and produce DUPLICATE
+  # rows for what the caller asked to be idempotent. Fail CLOSED — reject before any
+  # DB touch — rather than fail open against the upsert contract.
+  defp do_bulk_create(resource, _entries, %{upsert?: true}) do
+    {:error,
+     CreateFailed.exception(
+       resource: resource,
+       reason: "bulk upsert is not supported; use a single-row upsert action"
+     )}
+  end
+
   defp do_bulk_create(resource, entries, options) do
     # Ash batches by tenant, so all changesets share one database — resolve off the
     # first, reusing the fail-closed nil-:context-tenant path.
