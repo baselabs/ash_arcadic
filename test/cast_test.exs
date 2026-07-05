@@ -59,4 +59,27 @@ defmodule AshArcadic.CastTest do
     types = %{id: {Ash.Type.String, []}, born: {Ash.Type.Date, []}}
     assert Cast.row_to_attrs(row, attr_map, types) == %{id: "p1", born: ~D[2026-07-04]}
   end
+
+  test "serialize/load round-trips :time via ISO8601" do
+    assert Cast.serialize_value(~T[12:30:00], {Ash.Type.Time, []}) == "12:30:00"
+    assert Cast.load_value("12:30:00", {Ash.Type.Time, []}) == ~T[12:30:00]
+  end
+
+  test "serialize/load round-trips :decimal as an exact string (no precision loss)" do
+    d = Decimal.new("12.340")
+    assert Cast.serialize_value(d, {Ash.Type.Decimal, []}) == "12.340"
+    assert Cast.load_value("12.340", {Ash.Type.Decimal, []}) == d
+  end
+
+  test "load_value passes an undecodable :time/:decimal string through unchanged" do
+    assert Cast.load_value("not-a-time", {Ash.Type.Time, []}) == "not-a-time"
+    assert Cast.load_value("not-a-decimal", {Ash.Type.Decimal, []}) == "not-a-decimal"
+  end
+
+  test "range_comparable? is false for binary and decimal storage, true otherwise" do
+    refute Cast.range_comparable?(Ash.Type.Binary, [])
+    refute Cast.range_comparable?(Ash.Type.Decimal, [])
+    assert Cast.range_comparable?(Ash.Type.Integer, [])
+    assert Cast.range_comparable?(Ash.Type.Date, [])
+  end
 end

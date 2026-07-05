@@ -16,6 +16,8 @@ defmodule AshArcadic.Cast do
   def serialize_value(%DateTime{} = dt, _spec), do: DateTime.to_iso8601(dt)
   def serialize_value(%NaiveDateTime{} = ndt, _spec), do: NaiveDateTime.to_iso8601(ndt)
   def serialize_value(%Date{} = d, _spec), do: Date.to_iso8601(d)
+  def serialize_value(%Time{} = t, _spec), do: Time.to_iso8601(t)
+  def serialize_value(%Decimal{} = d, _spec), do: Decimal.to_string(d, :normal)
 
   def serialize_value(value, spec) when is_binary(value) do
     if binary_storage_spec?(spec), do: Base.encode64(value), else: value
@@ -30,6 +32,8 @@ defmodule AshArcadic.Cast do
       :date -> decode_date(value)
       :utc_datetime -> decode_utc_datetime(value)
       :naive_datetime -> decode_naive_datetime(value)
+      :time -> decode_time(value)
+      :decimal -> decode_decimal(value)
       :binary -> decode_binary(value)
       :other -> value
     end
@@ -40,6 +44,19 @@ defmodule AshArcadic.Cast do
   @doc "Whether the attribute's storage type is `:binary` (drives sensitive verifier + sort/range rejection)."
   @spec binary_storage?(Ash.Type.t(), keyword()) :: boolean()
   def binary_storage?(type, constraints), do: Ash.Type.storage_type(type, constraints) == :binary
+
+  @doc """
+  Whether an attribute's storage type supports a correct Cypher range comparison
+  (`gt/lt/gte/lte`). False for `:binary` (base64 is not byte-order-preserving) and
+  `:decimal` (D27 — stored as an exact string; ArcadeDB compares strings
+  lexicographically, so a numeric range would be silently wrong). Drives the
+  filter push-down guard: a range op on a non-comparable attr fails LOUD as
+  `UnsupportedFilter` rather than returning wrong rows.
+  """
+  @spec range_comparable?(Ash.Type.t(), keyword()) :: boolean()
+  def range_comparable?(type, constraints) do
+    Ash.Type.storage_type(type, constraints) not in [:binary, :decimal]
+  end
 
   @doc """
   Builds resource attributes from a flat ArcadeDB row map. Routes STRICTLY by
@@ -79,6 +96,23 @@ defmodule AshArcadic.Cast do
     end
   end
 
+  defp decode_time(value) do
+    case Time.from_iso8601(value) do
+      {:ok, time} -> time
+      _ -> value
+    end
+  end
+
+  # Decimal.parse/1 returns {Decimal.t(), remainder} | :error — decode only a
+  # fully-consumed decimal string; anything else passes through unchanged (a
+  # non-decimal string must never raise from Decimal.new/1).
+  defp decode_decimal(value) do
+    case Decimal.parse(value) do
+      {decimal, ""} -> decimal
+      _ -> value
+    end
+  end
+
   defp decode_binary(value) do
     case Base.decode64(value) do
       {:ok, decoded} -> decoded
@@ -105,6 +139,8 @@ defmodule AshArcadic.Cast do
   defp classify(:utc_datetime_usec), do: :utc_datetime
   defp classify(:naive_datetime), do: :naive_datetime
   defp classify(:naive_datetime_usec), do: :naive_datetime
+  defp classify(:time), do: :time
+  defp classify(:decimal), do: :decimal
   defp classify(:binary), do: :binary
   defp classify(_other), do: :other
 
