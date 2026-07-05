@@ -14,6 +14,8 @@ defmodule AshArcadic.Test.Basic do
     attribute :name, :string, public?: true
     attribute :secret, :binary, public?: true
     attribute :computed, :string, public?: false
+    attribute :age, :integer, public?: true
+    attribute :amount, :decimal, public?: true
   end
 
   actions do

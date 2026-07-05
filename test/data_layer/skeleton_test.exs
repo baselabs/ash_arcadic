@@ -16,7 +16,9 @@ defmodule AshArcadic.DataLayer.SkeletonTest do
     assert Info.attribute_map(AshArcadic.Test.Basic) == %{
              id: "id",
              name: "name",
-             secret: "secret"
+             secret: "secret",
+             age: "age",
+             amount: "amount"
            }
 
     refute Map.has_key?(Info.attribute_map(AshArcadic.Test.Basic), :computed)
@@ -33,9 +35,9 @@ defmodule AshArcadic.DataLayer.SkeletonTest do
            } = q
   end
 
-  test "can?/2: multitenancy supported; execution features off until later plans" do
+  test "can?/2: read + multitenancy supported; transact off until Plan 3" do
     assert AshArcadic.DataLayer.can?(AshArcadic.Test.Basic, :multitenancy)
-    refute AshArcadic.DataLayer.can?(AshArcadic.Test.Basic, :read)
+    assert AshArcadic.DataLayer.can?(AshArcadic.Test.Basic, :read)
     refute AshArcadic.DataLayer.can?(AshArcadic.Test.Basic, :transact)
   end
 end

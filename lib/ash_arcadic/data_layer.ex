@@ -74,13 +74,48 @@ defmodule AshArcadic.DataLayer do
       AshArcadic.DataLayer.Verifiers.ValidateMultitenancyAttr
     ]
 
-  # === Capability declarations (grow per plan) ===
-  # Plan 1 advertises only :multitenancy (required for a :context resource to
-  # compile). Read/create/update/destroy/upsert/bulk_create/filter/sort/limit/
-  # offset/transact/composite_primary_key/changeset_filter land with their
-  # callbacks in Plans 2–4, each flipping its clause ABOVE this catch-all.
+  # === Capability matrix (read + write + query-building) ===
+  # :transact stays FALSE — Plan 3 owns the session callbacks and flips it.
   @impl true
+  def can?(_, :read), do: true
+  def can?(_, :create), do: true
+  def can?(_, :update), do: true
+  def can?(_, :destroy), do: true
+  def can?(_, :upsert), do: true
+  def can?(_, :bulk_create), do: true
+  def can?(_, :filter), do: true
+  def can?(_, :limit), do: true
+  def can?(_, :offset), do: true
+  def can?(_, :boolean_filter), do: true
+  def can?(_, :nested_expressions), do: true
   def can?(_, :multitenancy), do: true
+  def can?(_, :composite_primary_key), do: true
+  def can?(_, :changeset_filter), do: true
+  # Ash asks {:sort, Ash.Type.storage_type(type)}. Binary is base64 (not
+  # byte-order-preserving); :decimal is an exact string (lexicographic) — sorting
+  # either returns a silently wrong order, so reject → Ash.Error.Query.UnsortableField.
+  def can?(_, {:sort, :binary}), do: false
+  def can?(_, {:sort, :decimal}), do: false
+  def can?(_, {:sort, _}), do: true
+  # Ash 3.29 authorizes filters per predicate node via {:filter_expr, <struct>}
+  # (deps/ash/lib/ash/filter/filter.ex:3532). {:filter_operator, _} is not a
+  # current capability query (absent from the feature() type), so it is omitted.
+  def can?(_, {:filter_expr, %Ash.Query.Operator.Eq{}}), do: true
+  def can?(_, {:filter_expr, %Ash.Query.Operator.NotEq{}}), do: true
+  def can?(_, {:filter_expr, %Ash.Query.Operator.In{}}), do: true
+  def can?(_, {:filter_expr, %Ash.Query.Operator.IsNil{}}), do: true
+  def can?(_, {:filter_expr, %Ash.Query.Operator.GreaterThan{}}), do: true
+  def can?(_, {:filter_expr, %Ash.Query.Operator.LessThan{}}), do: true
+  def can?(_, {:filter_expr, %Ash.Query.Operator.GreaterThanOrEqual{}}), do: true
+  def can?(_, {:filter_expr, %Ash.Query.Operator.LessThanOrEqual{}}), do: true
+  def can?(_, {:filter_expr, %Ash.Query.Function.Contains{}}), do: true
+  def can?(_, {:filter_expr, %Ash.Query.Function.StringStartsWith{}}), do: true
+  def can?(_, {:filter_expr, %Ash.Query.Function.StringEndsWith{}}), do: true
+  def can?(_, {:filter_expr, %Ash.Query.BooleanExpression{}}), do: true
+  def can?(_, {:filter_expr, %Ash.Query.Not{}}), do: true
+  def can?(_, {:filter_expr, _}), do: false
+  def can?(_, {:lateral_join, _}), do: false
+  def can?(_, {:aggregate, _}), do: false
   def can?(_, _), do: false
 
   @impl true
