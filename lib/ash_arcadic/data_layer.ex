@@ -210,7 +210,8 @@ defmodule AshArcadic.DataLayer do
        %{
          row_count: row_count(result),
          result: Telemetry.result_tag(result),
-         tenant?: not is_nil(query.tenant)
+         tenant?: not is_nil(query.tenant),
+         in_transaction?: AshArcadic.Transaction.in_transaction?()
        }}
     end)
   end
@@ -257,7 +258,13 @@ defmodule AshArcadic.DataLayer do
   def create(resource, changeset) do
     Telemetry.span(:create, %{resource: resource, multitenancy: strategy(resource)}, fn ->
       result = do_create(resource, changeset)
-      {result, %{tenant?: tenant?(changeset), result: Telemetry.result_tag(result)}}
+
+      {result,
+       %{
+         tenant?: tenant?(changeset),
+         result: Telemetry.result_tag(result),
+         in_transaction?: AshArcadic.Transaction.in_transaction?()
+       }}
     end)
   end
 
@@ -321,7 +328,8 @@ defmodule AshArcadic.DataLayer do
        %{
          batch_size: length(entries),
          tenant?: bulk_tenant?(entries),
-         result: Telemetry.result_tag(result)
+         result: Telemetry.result_tag(result),
+         in_transaction?: AshArcadic.Transaction.in_transaction?()
        }}
     end)
   end
@@ -430,7 +438,13 @@ defmodule AshArcadic.DataLayer do
   def upsert(resource, changeset, keys) do
     Telemetry.span(:upsert, %{resource: resource, multitenancy: strategy(resource)}, fn ->
       result = do_upsert(resource, changeset, keys)
-      {result, %{tenant?: tenant?(changeset), result: Telemetry.result_tag(result)}}
+
+      {result,
+       %{
+         tenant?: tenant?(changeset),
+         result: Telemetry.result_tag(result),
+         in_transaction?: AshArcadic.Transaction.in_transaction?()
+       }}
     end)
   end
 
@@ -576,7 +590,8 @@ defmodule AshArcadic.DataLayer do
        %{
          tenant?: tenant?(changeset),
          stale?: stale?(result),
-         result: Telemetry.result_tag(result)
+         result: Telemetry.result_tag(result),
+         in_transaction?: AshArcadic.Transaction.in_transaction?()
        }}
     end)
   end
@@ -634,7 +649,8 @@ defmodule AshArcadic.DataLayer do
        %{
          tenant?: tenant?(changeset),
          stale?: stale?(result),
-         result: Telemetry.result_tag(result)
+         result: Telemetry.result_tag(result),
+         in_transaction?: AshArcadic.Transaction.in_transaction?()
        }}
     end)
   end

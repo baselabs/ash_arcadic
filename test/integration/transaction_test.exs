@@ -94,4 +94,22 @@ defmodule AshArcadic.Integration.TransactionTest do
     assert inside?
     refute DL.in_transaction?(CrudPerson)
   end
+
+  describe "per-op spans carry in_transaction?" do
+    test "a create reports in_transaction? false outside and true inside a transaction" do
+      ref = :telemetry_test.attach_event_handlers(self(), [[:ash_arcadic, :create, :stop]])
+      on_exit(fn -> :telemetry.detach(ref) end)
+
+      {:ok, _} = create_person("io-out", "A")
+      assert_received {[:ash_arcadic, :create, :stop], ^ref, _measure, %{in_transaction?: false}}
+
+      {:ok, :ok} =
+        DL.transaction(CrudPerson, fn ->
+          {:ok, _} = create_person("io-in", "B")
+          :ok
+        end)
+
+      assert_received {[:ash_arcadic, :create, :stop], ^ref, _measure, %{in_transaction?: true}}
+    end
+  end
 end
