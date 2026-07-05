@@ -4,19 +4,36 @@ defmodule AshArcadic.ManualRelationships.TraverseTest do
   alias AshArcadic.ManualRelationships.Traverse
 
   describe "validate_opts!/1" do
-    test "defaults direction :outgoing, min_depth 1; returns {edge, dir, min, max}" do
-      assert {:PARENT_OF, :outgoing, 1, 3} =
+    test "defaults direction :outgoing, min_depth 1; returns {edge, dir, min, max, scope_edges?}" do
+      assert {:PARENT_OF, :outgoing, 1, 3, true} =
                Traverse.validate_opts!(edge_label: :PARENT_OF, max_depth: 3)
     end
 
     test "honors explicit direction + min_depth" do
-      assert {:KNOWS, :incoming, 2, 4} =
+      assert {:KNOWS, :incoming, 2, 4, true} =
                Traverse.validate_opts!(
                  edge_label: :KNOWS,
                  direction: :incoming,
                  min_depth: 2,
                  max_depth: 4
                )
+    end
+
+    test "honors explicit scope_edges: false (the documented opt-out)" do
+      assert {:KNOWS, :incoming, 2, 4, false} =
+               Traverse.validate_opts!(
+                 edge_label: :KNOWS,
+                 direction: :incoming,
+                 min_depth: 2,
+                 max_depth: 4,
+                 scope_edges: false
+               )
+    end
+
+    test "raises value-free on a non-boolean scope_edges" do
+      assert_raise ArgumentError, ~r/scope_edges must be a boolean/, fn ->
+        Traverse.validate_opts!(edge_label: :E, max_depth: 2, scope_edges: :nope)
+      end
     end
 
     test "raises value-free when :edge_label missing" do

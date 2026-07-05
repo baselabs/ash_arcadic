@@ -40,7 +40,7 @@ defmodule AshArcadic.ManualRelationships.Traverse do
     source = context.relationship.source
     dest = context.relationship.destination
     card = context.relationship.cardinality
-    {_edge, direction, _min, max_depth} = opts_tuple = validate_opts!(opts)
+    {_edge, direction, _min, max_depth, _scope_edges?} = opts_tuple = validate_opts!(opts)
 
     Telemetry.span(
       :traverse,
@@ -60,7 +60,9 @@ defmodule AshArcadic.ManualRelationships.Traverse do
 
   @doc false
   # Validates the manual opts. Raises a value-free ArgumentError on any bad value
-  # (config/programmer error). Returns {edge_label_atom, direction, min_depth, max_depth}.
+  # (config/programmer error). Returns {edge_label, direction, min_depth, max_depth,
+  # scope_edges?} (scope_edges? default true — the `relationships(p)` opt-out is
+  # `scope_edges: false`; used by build_traverse for :attribute paths only).
   def validate_opts!(opts) do
     edge_label =
       Keyword.get(opts, :edge_label) ||
@@ -86,7 +88,13 @@ defmodule AshArcadic.ManualRelationships.Traverse do
             "traverse :min_depth must be an integer with 1 <= min_depth <= max_depth"
     end
 
-    {edge_label, direction, min_depth, max_depth}
+    scope_edges? = Keyword.get(opts, :scope_edges, true)
+
+    unless is_boolean(scope_edges?) do
+      raise ArgumentError, "traverse :scope_edges must be a boolean"
+    end
+
+    {edge_label, direction, min_depth, max_depth, scope_edges?}
   end
 
   @doc false
@@ -219,7 +227,7 @@ defmodule AshArcadic.ManualRelationships.Traverse do
          source,
          dest,
          card,
-         {edge_label, direction, min_depth, max_depth}
+         {edge_label, direction, min_depth, max_depth, _scope_edges?}
        ) do
     with {:ok, database} <- resolve_database(source, context.tenant),
          {:ok, tenant_attr, tenant} <- resolve_tenant(source, dest, context.tenant),
