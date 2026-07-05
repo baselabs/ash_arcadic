@@ -443,6 +443,73 @@ defmodule AshArcadic.DataLayer do
     end
   end
 
+  @impl true
+  def destroy(resource, changeset) do
+    Telemetry.span(:destroy, %{resource: resource, multitenancy: strategy(resource)}, fn ->
+      result = do_destroy(resource, changeset)
+
+      {result,
+       %{
+         tenant?: tenant?(changeset),
+         stale?: stale?(result),
+         result: Telemetry.result_tag(result)
+       }}
+    end)
+  end
+
+  defp do_destroy(resource, changeset) do
+    case write_conn(resource, changeset) do
+      {:ok, conn} ->
+        label = validated_label(resource)
+        pk = pk_pairs(resource, changeset)
+        {where_clause, match_params} = pk_match_clause(pk)
+
+        case changeset_where(changeset, where_clause, match_params) do
+          {:ok, full_where, params} ->
+            # RETURN n makes ArcadeDB echo each deleted node ({"n":"<deleted>"}) so
+            # a real delete is distinguishable from a no-match — an empty result
+            # fails CLOSED as StaleRecord (a scoping-denied delete must not report
+            # success). Count only; never row_to_attrs the "<deleted>" shape.
+            cypher = "MATCH (n:#{label}) WHERE #{full_where} DETACH DELETE n RETURN n"
+
+            decode_destroy_result(
+              resource,
+              redacted_filter(pk),
+              Arcadic.command(conn, cypher, params)
+            )
+
+          {:error, _} ->
+            {:error,
+             QueryFailed.exception(
+               query: "ArcadeDB delete query",
+               reason: "unsupported scoping filter on destroy"
+             )}
+        end
+
+      {:error, :tenant_required} ->
+        {:error,
+         QueryFailed.exception(
+           query: "ArcadeDB delete query",
+           reason: "multitenancy tenant required for :context write"
+         )}
+    end
+  end
+
+  # Count-only decode: {"n":"<deleted>"} is a nested STRING echo, not a vertex map —
+  # never Cast.row_to_attrs it. [_|_] means at least one node was deleted → :ok; []
+  # means the WHERE matched nothing → fail CLOSED as StaleRecord (an already-gone or
+  # scoping-denied delete must NOT report success).
+  defp decode_destroy_result(_resource, _filter, {:ok, [_ | _]}), do: :ok
+
+  defp decode_destroy_result(resource, filter, {:ok, []}) do
+    {:error, StaleRecord.exception(resource: resource, filter: filter)}
+  end
+
+  defp decode_destroy_result(_resource, _filter, {:error, error}) do
+    {:error,
+     QueryFailed.exception(query: "ArcadeDB delete query", reason: redact_db_error(error))}
+  end
+
   # [{pk_field, serialized_original_value}] — the identity of the row being
   # mutated. get_data/2 (NOT get_attribute/2): a writable PK in `accept` makes
   # get_attribute return the PENDING value, so the WHERE would match zero rows
