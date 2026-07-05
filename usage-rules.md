@@ -84,7 +84,12 @@ _An Ash DataLayer for ArcadeDB (native OpenCypher over HTTP)._
   (`:cross_database_transaction`) — an atomic write spanning two tenants' databases
   (`:context` multitenancy) is impossible by construction, never a silent split-brain
   write on a fresh connection. A cross-database *read* inside a transaction is allowed
-  and runs on its own connection (a read is not an atomicity hazard).
+  and runs on its own connection (a read is not an atomicity hazard). The guard blocks
+  the **offending write** (returns the `:cross_database_transaction` error); rolling back
+  the transaction's **prior** in-session writes then depends on that error being
+  propagated. Ash does this for you — a data-layer error aborts the action and triggers
+  rollback — so a normal Ash action stays atomic. If you drive `transaction/4` directly
+  and *swallow* the error, the prior writes commit; propagate it (or call `rollback/2`).
 - **Read-own-writes on the same database.** The session opens lazily on the **first
   write**; a read issued after that write (on the transaction's database) reuses the
   session and therefore **sees the transaction's own uncommitted writes**. A read

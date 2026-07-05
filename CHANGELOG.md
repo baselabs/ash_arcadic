@@ -56,7 +56,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Plan-2 CV3/CV4 write-then-error-without-rollback residuals for `transaction? true`
   actions** — a duplicate-PK multi-row update (mutate-then-`UpdateFailed`) now rolls
   the multi-`SET` back atomically instead of leaving the mutation committed.
-  Traversal lands in Plan 4.
+  A rollback that itself fails or raises during unwind is logged value-free (a static
+  line, never the transport error's database-bearing message) and never masks the
+  original error. Traversal lands in Plan 4.
 
 ### Fixed
 
