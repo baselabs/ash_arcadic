@@ -20,6 +20,7 @@ defmodule AshArcadic.DataLayer do
   """
 
   alias AshArcadic.DataLayer.Info
+  alias AshArcadic.Query.Filter
 
   @arcade %Spark.Dsl.Section{
     name: :arcade,
@@ -127,6 +128,51 @@ defmodule AshArcadic.DataLayer do
       label: Info.label(resource)
     }
   end
+
+  @impl true
+  def set_tenant(resource, %AshArcadic.Query{} = query, tenant) do
+    # Fires only for :context (Ash guards set_tenant by strategy). database_name/2
+    # raises value-free on a nil/blank/too-long/non-String.Chars identifier — a bad
+    # tenant NEVER resolves to a base database (fail-closed isolation).
+    {:ok,
+     %{query | database: AshArcadic.Multitenancy.database_name(resource, tenant), tenant: tenant}}
+  end
+
+  @impl true
+  def set_context(_resource, %AshArcadic.Query{} = query, context) do
+    # Captures the raw query tenant for ALL strategies (Ash sets private.tenant even
+    # for :attribute, where set_tenant never fires). Pure annotation — feeds the
+    # `tenant?` telemetry tag; no read behavior changes (no RLS to scope).
+    {:ok, %{query | tenant: get_in(context, [:private, :tenant])}}
+  end
+
+  @impl true
+  def filter(query, filter, _resource) do
+    # RUNTIME SCOPING PATH — fails CLOSED. An unsupported filter propagates
+    # {:error, %UnsupportedFilter{}} to Ash (no query runs; scoping never dropped).
+    case Filter.translate(filter, query) do
+      {:ok, query, ""} -> {:ok, query}
+      {:ok, query, clause} -> {:ok, %{query | filters: query.filters ++ [clause]}}
+      {:error, _} = error -> error
+    end
+  end
+
+  @impl true
+  def sort(query, sort, _resource) do
+    sort_clauses =
+      Enum.map(sort, fn
+        {%Ash.Resource.Attribute{name: name}, direction} -> {name, direction}
+        {name, direction} when is_atom(name) -> {name, direction}
+      end)
+
+    {:ok, %{query | sort: query.sort ++ sort_clauses}}
+  end
+
+  @impl true
+  def limit(query, limit, _resource), do: {:ok, %{query | limit: limit}}
+
+  @impl true
+  def offset(query, offset, _resource), do: {:ok, %{query | offset: offset}}
 
   @doc false
   # Maps an arcadic error to a value-free structural reason. We interpolate `reason`
