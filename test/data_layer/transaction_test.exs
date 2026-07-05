@@ -174,6 +174,113 @@ defmodule AshArcadic.TransactionTest do
     end
   end
 
+  describe "transaction callbacks" do
+    alias AshArcadic.DataLayer, as: DL
+    alias AshArcadic.Test.CrudPerson
+
+    setup do
+      on_exit(fn -> AshArcadic.Transaction.clear() end)
+      :ok
+    end
+
+    test "can?/2 advertises :transact" do
+      assert DL.can?(CrudPerson, :transact)
+    end
+
+    test "in_transaction?/1 reflects the marker" do
+      refute DL.in_transaction?(CrudPerson)
+      AshArcadic.Transaction.begin_marker()
+      assert DL.in_transaction?(CrudPerson)
+    end
+
+    test "transaction/4 returns {:ok, result} for a fun that opens no session" do
+      assert {:ok, :done} = DL.transaction(CrudPerson, fn -> :done end)
+      refute AshArcadic.Transaction.in_transaction?()
+    end
+
+    test "rollback/2 inside transaction/4 returns {:error, reason} and clears the marker" do
+      result = DL.transaction(CrudPerson, fn -> DL.rollback(CrudPerson, :abort) end)
+      assert result == {:error, :abort}
+      refute AshArcadic.Transaction.in_transaction?()
+    end
+
+    test "a raising fun propagates and still clears the marker" do
+      assert_raise RuntimeError, "boom", fn ->
+        DL.transaction(CrudPerson, fn -> raise "boom" end)
+      end
+
+      refute AshArcadic.Transaction.in_transaction?()
+    end
+
+    test "a nested transaction/4 JOINs the outer (no second boundary)" do
+      result =
+        DL.transaction(CrudPerson, fn ->
+          assert AshArcadic.Transaction.in_transaction?()
+          {:ok, inner} = DL.transaction(CrudPerson, fn -> :inner end)
+          inner
+        end)
+
+      assert result == {:ok, :inner}
+    end
+  end
+
+  # The [:ash_arcadic, :transaction, :stop] span carries the result tag from
+  # transaction_result_tag/1 — the ONLY place the :commit/:rollback/:error outcomes are
+  # observable. :error (commit-failure) can only be forced with the StubTransport, and
+  # Tasks 5/6 are integration (no way to force a real commit failure), so this is its home.
+  describe "transaction/4 telemetry span" do
+    alias AshArcadic.DataLayer, as: DL
+    alias AshArcadic.Test.CrudPerson
+
+    setup do
+      ref = :telemetry_test.attach_event_handlers(self(), [[:ash_arcadic, :transaction, :stop]])
+      on_exit(fn -> :telemetry.detach(ref) end)
+      on_exit(fn -> AshArcadic.Transaction.clear() end)
+      %{ref: ref}
+    end
+
+    test "a committing transaction emits result: :commit", %{ref: ref} do
+      assert {:ok, :done} = DL.transaction(CrudPerson, fn -> :done end)
+
+      assert_received {[:ash_arcadic, :transaction, :stop], ^ref, _measurements,
+                       %{result: :commit, in_transaction?: true}}
+    end
+
+    test "a rolled-back transaction emits result: :rollback", %{ref: ref} do
+      assert {:error, :abort} =
+               DL.transaction(CrudPerson, fn -> DL.rollback(CrudPerson, :abort) end)
+
+      assert_received {[:ash_arcadic, :transaction, :stop], ^ref, _measurements,
+                       %{result: :rollback}}
+    end
+
+    test "a commit-failure transaction emits result: :error (stub-forced)", %{ref: ref} do
+      on_exit(fn -> Process.delete(:stub_commit_result) end)
+      Process.put(:stub_commit_result, {:error, %Arcadic.Error{reason: :server_error}})
+
+      stub_base =
+        Arcadic.connect("http://127.0.0.1:41478", "t_a",
+          auth: {"root", "pw"},
+          transport: AshArcadic.Test.StubTransport
+        )
+
+      # The fun opens its OWN stub session via resolve_conn (run/1 has set the marker), so
+      # run/1's commit_if_open commits the stub session → the forced commit failure surfaces
+      # as {:error, :transaction_commit_failed}. Asserting that tuple proves the :error branch
+      # was reached (a no-session run would return {:ok, :done} and tag :commit).
+      result =
+        DL.transaction(CrudPerson, fn ->
+          {:ok, _session} = AshArcadic.Transaction.resolve_conn(stub_base, :write)
+          :done
+        end)
+
+      assert result == {:error, :transaction_commit_failed}
+
+      assert_received {[:ash_arcadic, :transaction, :stop], ^ref, _measurements,
+                       %{result: :error}}
+    end
+  end
+
   describe "run/1 — commit / rollback / reraise / cleanup" do
     setup do
       base =

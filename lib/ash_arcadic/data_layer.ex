@@ -84,7 +84,7 @@ defmodule AshArcadic.DataLayer do
     ]
 
   # === Capability matrix (read + write + query-building) ===
-  # :transact stays FALSE — Plan 3 owns the session callbacks and flips it.
+  # :transact is TRUE — the session-backed transaction callbacks land below.
   @impl true
   def can?(_, :read), do: true
   def can?(_, :create), do: true
@@ -130,6 +130,7 @@ defmodule AshArcadic.DataLayer do
   def can?(_, {:filter_expr, _}), do: false
   def can?(_, {:lateral_join, _}), do: false
   def can?(_, {:aggregate, _}), do: false
+  def can?(_, :transact), do: true
   def can?(_, _), do: false
 
   @impl true
@@ -637,6 +638,39 @@ defmodule AshArcadic.DataLayer do
        }}
     end)
   end
+
+  # === Transactions (owner-process-only session; Plan-3 spec §4) ===
+
+  @impl true
+  def transaction(resource, fun, _timeout \\ nil, _reason \\ nil) do
+    if AshArcadic.Transaction.in_transaction?() do
+      # Ash short-circuits nested transactions on in_transaction?/1, so this is only
+      # reached if a caller nests directly. JOIN the outer boundary — ArcadeDB has no
+      # savepoint contract, so an independent inner rollback is impossible; the outer
+      # wrapper owns commit/rollback. A rollback throw from `fun` propagates to it.
+      {:ok, fun.()}
+    else
+      Telemetry.span(:transaction, %{resource: resource}, fn ->
+        result = AshArcadic.Transaction.run(fun)
+        {result, %{result: transaction_result_tag(result), in_transaction?: true}}
+      end)
+    end
+  end
+
+  @impl true
+  def in_transaction?(_resource), do: AshArcadic.Transaction.in_transaction?()
+
+  @impl true
+  @spec rollback(Ash.Resource.t(), term()) :: no_return()
+  def rollback(_resource, reason), do: AshArcadic.Transaction.rollback_throw(reason)
+
+  # The three span outcomes (spec §6). run/1 returns {:error, :transaction_commit_failed}
+  # ONLY on a commit failure; the rollback-throw catch is the only OTHER {:error, _} it
+  # returns — so any non-commit-failure error is a rollback. (A reraise does not return
+  # here; :telemetry.span emits an :exception event for it instead.)
+  defp transaction_result_tag({:ok, _}), do: :commit
+  defp transaction_result_tag({:error, :transaction_commit_failed}), do: :error
+  defp transaction_result_tag({:error, _}), do: :rollback
 
   defp do_destroy(resource, changeset) do
     case write_conn(resource, changeset) do

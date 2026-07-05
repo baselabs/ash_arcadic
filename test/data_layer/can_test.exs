@@ -24,8 +24,11 @@ defmodule AshArcadic.DataLayer.CanTest do
     end
   end
 
-  test "transact stays false (Plan 3 owns it); aggregates/lateral_join false" do
-    refute DL.can?(AshArcadic.Test.Basic, :transact)
+  test "transact is true (Plan 3)" do
+    assert DL.can?(AshArcadic.Test.Basic, :transact)
+  end
+
+  test "aggregates/lateral_join false" do
     refute DL.can?(AshArcadic.Test.Basic, {:aggregate, :count})
     refute DL.can?(AshArcadic.Test.Basic, {:lateral_join, []})
   end
