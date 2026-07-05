@@ -361,4 +361,46 @@ defmodule AshArcadic.ManualRelationships.TraverseTest do
       assert Traverse.first_unencodable_id_field([%{"id" => <<0xFF>>}]) == "id"
     end
   end
+
+  # Restores the tripwire deleted with assemble_rows/3 (Task 6): telemetry row_count is the
+  # GENUINE pre-dedup reachability fan-out (length of the raw Phase-1 rows), independent of the
+  # post-authorization destination_count. A stop_meta that sourced row_count from the regrouped
+  # map (post-dedup / post-policy-drop) would collapse the two — this pins that they diverge.
+  describe "stop_meta/3 (telemetry pre-dedup fan-out invariant)" do
+    defmodule SMDst do
+      @moduledoc false
+      defstruct [:id]
+    end
+
+    test "TRIPWIRE: row_count (pre-dedup fan-out) diverges from destination_count (post-regroup)" do
+      d1 = %SMDst{id: "d1"}
+      d2 = %SMDst{id: "d2"}
+      d3 = %SMDst{id: "d3"}
+      # 5 raw reachability rows fanned in (row_count); after the authorized read + regroup only
+      # 4 delivered records remain (one reachable dest was policy-denied / filtered out).
+      regrouped = %{%{id: "p1"} => [d1, d2], %{id: "p2"} => [d1, d3]}
+
+      meta = Traverse.stop_meta({:ok, regrouped}, 5, 3)
+
+      assert meta.row_count == 5
+      assert meta.destination_count == 4
+      refute meta.row_count == meta.destination_count
+      assert meta.depth == 3
+      assert meta.result == :ok
+    end
+
+    test ":one cardinality (single-record values) counts each delivered destination once" do
+      meta =
+        Traverse.stop_meta({:ok, %{%{id: "p1"} => %SMDst{id: "d1"}, %{id: "p2"} => nil}}, 2, 3)
+
+      # List.wrap(nil) => [] (a source with no surviving dest contributes 0).
+      assert meta.destination_count == 1
+      assert meta.row_count == 2
+    end
+
+    test ":error result zeroes both counts value-free" do
+      assert Traverse.stop_meta({:error, :boom}, 5, 3) ==
+               %{destination_count: 0, row_count: 0, depth: 3, result: :error}
+    end
+  end
 end

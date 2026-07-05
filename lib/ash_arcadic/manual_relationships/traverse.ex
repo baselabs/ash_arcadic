@@ -383,7 +383,7 @@ defmodule AshArcadic.ManualRelationships.Traverse do
   @doc false
   # Option B requires a single-attribute destination PK (the reachability RETURN is
   # `b.<pk> AS d`; the authorized read filters `pk in ^union`) — mirroring the edge-write
-  # dest-PK rule (spec §6.3/S2-9, edge_cypher.ex:30-38). A composite dest PK fails CLOSED
+  # dest-PK rule (spec §6.3/S2-9, edge_cypher.ex:32-37). A composite dest PK fails CLOSED
   # value-free (never a MatchError, never the PK values). This drops NO shipped capability:
   # Slice-1 never wired a composite-dest traversal relationship (every traverse support
   # resource has a single-attribute PK; the only composite-dest reference was the pure
@@ -496,12 +496,17 @@ defmodule AshArcadic.ManualRelationships.Traverse do
         reason: "could not begin ArcadeDB transaction"
       )
 
-  defp stop_meta({:ok, map}, row_count, max_depth) do
+  @doc false
+  # Value-free telemetry stop metadata. row_count is the GENUINE pre-dedup reachability
+  # fan-out (length of the raw Phase-1 rows) — NOT sourced from the regrouped map — so it
+  # stays independent of the post-authorization destination_count (the invariant the
+  # stop_meta/3 tripwire pins; spec §9).
+  def stop_meta({:ok, map}, row_count, max_depth) do
     dests = map |> Map.values() |> Enum.map(&List.wrap/1) |> List.flatten()
     %{destination_count: length(dests), row_count: row_count, depth: max_depth, result: :ok}
   end
 
-  defp stop_meta({:error, _}, _row_count, max_depth),
+  def stop_meta({:error, _}, _row_count, max_depth),
     do: %{destination_count: 0, row_count: 0, depth: max_depth, result: :error}
 
   defp strategy(resource), do: Ash.Resource.Info.multitenancy_strategy(resource)
