@@ -1,0 +1,78 @@
+defmodule AshArcadic.DataLayer.WriteResolutionTest do
+  use ExUnit.Case, async: true
+  alias AshArcadic.DataLayer, as: DL
+  alias AshArcadic.Query
+
+  defmodule ContextRes do
+    use Ash.Resource, domain: nil, data_layer: AshArcadic.DataLayer
+
+    arcade do
+      client(AshArcadic.Test.MockClient)
+    end
+
+    attributes do
+      uuid_primary_key :id
+    end
+
+    multitenancy do
+      strategy :context
+    end
+  end
+
+  test "write_database :context fails closed on a nil/blank tenant (no base fallthrough)" do
+    assert {:error, :tenant_required} =
+             DL.write_database(ContextRes, %Ash.Changeset{resource: ContextRes, to_tenant: nil})
+
+    assert {:error, :tenant_required} =
+             DL.write_database(ContextRes, %Ash.Changeset{resource: ContextRes, to_tenant: ""})
+  end
+
+  test "write_database :context resolves the tenant database for a present tenant" do
+    assert {:ok, "t_acme"} =
+             DL.write_database(ContextRes, %Ash.Changeset{resource: ContextRes, to_tenant: "acme"})
+  end
+
+  test "write_database on a non-multitenant resource returns the (possibly nil) resource database" do
+    assert {:ok, nil} =
+             DL.write_database(AshArcadic.Test.Basic, %Ash.Changeset{
+               resource: AshArcadic.Test.Basic,
+               to_tenant: nil
+             })
+  end
+
+  test "read_conn :context fails closed when set_tenant never populated a database" do
+    assert {:error, :tenant_required} =
+             DL.read_conn(%Query{resource: ContextRes, database: nil}, ContextRes)
+  end
+
+  test "read_conn :context re-targets the connection to the resolved tenant database" do
+    assert {:ok, %Arcadic.Conn{database: "t_acme"}} =
+             DL.read_conn(%Query{resource: ContextRes, database: "t_acme"}, ContextRes)
+  end
+
+  test "read_conn on a non-multitenant resource uses the client's base connection" do
+    assert {:ok, %Arcadic.Conn{database: "ash_arcadic_test"}} =
+             DL.read_conn(
+               %Query{resource: AshArcadic.Test.Basic, database: nil},
+               AshArcadic.Test.Basic
+             )
+  end
+
+  test "write_conn :context fails closed on a blank tenant" do
+    assert {:error, :tenant_required} =
+             DL.write_conn(ContextRes, %Ash.Changeset{resource: ContextRes, to_tenant: nil})
+  end
+
+  test "write_conn :context re-targets the write connection to the resolved tenant database" do
+    assert {:ok, %Arcadic.Conn{database: "t_acme"}} =
+             DL.write_conn(ContextRes, %Ash.Changeset{resource: ContextRes, to_tenant: "acme"})
+  end
+
+  test "write_conn on a non-multitenant resource uses the client's base connection" do
+    assert {:ok, %Arcadic.Conn{database: "ash_arcadic_test"}} =
+             DL.write_conn(AshArcadic.Test.Basic, %Ash.Changeset{
+               resource: AshArcadic.Test.Basic,
+               to_tenant: nil
+             })
+  end
+end

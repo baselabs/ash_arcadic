@@ -175,6 +175,62 @@ defmodule AshArcadic.DataLayer do
   def offset(query, offset, _resource), do: {:ok, %{query | offset: offset}}
 
   @doc false
+  # Resolves the ArcadeDB database name for a WRITE. Gated on the multitenancy
+  # STRATEGY, not on `to_tenant` presence (which is populated for :attribute too).
+  # For :context a nil/blank tenant FAILS CLOSED — there is no global database, and
+  # falling through to the base database would be a silent cross-tenant write.
+  @spec write_database(Ash.Resource.t(), Ash.Changeset.t()) ::
+          {:ok, String.t() | nil} | {:error, :tenant_required}
+  def write_database(resource, changeset) do
+    if strategy(resource) == :context do
+      case Map.get(changeset, :to_tenant) do
+        blank when blank in [nil, ""] -> {:error, :tenant_required}
+        tenant -> {:ok, AshArcadic.Multitenancy.database_name(resource, tenant)}
+      end
+    else
+      {:ok, Info.database(resource)}
+    end
+  end
+
+  @doc false
+  # The write connection for a changeset, fail-closed on a blank :context tenant.
+  @spec write_conn(Ash.Resource.t(), Ash.Changeset.t()) ::
+          {:ok, Arcadic.Conn.t()} | {:error, :tenant_required}
+  def write_conn(resource, changeset) do
+    case write_database(resource, changeset) do
+      {:ok, nil} -> {:ok, conn_for(resource)}
+      {:ok, database} -> {:ok, Arcadic.with_database(conn_for(resource), database)}
+      {:error, :tenant_required} -> {:error, :tenant_required}
+    end
+  end
+
+  @doc false
+  # The read connection for a query. :context REQUIRES a database resolved by
+  # set_tenant/3; a nil database means set_tenant never fired (blank tenant) → fail
+  # closed rather than reading the base database (a silent cross-tenant read).
+  @spec read_conn(AshArcadic.Query.t(), Ash.Resource.t()) ::
+          {:ok, Arcadic.Conn.t()} | {:error, :tenant_required}
+  def read_conn(%AshArcadic.Query{} = query, resource) do
+    case strategy(resource) do
+      :context ->
+        case query.database do
+          blank when blank in [nil, ""] -> {:error, :tenant_required}
+          database -> {:ok, Arcadic.with_database(conn_for(resource), database)}
+        end
+
+      _ ->
+        case query.database do
+          nil -> {:ok, conn_for(resource)}
+          database -> {:ok, Arcadic.with_database(conn_for(resource), database)}
+        end
+    end
+  end
+
+  defp conn_for(resource), do: Info.client(resource).conn()
+
+  defp strategy(resource), do: Ash.Resource.Info.multitenancy_strategy(resource)
+
+  @doc false
   # Maps an arcadic error to a value-free structural reason. We interpolate `reason`
   # ONLY under a `when is_atom(reason)` guard — the atom is guard-ENFORCED here, not
   # trusted from the annotation. Both structs annotate `reason :: atom()`, but that is
