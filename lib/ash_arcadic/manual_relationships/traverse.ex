@@ -4,18 +4,35 @@ defmodule AshArcadic.ManualRelationships.Traverse do
 
       has_many :descendants, MyApp.Node do
         manual {AshArcadic.ManualRelationships.Traverse,
-                edge_label: :PARENT_OF, direction: :outgoing, min_depth: 1, max_depth: 3}
+                edge_label: :PARENT_OF, direction: :outgoing, min_depth: 1, max_depth: 3,
+                scope_edges: true}
       end
 
-  `load/3` emits one parameterized statement — `UNWIND $ids AS sid MATCH <pattern>
-  WHERE <src-pk-match> [AND ALL(x IN nodes(p) WHERE x.<attr> = $tenant)] RETURN
-  <src-pk cols>, b` — and returns a source-PK-keyed map of decoded destination
-  records (deduped per source, cardinality-aware). Values ride `params`; every
-  interpolated identifier is `AshArcadic.Identifier.validate!`-checked. Tenancy is
-  FAIL-CLOSED: `:context` resolves a per-tenant database; `:attribute` scopes every
-  node on the bound path via the native predicate (probe P7 — NOT ash_age's
-  UNION-ALL expansion, which Apache AGE forced). Rows are decoded from the
-  `Arcadic.query` map shape (`%{"s1" => .., "b" => %{..vertex..}}`), not agtype.
+  `load/3` runs the Option-B two-phase read:
+
+    * **Phase 1 (reachability).** One parameterized statement — `UNWIND $ids AS sid
+      MATCH <pattern> WHERE <src-pk-match> [AND <tenant scope>] RETURN <src-pk cols>,
+      b.<dest-pk> AS d` — returns only the **reachable destination primary keys**, not
+      the vertices. For `:attribute`, the tenant scope binds the path (`p=`) and filters
+      BOTH nodes and edges by the discriminator — `ALL(x IN nodes(p) WHERE x.<attr> =
+      $tenant) AND ALL(r IN relationships(p) WHERE r.<attr> = $tenant)` — on by default;
+      `scope_edges: false` opts out of the edge clause (probe E4 — NOT ash_age's UNION-ALL
+      expansion, which Apache AGE forced).
+    * **Phase 2 (authorized read).** A STANDARD authorized `Ash.read` over the reachable
+      dest-PK union, narrowing `context.query` (which already carries the relationship/caller
+      filter + sort + limit + domain + tenant). Row policy, field policy (redaction), and the
+      `:attribute` tenant filter / `:context` tenant DB are all delegated to Ash — this module
+      never decodes a destination vertex.
+    * **Phase 3 (regroup).** Intersects each source's reachable dest PKs with the authorized
+      record set, preserving read order (so sort/limit survive), deduped per source and
+      cardinality-aware.
+
+  It returns a source-PK-keyed map of **authorized** destination records. A single-attribute
+  destination primary key is required (composite → fail-closed value-free, mirroring the
+  edge-write dest-PK rule). Values ride `params`; every interpolated identifier is
+  `AshArcadic.Identifier.validate!`-checked. Tenancy is FAIL-CLOSED twice over: Phase 1
+  scopes the path (or targets the per-tenant `:context` database), and Phase 2's authorized
+  read re-applies the tenant filter / database.
   """
 
   @behaviour Ash.Resource.ManualRelationship
@@ -29,6 +46,8 @@ defmodule AshArcadic.ManualRelationships.Traverse do
   alias AshArcadic.Multitenancy
   alias AshArcadic.Telemetry
   alias AshArcadic.Transaction
+
+  require Ash.Query
 
   @impl true
   def select(_opts), do: []
@@ -131,6 +150,7 @@ defmodule AshArcadic.ManualRelationships.Traverse do
     edge = Identifier.validate!(spec.edge_label)
     src = Identifier.validate!(spec.src_label)
     dst = Identifier.validate!(spec.dest_label)
+    dest_pk = spec.dest_pk |> to_string() |> Identifier.validate!()
     src_match = src_match(spec.src_pkey)
     src_return = src_return(spec.src_pkey)
     pat = pattern(spec.direction, src, dst, edge, spec.min_depth, spec.max_depth)
@@ -149,12 +169,13 @@ defmodule AshArcadic.ManualRelationships.Traverse do
       cypher =
         "UNWIND $ids AS sid MATCH p=#{pat} " <>
           "WHERE #{src_match} AND #{scope} " <>
-          "RETURN #{src_return}, b"
+          "RETURN #{src_return}, b.#{dest_pk} AS d"
 
       {cypher, %{"ids" => spec.ids, "tenant" => spec.tenant}}
     else
       cypher =
-        "UNWIND $ids AS sid MATCH #{pat} WHERE #{src_match} RETURN #{src_return}, b"
+        "UNWIND $ids AS sid MATCH #{pat} WHERE #{src_match} " <>
+          "RETURN #{src_return}, b.#{dest_pk} AS d"
 
       {cypher, %{"ids" => spec.ids}}
     end
@@ -216,44 +237,6 @@ defmodule AshArcadic.ManualRelationships.Traverse do
      union_rev |> Enum.reverse() |> Enum.uniq()}
   end
 
-  @doc false
-  # Assembles the F3 source-PK-keyed map from the flat map-rows Arcadic.query
-  # returns (`%{"s1" => .., "b" => %{..vertex..}}`). Source-PK scalars coerce back
-  # to runtime shape via Cast.load_value (so the key === Map.take(record, src_pkey)
-  # Ash matches). Dest vertices decode via Cast.row_to_attrs (ignores @-keys), then
-  # dedup by dest PK and cardinalize. `spec` = %{src_pkey, src_types, dest_pkey,
-  # dest, dest_attr_map, dest_attr_types}.
-  def assemble_rows(rows, spec, card) do
-    %{src_pkey: src_pkey, src_types: src_types, dest_pkey: dest_pkey} = spec
-    indexed_pkey = Enum.with_index(src_pkey, 1)
-
-    rows
-    |> Enum.reduce(%{}, fn row, acc ->
-      src_key =
-        Map.new(indexed_pkey, fn {atom, i} ->
-          {atom, Cast.load_value(Map.get(row, "s#{i}"), Map.get(src_types, atom))}
-        end)
-
-      b_record = decode_record(Map.get(row, "b"), spec)
-      Map.update(acc, src_key, [b_record], &[b_record | &1])
-    end)
-    |> Map.new(fn {k, recs} -> {k, cardinalize(dedup(Enum.reverse(recs), dest_pkey), card)} end)
-  end
-
-  defp decode_record(vertex, %{dest: dest, dest_attr_map: attr_map, dest_attr_types: attr_types}) do
-    struct(dest, Cast.row_to_attrs(vertex, attr_map, attr_types))
-  end
-
-  defp dedup(records, dest_pkey) do
-    {out, _seen} =
-      Enum.reduce(records, {[], MapSet.new()}, fn r, {out, seen} ->
-        key = Map.take(r, dest_pkey)
-        if MapSet.member?(seen, key), do: {out, seen}, else: {[r | out], MapSet.put(seen, key)}
-      end)
-
-    Enum.reverse(out)
-  end
-
   defp cardinalize(records, :one), do: List.first(records)
   defp cardinalize(records, _many), do: records
 
@@ -275,8 +258,9 @@ defmodule AshArcadic.ManualRelationships.Traverse do
     end)
   end
 
-  # Orchestration: resolve database + tenant scope + conn (all fail-closed), build the
-  # one statement, run it, assemble. Returns {result, pre_dedup_row_count} for telemetry.
+  # Orchestration: resolve database + tenant scope + dest-PK + conn (all fail-closed), build
+  # the Phase-1 reachability statement, run it, assemble reachability, then run the Phase-2
+  # authorized read + Phase-3 regroup. Returns {result, pre_dedup_row_count} for telemetry.
   defp do_load(
          records,
          context,
@@ -287,6 +271,7 @@ defmodule AshArcadic.ManualRelationships.Traverse do
        ) do
     with {:ok, database} <- resolve_database(source, context.tenant),
          {:ok, tenant_attr, tenant} <- resolve_tenant(source, dest, context.tenant),
+         {:ok, dest_pk} <- resolve_dest_pk(dest),
          {:ok, conn} <- resolve_conn(source, database),
          src_pkey = Ash.Resource.Info.primary_key(source),
          src_types = Info.attribute_types(source),
@@ -300,6 +285,7 @@ defmodule AshArcadic.ManualRelationships.Traverse do
         src_label: Info.label(source),
         dest_label: Info.label(dest),
         src_pkey: src_pkey,
+        dest_pk: dest_pk,
         tenant_attr: tenant_attr,
         tenant: tenant,
         per_hop_scope?: not is_nil(tenant_attr),
@@ -311,8 +297,14 @@ defmodule AshArcadic.ManualRelationships.Traverse do
 
       case Arcadic.query(conn, cypher, params) do
         {:ok, rows} ->
-          {{:ok, assemble_rows(rows, assemble_spec(dest, src_pkey, src_types), card)},
-           length(rows)}
+          reach_spec = %{
+            src_pkey: src_pkey,
+            src_types: src_types,
+            dest_pk_type: Map.get(Info.attribute_types(dest), dest_pk)
+          }
+
+          {reach_map, dest_union} = assemble_reachability(rows, reach_spec)
+          {finish_load(reach_map, dest_union, dest_pk, card, context), length(rows)}
 
         {:error, error} ->
           {{:error, wrap_traverse_error(error)}, 0}
@@ -320,6 +312,35 @@ defmodule AshArcadic.ManualRelationships.Traverse do
     else
       {:error, reason} -> {{:error, traverse_error(reason)}, 0}
     end
+  end
+
+  # Phase 2 (authorized destination read) + Phase 3 (regroup). Empty reachability → skip the
+  # read (no `IN []`); every source defaults empty via `regroup` over an empty map.
+  defp finish_load(_reach_map, [], _dest_pk, _card, _context), do: {:ok, %{}}
+
+  defp finish_load(reach_map, dest_union, dest_pk, card, context) do
+    case authorized_read(context, dest_pk, dest_union) do
+      {:ok, authorized} -> {:ok, regroup(reach_map, authorized, dest_pk, card)}
+      {:error, error} -> {:error, error}
+    end
+  end
+
+  # The Option-B authorized destination read (§7.2 step 2). context.query already carries the
+  # relationship/caller filter + sort + limit + domain + tenant (relationships.ex:600-611); we
+  # narrow it to the reachable dest PKs and run a STANDARD authorized Ash read. Routes through
+  # Ash's full read path → row policy (→ Cypher WHERE via filter/3) + field policy (redaction)
+  # + the :attribute tenant filter / :context tenant DB. Records return already-authorized, so
+  # Ash's PK-only post-load short-circuit (spec §2) cannot re-expose a denied dest. The read
+  # emits its own Slice-1 :read span beneath the :traverse span (§9).
+  defp authorized_read(context, dest_pk, dest_union) do
+    context.query
+    |> Ash.Query.filter(^Ash.Expr.ref(dest_pk) in ^dest_union)
+    |> Ash.read(
+      actor: context.actor,
+      authorize?: context.authorize?,
+      tenant: context.tenant,
+      domain: context.domain
+    )
   end
 
   @doc false
@@ -357,6 +378,22 @@ defmodule AshArcadic.ManualRelationships.Traverse do
     end
   end
 
+  @doc false
+  # Option B requires a single-attribute destination PK (the reachability RETURN is
+  # `b.<pk> AS d`; the authorized read filters `pk in ^union`) — mirroring the edge-write
+  # dest-PK rule (spec §6.3/S2-9, edge_cypher.ex:32-38). A composite dest PK fails CLOSED
+  # value-free (never a MatchError, never the PK values). This drops NO shipped capability:
+  # Slice-1 never wired a composite-dest traversal relationship (every traverse support
+  # resource has a single-attribute PK; the only composite-dest reference was the pure
+  # `assemble_rows/3` unit test, deleted this task) — it is a faithful §7.2 reading, not a
+  # restriction-shaped narrowing (independent-review-confirmed 2026-07-05).
+  def resolve_dest_pk(dest) do
+    case Ash.Resource.Info.primary_key(dest) do
+      [single] -> {:ok, single}
+      _ -> {:error, :composite_destination_pk}
+    end
+  end
+
   # Route the database-targeted base conn through the transaction resolver: a plain
   # conn outside a tx; the session (read-own-writes) inside one. :read never errors on
   # the session guard, but the spec's error variants are handled by do_load's else.
@@ -368,17 +405,6 @@ defmodule AshArcadic.ManualRelationships.Traverse do
 
   defp base_conn(source, database),
     do: Arcadic.with_database(Info.client(source).conn(), database)
-
-  defp assemble_spec(dest, src_pkey, src_types) do
-    %{
-      src_pkey: src_pkey,
-      src_types: src_types,
-      dest_pkey: Ash.Resource.Info.primary_key(dest),
-      dest: dest,
-      dest_attr_map: Info.attribute_map(dest),
-      dest_attr_types: Info.attribute_types(dest)
-    }
-  end
 
   # One $ids entry: source-PK fields stringified and serialized by attribute type so
   # the param matches the STORED form (binary→base64, date/decimal→string). Scalar PKs
@@ -438,6 +464,13 @@ defmodule AshArcadic.ManualRelationships.Traverse do
       QueryFailed.exception(
         query: "ArcadeDB traversal",
         reason: "primary-key field #{field} is not JSON-encodable"
+      )
+
+  defp traverse_error(:composite_destination_pk),
+    do:
+      QueryFailed.exception(
+        query: "ArcadeDB traversal",
+        reason: "traversal destination must have a single-attribute primary key"
       )
 
   # The next two clauses are DIALYZER-REQUIRED but RUNTIME-UNREACHABLE on this read path:

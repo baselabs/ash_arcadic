@@ -114,6 +114,7 @@ defmodule AshArcadic.ManualRelationships.TraverseTest do
           src_label: :Node,
           dest_label: :Node,
           src_pkey: [:id],
+          dest_pk: :id,
           tenant_attr: nil,
           tenant: nil,
           per_hop_scope?: false,
@@ -129,7 +130,7 @@ defmodule AshArcadic.ManualRelationships.TraverseTest do
 
       assert cypher ==
                "UNWIND $ids AS sid MATCH (a:Node)-[:PARENT_OF*1..3]->(b:Node) " <>
-                 "WHERE a.id = sid.id RETURN a.id AS s1, b"
+                 "WHERE a.id = sid.id RETURN a.id AS s1, b.id AS d"
 
       assert params == %{"ids" => [%{"id" => "p1"}]}
     end
@@ -144,7 +145,7 @@ defmodule AshArcadic.ManualRelationships.TraverseTest do
                "UNWIND $ids AS sid MATCH p=(a:Node)-[:PARENT_OF*1..3]->(b:Node) " <>
                  "WHERE a.id = sid.id AND ALL(x IN nodes(p) WHERE x.org_id = $tenant) " <>
                  "AND ALL(r IN relationships(p) WHERE r.org_id = $tenant) " <>
-                 "RETURN a.id AS s1, b"
+                 "RETURN a.id AS s1, b.id AS d"
 
       assert params == %{"ids" => [%{"id" => "p1"}], "tenant" => "acme"}
     end
@@ -163,7 +164,7 @@ defmodule AshArcadic.ManualRelationships.TraverseTest do
       assert cypher ==
                "UNWIND $ids AS sid MATCH p=(a:Node)-[:PARENT_OF*1..3]->(b:Node) " <>
                  "WHERE a.id = sid.id AND ALL(x IN nodes(p) WHERE x.org_id = $tenant) " <>
-                 "RETURN a.id AS s1, b"
+                 "RETURN a.id AS s1, b.id AS d"
 
       refute cypher =~ "relationships(p)"
     end
@@ -179,7 +180,7 @@ defmodule AshArcadic.ManualRelationships.TraverseTest do
     test "composite PK expands src-match (AND) and src-return (s1, s2)" do
       {cypher, _} = Traverse.build_traverse(base_spec(%{src_pkey: [:org_id, :node_id]}))
       assert cypher =~ "WHERE a.org_id = sid.org_id AND a.node_id = sid.node_id"
-      assert cypher =~ "RETURN a.org_id AS s1, a.node_id AS s2, b"
+      assert cypher =~ "RETURN a.org_id AS s1, a.node_id AS s2, b.id AS d"
     end
 
     test "min_depth honored in the varlen bound" do
@@ -197,62 +198,15 @@ defmodule AshArcadic.ManualRelationships.TraverseTest do
     end
   end
 
-  describe "assemble_rows/3" do
-    defmodule Dst do
-      @moduledoc false
-      defstruct [:id, :name]
+  describe "resolve_dest_pk/1 (Option B single-attribute dest-PK requirement)" do
+    alias AshArcadic.Test.{TraverseAttrNode, UpsertComposite}
+
+    test "single-attribute dest PK → {:ok, attr}" do
+      assert Traverse.resolve_dest_pk(TraverseAttrNode) == {:ok, :id}
     end
 
-    defp assemble_spec do
-      %{
-        src_pkey: [:id],
-        src_types: %{id: {Ash.Type.String, []}},
-        dest_pkey: [:id],
-        dest: Dst,
-        dest_attr_map: %{id: "id", name: "name"},
-        dest_attr_types: %{id: {Ash.Type.String, []}, name: {Ash.Type.String, []}}
-      }
-    end
-
-    defp rows do
-      # p1 reaches d1, d2, and d1 again (fan-out dup) ; p2 reaches d3. `b` carries
-      # @-keys that must be ignored on decode.
-      [
-        %{"s1" => "p1", "b" => %{"@rid" => "#1:1", "@cat" => "v", "id" => "d1", "name" => "D1"}},
-        %{"s1" => "p1", "b" => %{"@rid" => "#1:2", "@cat" => "v", "id" => "d2", "name" => "D2"}},
-        %{"s1" => "p1", "b" => %{"@rid" => "#1:1", "@cat" => "v", "id" => "d1", "name" => "D1"}},
-        %{"s1" => "p2", "b" => %{"@rid" => "#1:3", "@cat" => "v", "id" => "d3", "name" => "D3"}}
-      ]
-    end
-
-    test ":many — source-PK-keyed map; dest deduped by PK; @-keys ignored" do
-      result = Traverse.assemble_rows(rows(), assemble_spec(), :many)
-
-      # The exact struct equalities ARE the @-key-exclusion coverage: the `b` rows carry
-      # @rid/@cat, so a decode that leaked any undeclared property into a declared field
-      # would break these. (A `refute Map.has_key?(struct, :"@rid")` would be vacuous —
-      # struct/2 drops undeclared keys regardless; the real row_to_attrs @-key routing is
-      # unit-tested directly in test/cast_test.exs.)
-      assert result[%{id: "p1"}] == [%Dst{id: "d1", name: "D1"}, %Dst{id: "d2", name: "D2"}]
-      assert result[%{id: "p2"}] == [%Dst{id: "d3", name: "D3"}]
-    end
-
-    test "TRIPWIRE: row_count (pre-dedup) diverges from destination_count (post-dedup)" do
-      result = Traverse.assemble_rows(rows(), assemble_spec(), :many)
-      destinations = result |> Map.values() |> List.flatten()
-      # 4 raw rows in; 3 unique destinations out (d1 deduped) — proves dedup ran.
-      assert length(rows()) == 4
-      assert length(destinations) == 3
-    end
-
-    test ":one cardinality returns the first destination, not a list" do
-      result = Traverse.assemble_rows(rows(), assemble_spec(), :one)
-      assert result[%{id: "p1"}] == %Dst{id: "d1", name: "D1"}
-      assert result[%{id: "p2"}] == %Dst{id: "d3", name: "D3"}
-    end
-
-    test "empty rows → empty map" do
-      assert Traverse.assemble_rows([], assemble_spec(), :many) == %{}
+    test "TRIPWIRE: composite dest PK fails closed value-free (never a MatchError, never PK values)" do
+      assert Traverse.resolve_dest_pk(UpsertComposite) == {:error, :composite_destination_pk}
     end
   end
 
@@ -290,41 +244,6 @@ defmodule AshArcadic.ManualRelationships.TraverseTest do
     test "TRIPWIRE: resolve_tenant across DIFFERENT discriminators fails closed" do
       assert Traverse.resolve_tenant(TraverseAttrNode, TraverseAttrTeam, "acme") ==
                {:error, :mixed_attribute}
-    end
-  end
-
-  describe "assemble_rows/3 composite PK" do
-    defmodule Dst2 do
-      @moduledoc false
-      defstruct [:org_id, :node_id, :name]
-    end
-
-    test "composite src PK builds a multi-field src_key from s1/s2 (Ash Map.take shape)" do
-      spec = %{
-        src_pkey: [:org_id, :node_id],
-        src_types: %{org_id: {Ash.Type.String, []}, node_id: {Ash.Type.String, []}},
-        dest_pkey: [:org_id, :node_id],
-        dest: Dst2,
-        dest_attr_map: %{org_id: "org_id", node_id: "node_id", name: "name"},
-        dest_attr_types: %{
-          org_id: {Ash.Type.String, []},
-          node_id: {Ash.Type.String, []},
-          name: {Ash.Type.String, []}
-        }
-      }
-
-      rows = [
-        %{
-          "s1" => "acme",
-          "s2" => "n1",
-          "b" => %{"@rid" => "#1:1", "org_id" => "acme", "node_id" => "d1", "name" => "D1"}
-        }
-      ]
-
-      result = Traverse.assemble_rows(rows, spec, :many)
-
-      assert result[%{org_id: "acme", node_id: "n1"}] ==
-               [%Dst2{org_id: "acme", node_id: "d1", name: "D1"}]
     end
   end
 
