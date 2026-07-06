@@ -52,7 +52,7 @@ defmodule AshArcadic.Test.TraversePolicyNode do
          edge_label: :POL_PARENT_OF,
          direction: :outgoing,
          min_depth: 1,
-         max_depth: 4,
+         max_depth: 3,
          per_source_limit: 2}
       )
 

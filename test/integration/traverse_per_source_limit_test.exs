@@ -3,8 +3,6 @@ defmodule AshArcadic.Integration.TraversePerSourceLimitTest do
 
   alias AshArcadic.Test.TraversePolicyNode
 
-  require Ash.Query
-
   @admin %{admin: true}
   @user %{admin: false}
 
