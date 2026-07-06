@@ -50,4 +50,27 @@ defmodule AshArcadic.DataLayer.AggregateQueryTest do
     # value-free: names only the strategy/operation, never a tenant/database value.
     assert Exception.message(err) =~ "tenant required for :context read"
   end
+
+  test "run_aggregate_query/3 rejects a :first aggregate sorting by a non-stored field (value-free)" do
+    # DB-free: Basic is non-multitenant → read_conn passthrough; the sort guard fires before any
+    # Arcadic.query. :computed is DECLARED but SKIPPED (`arcade do skip [:computed] end`) → not an
+    # ArcadeDB property. A :first sorting by it would emit ORDER BY n.computed against a
+    # non-existent property (silent arbitrary first). Must fail closed value-free instead.
+    query = AshArcadic.DataLayer.resource_to_query(AshArcadic.Test.Basic, AshArcadic.Test.Domain)
+
+    agg =
+      struct(Ash.Query.Aggregate,
+        name: :f,
+        kind: :first,
+        field: :age,
+        uniq?: false,
+        query: %Ash.Query{sort: [{:computed, :desc}]}
+      )
+
+    assert {:error, %AshArcadic.Errors.QueryFailed{} = err} =
+             AshArcadic.DataLayer.run_aggregate_query(query, [agg], AshArcadic.Test.Basic)
+
+    assert Exception.message(err) =~ "computed"
+    assert Exception.message(err) =~ "not a stored attribute"
+  end
 end

@@ -21,6 +21,27 @@ defmodule AshArcadic.DataLayer.QueryBuildingTest do
     assert q.sort == [{:name, :desc}]
   end
 
+  test "sort rejects a SKIPPED attribute value-free (declared but not a stored property)" do
+    # Basic declares `arcade do skip [:computed] end` → :computed is NOT an ArcadeDB property.
+    # ORDER BY n.computed would sort by a non-existent property (null → arbitrary order); fail closed.
+    q = %Query{resource: AshArcadic.Test.Basic}
+
+    assert {:error, %AshArcadic.Errors.QueryFailed{} = err} =
+             DL.sort(q, [{:computed, :asc}], AshArcadic.Test.Basic)
+
+    assert Exception.message(err) =~ "computed"
+    assert Exception.message(err) =~ "not a stored attribute"
+  end
+
+  test "sort rejects a non-attribute (calculation/aggregate name) sort field value-free" do
+    # A bare atom that names a calculation/aggregate (not a declared attribute) is not a
+    # stored property either — same silent-mis-order hazard, same fail-closed rejection.
+    q = %Query{resource: AshArcadic.Test.Basic}
+
+    assert {:error, %AshArcadic.Errors.QueryFailed{}} =
+             DL.sort(q, [{:not_a_real_attribute, :desc}], AshArcadic.Test.Basic)
+  end
+
   test "filter translates and appends a pre-built clause + params" do
     filter = Ash.Query.filter(AshArcadic.Test.Basic, name == "Ann").filter
     {:ok, q} = DL.filter(%Query{resource: AshArcadic.Test.Basic}, filter, AshArcadic.Test.Basic)

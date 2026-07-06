@@ -242,15 +242,45 @@ defmodule AshArcadic.DataLayer do
   end
 
   @impl true
-  def sort(query, sort, _resource) do
-    sort_clauses =
-      Enum.map(sort, fn
-        {%Ash.Resource.Attribute{name: name}, direction} -> {name, direction}
-        {name, direction} when is_atom(name) -> {name, direction}
-      end)
-
-    {:ok, %{query | sort: query.sort ++ sort_clauses}}
+  # SORT SCOPING PATH — fails CLOSED. A sort field that is not a STORED attribute (a
+  # calculation/aggregate name, or a `skip`-ped attribute) is rejected value-free rather than
+  # emitted as `ORDER BY n.<field>` against a non-existent property (ArcadeDB → null → silent
+  # arbitrary order). Same guard as the aggregate `:first` sort path (Info.sortable_field?/2).
+  def sort(query, sort, resource) do
+    sort
+    |> Enum.reduce_while({:ok, []}, &validate_sort_entry(&1, resource, &2))
+    |> case do
+      {:ok, clauses} -> {:ok, %{query | sort: query.sort ++ Enum.reverse(clauses)}}
+      {:error, _} = error -> error
+    end
   end
+
+  # Validate one sort entry against the resource's stored properties, accumulating in read
+  # order. A calculation/aggregate STRUCT field (non-atom) → :expression reject; a bare-atom /
+  # %Ash.Resource.Attribute{} field that is not a stored property → value-free reject.
+  defp validate_sort_entry(entry, resource, {:ok, acc}) do
+    case normalize_sort_entry(entry) do
+      {name, direction} ->
+        if Info.sortable_field?(resource, name),
+          do: {:cont, {:ok, [{name, direction} | acc]}},
+          else: {:halt, {:error, sort_error("sort field #{name} is not a stored attribute")}}
+
+      :expression ->
+        {:halt, {:error, sort_error("sort over an expression/calculation field is unsupported")}}
+    end
+  end
+
+  # {name, direction} for a stored-attribute sort entry (atom or the resolved
+  # %Ash.Resource.Attribute{} form Ash passes); :expression for a calculation/aggregate
+  # STRUCT field (non-atom) — not a Cypher-expressible property, rejected value-free.
+  defp normalize_sort_entry({%Ash.Resource.Attribute{name: name}, direction}),
+    do: {name, direction}
+
+  defp normalize_sort_entry({name, direction}) when is_atom(name), do: {name, direction}
+  defp normalize_sort_entry(_entry), do: :expression
+
+  # Value-free: `reason` names only the field atom / a static string — never a value (Rule 4).
+  defp sort_error(reason), do: QueryFailed.exception(query: "ArcadeDB sort", reason: reason)
 
   @impl true
   def limit(query, limit, _resource), do: {:ok, %{query | limit: limit}}
@@ -344,7 +374,7 @@ defmodule AshArcadic.DataLayer do
   defp do_run_aggregate(query, resource, aggregates) do
     case read_conn(query, resource) do
       {:ok, conn} ->
-        reduce_aggregates(conn, query, aggregates, Info.attribute_types(resource))
+        reduce_aggregates(conn, query, aggregates, resource, Info.attribute_types(resource))
 
       {:error, :tenant_required} ->
         {:error,
@@ -364,36 +394,60 @@ defmodule AshArcadic.DataLayer do
 
   # One statement per aggregate (per-agg filters, C2); first failure halts value-free,
   # dropping the accumulated results (no partial map leaks past a failed aggregate).
-  defp reduce_aggregates(conn, query, aggregates, attr_types) do
+  defp reduce_aggregates(conn, query, aggregates, resource, attr_types) do
     Enum.reduce_while(aggregates, {:ok, %{}}, fn agg, {:ok, acc} ->
-      case run_one_aggregate(conn, query, agg, attr_types) do
+      case run_one_aggregate(conn, query, agg, resource, attr_types) do
         {:ok, value} -> {:cont, {:ok, Map.put(acc, agg.name, value)}}
         {:error, _} = error -> {:halt, error}
       end
     end)
   end
 
-  defp run_one_aggregate(conn, query, agg, attr_types) do
-    case AshArcadic.Aggregate.build_statement(query, agg, attr_types) do
-      {:ok, cypher, params} ->
-        case Arcadic.query(conn, cypher, params) do
-          {:ok, rows} ->
-            {:ok, AshArcadic.Aggregate.decode(rows, agg, attr_types)}
-
-          {:error, error} ->
-            {:error,
-             QueryFailed.exception(
-               query: "ArcadeDB aggregate query",
-               reason: redact_db_error(error)
-             )}
-        end
-
+  defp run_one_aggregate(conn, query, agg, resource, attr_types) do
+    with :ok <- validate_agg_sort(agg, resource),
+         {:ok, cypher, params} <- AshArcadic.Aggregate.build_statement(query, agg, attr_types) do
+      run_aggregate_statement(conn, cypher, params, agg, attr_types)
+    else
       {:error, reason} ->
         {:error,
          QueryFailed.exception(
            query: "ArcadeDB aggregate query",
            reason: aggregate_reason(reason)
          )}
+    end
+  end
+
+  # Reject a :first aggregate sort field that is not a STORED attribute (value-free). The
+  # non-atom (calc/agg STRUCT) sort field is rejected inside Aggregate.build_statement
+  # (guard_sort — the Rule-4 to_string leak guard); this covers a bare-atom sort field that
+  # NAMES a calculation/aggregate or a `skip`-ped attribute (not an ArcadeDB property, so
+  # `ORDER BY n.<field>` would sort by null → arbitrary first). Only :first consults query.sort;
+  # same Info.sortable_field?/2 guard as the record-read sort path (fail-closed, cross-path).
+  defp validate_agg_sort(
+         %Ash.Query.Aggregate{kind: :first, query: %{sort: [_ | _] = sort}},
+         resource
+       ) do
+    Enum.reduce_while(sort, :ok, fn
+      {field, _dir}, :ok when is_atom(field) ->
+        if Info.sortable_field?(resource, field),
+          do: {:cont, :ok},
+          else: {:halt, {:error, {:unsortable_sort_field, field}}}
+
+      _entry, :ok ->
+        {:cont, :ok}
+    end)
+  end
+
+  defp validate_agg_sort(_agg, _resource), do: :ok
+
+  defp run_aggregate_statement(conn, cypher, params, agg, attr_types) do
+    case Arcadic.query(conn, cypher, params) do
+      {:ok, rows} ->
+        {:ok, AshArcadic.Aggregate.decode(rows, agg, attr_types)}
+
+      {:error, error} ->
+        {:error,
+         QueryFailed.exception(query: "ArcadeDB aggregate query", reason: redact_db_error(error))}
     end
   end
 
@@ -407,6 +461,9 @@ defmodule AshArcadic.DataLayer do
 
   defp aggregate_reason(:expression_sort),
     do: "aggregate :first sort over an expression/calculation field is unsupported"
+
+  defp aggregate_reason({:unsortable_sort_field, field}),
+    do: "aggregate :first sort field #{field} is not a stored attribute"
 
   defp aggregate_reason({:unsupported_kind, kind}), do: "aggregate kind #{kind} is unsupported"
 

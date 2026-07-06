@@ -46,5 +46,18 @@ defmodule AshArcadic.DataLayer.Info do
     |> Map.new(&{&1.name, {&1.type, &1.constraints}})
   end
 
+  @doc """
+  Whether `field` is a STORED ArcadeDB property — a declared attribute NOT in `skip` — and
+  thus the only kind of field an `ORDER BY n.<field>` can reference. False for a
+  calculation/aggregate NAME (not a declared attribute at all) and for a declared-but-skipped
+  attribute (never persisted as a property). Drives the sort-field guard on BOTH the
+  record-read sort path (`sort/3`) and the aggregate `:first` sort path: a non-stored sort
+  field fails LOUD value-free rather than emitting `ORDER BY` against a non-existent property,
+  which ArcadeDB treats as null → a silently arbitrary order.
+  """
+  @spec sortable_field?(Ash.Resource.t(), atom()) :: boolean()
+  def sortable_field?(resource, field) when is_atom(field),
+    do: Map.has_key?(attribute_map(resource), field)
+
   defp default_label(resource), do: resource |> Module.split() |> List.last()
 end
