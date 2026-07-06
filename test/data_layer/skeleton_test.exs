@@ -43,6 +43,8 @@ defmodule AshArcadic.DataLayer.SkeletonTest do
     assert AshArcadic.DataLayer.can?(AshArcadic.Test.Basic, {:query_aggregate, :count})
     assert AshArcadic.DataLayer.can?(AshArcadic.Test.Basic, {:query_aggregate, :sum})
     refute AshArcadic.DataLayer.can?(AshArcadic.Test.Basic, {:aggregate, :count})
+    refute AshArcadic.DataLayer.can?(AshArcadic.Test.Basic, {:aggregate_relationship, %{}})
+    refute AshArcadic.DataLayer.can?(AshArcadic.Test.Basic, {:query_aggregate, :custom})
     refute AshArcadic.DataLayer.can?(AshArcadic.Test.Basic, {:lateral_join, []})
   end
 end

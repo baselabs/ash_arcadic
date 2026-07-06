@@ -34,4 +34,20 @@ defmodule AshArcadic.DataLayer.AggregateQueryTest do
     assert {:error, %AshArcadic.Errors.QueryFailed{}} =
              AshArcadic.DataLayer.run_aggregate_query(query, [agg], AshArcadic.Test.Basic)
   end
+
+  test "run_aggregate_query/3 fails closed value-free for a :context resource with a blank tenant" do
+    # DB-free: AshArcadic.Test.ContextDoc is :context strategy. A query with database == nil means
+    # set_tenant/3 never fired (blank tenant). read_conn/2's :context branch returns
+    # {:error, :tenant_required} BEFORE any conn/network I/O, so do_run_aggregate's own
+    # :tenant_required arm surfaces a value-free QueryFailed "tenant required for :context read" —
+    # the fail-closed defense-in-depth backstop behind Ash-core's TenantRequired.
+    query = %AshArcadic.Query{resource: AshArcadic.Test.ContextDoc, database: nil, tenant: nil}
+    agg = struct(Ash.Query.Aggregate, name: :c, kind: :count, field: nil, uniq?: false)
+
+    assert {:error, %AshArcadic.Errors.QueryFailed{} = err} =
+             AshArcadic.DataLayer.run_aggregate_query(query, [agg], AshArcadic.Test.ContextDoc)
+
+    # value-free: names only the strategy/operation, never a tenant/database value.
+    assert Exception.message(err) =~ "tenant required for :context read"
+  end
 end
