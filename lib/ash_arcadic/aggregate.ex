@@ -115,6 +115,7 @@ defmodule AshArcadic.Aggregate do
           {:ok, String.t(), map()} | {:error, term()}
   def build_statement(%Query{} = base, %Ash.Query.Aggregate{} = agg, types) do
     with :ok <- guard_field(agg, types),
+         :ok <- guard_sort(agg),
          {:ok, query, agg_clause} <- translate_agg_filter(base, agg) do
       label = Identifier.validate!(base.label)
       where = build_where(base.filters ++ agg_clause)
@@ -177,6 +178,20 @@ defmodule AshArcadic.Aggregate do
   end
 
   defp translate_agg_filter(base, _agg), do: {:ok, base, []}
+
+  # :first's ORDER BY fields flow through ident/1 (to_string) in order_prefix/1. A non-atom
+  # sort field (a %Ash.Query.Calculation{}/%Ash.Query.Aggregate{} — both valid Ash.Sort.t())
+  # would raise Protocol.UndefinedError carrying the struct (its opts embed caller literals) —
+  # the symmetric Rule-4 leak guard_field/2 closes for agg.field. Reject value-free BEFORE any
+  # to_string. Only :first consults query.sort; every other kind ignores it.
+  defp guard_sort(%Ash.Query.Aggregate{kind: :first, query: %{sort: [_ | _] = sort}}) do
+    if Enum.all?(sort, &sort_field_atom?/1), do: :ok, else: {:error, :expression_sort}
+  end
+
+  defp guard_sort(_agg), do: :ok
+
+  defp sort_field_atom?({field, _dir}), do: is_atom(field)
+  defp sort_field_atom?(field), do: is_atom(field)
 
   # ORDER BY prefix for :first (uses the aggregate's query.sort; empty → no prefix,
   # first is arbitrary per Ash). Only :first needs a WITH-projection before RETURN.

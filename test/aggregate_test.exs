@@ -203,6 +203,23 @@ defmodule AshArcadic.AggregateTest do
                )
     end
 
+    test ":first sort by a non-atom (calculation) field fails closed value-free — no struct leak" do
+      # order_prefix/1 interpolates each sort field via ident/1 (to_string). A calculation
+      # struct sort field (a valid Ash.Sort.t()) would raise Protocol.UndefinedError carrying
+      # the struct (opts embed caller literals — the Rule-4 leak guard_field/2 closes for
+      # agg.field). guard_sort/1 must reject it value-free BEFORE any to_string.
+      calc = %Ash.Query.Calculation{
+        name: :c,
+        module: SomeMod,
+        opts: [secret_literal: "SENSITIVE"],
+        type: nil,
+        constraints: []
+      }
+
+      a = agg(:first, field: :amount, query: %Ash.Query{sort: [{calc, :desc}]})
+      assert {:error, :expression_sort} = Aggregate.build_statement(base_query(), a, @types)
+    end
+
     test "an unsupported per-aggregate filter fails closed via translate (not swallowed)" do
       # Distinct from the guard_field path: :count passes guard_field (no field), so
       # execution REACHES translate_agg_filter. A range op on Basic's :binary :secret

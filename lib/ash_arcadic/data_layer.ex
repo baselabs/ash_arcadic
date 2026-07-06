@@ -405,6 +405,9 @@ defmodule AshArcadic.DataLayer do
   defp aggregate_reason(:expression_field),
     do: "aggregate over an expression/calculation field is unsupported"
 
+  defp aggregate_reason(:expression_sort),
+    do: "aggregate :first sort over an expression/calculation field is unsupported"
+
   defp aggregate_reason({:unsupported_kind, kind}), do: "aggregate kind #{kind} is unsupported"
 
   defp aggregate_reason({:include_nil_unsupported, kind}),
