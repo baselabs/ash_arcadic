@@ -350,28 +350,37 @@ defmodule AshArcadic.DataLayer do
   defp attach_traversal_aggregates(records, [], _resource), do: {:ok, records}
 
   defp attach_traversal_aggregates(records, aggs, resource) do
-    types = Info.attribute_types(resource)
-
     # Each aggregate: one batched authorized Ash.load over ALL records at once (Traverse UNWIND $ids
     # → not N+1), then fold + attach per record. Multi-segment paths fail closed value-free (non-goal).
     # NOTE: add_aggregate/3 PREPENDS, so `aggs` is in reverse declaration order — harmless here because
     # each aggregate is loaded+folded+attached INDEPENDENTLY by its own .load/.name key (no positional
     # zipping against anything). (Aggregates sharing a rel+query could share one load — future opt.)
+    # `resource` is the SOURCE; the DESTINATION type map is resolved per-aggregate in load_and_attach
+    # (different aggregates may target different rels/destinations).
     Enum.reduce_while(aggs, {:ok, records}, fn agg, {:ok, recs} ->
-      case load_and_attach(recs, agg, types) do
+      case load_and_attach(recs, agg, resource) do
         {:ok, recs2} -> {:cont, {:ok, recs2}}
         {:error, _} = err -> {:halt, err}
       end
     end)
   end
 
-  defp load_and_attach(records, %Ash.Query.Aggregate{relationship_path: [rel]} = agg, types) do
+  defp load_and_attach(records, %Ash.Query.Aggregate{relationship_path: [rel]} = agg, source) do
+    # The fold runs over DESTINATION records (Traverse Read B). guard_field/2's binary/sensitive
+    # rejection and the min/max comparator key off the DESTINATION field's storage type — resolve the
+    # type map from the destination resource, NOT `source` (self-referential coincides; a cross-resource
+    # traverse would otherwise mis-type or omit the dest field → wrong comparator / sensitive-guard
+    # bypass). Matches Traverse.do_load's own Info.attribute_types(dest) for the dest PK.
+    types = aggregate_dest_types(source, agg)
     ctx = agg.context || %{}
 
     load_opts = [
       actor: Map.get(ctx, :actor),
-      # REAL authz threaded (never authorize?:false — per-hop intermediate authz is the only
-      # enforcement point for the traversal; V4). Ash always populates ctx.authorize? on the
+      # REAL authz threaded (never authorize?:false). Per-hop INTERMEDIATE authz is enforced by Ash
+      # propagating this outer read's context.authorize? into the manual-rel %Context{}, consumed at
+      # Traverse.authorize_nodes/authorized_read (traverse.ex:471-499) — NOT by this inner opt, which
+      # passes the same value as redundant, fail-closed defense-in-depth (KEEP; see V4 and
+      # project_relationship_aggregate_authz_mechanism). Ash always populates ctx.authorize? on the
       # inline entrypoint; the default here is FAIL-CLOSED (true), not false.
       authorize?: Map.get(ctx, :authorize?, true),
       tenant: Map.get(ctx, :tenant)
@@ -388,7 +397,7 @@ defmodule AshArcadic.DataLayer do
     end
   end
 
-  defp load_and_attach(_records, %Ash.Query.Aggregate{relationship_path: path}, _types)
+  defp load_and_attach(_records, %Ash.Query.Aggregate{relationship_path: path}, _source)
        when length(path) != 1,
        do:
          {:error,
@@ -396,6 +405,17 @@ defmodule AshArcadic.DataLayer do
             query: "ArcadeDB traversal aggregate",
             reason: "multi-segment relationship aggregate unsupported"
           )}
+
+  @doc false
+  # The DESTINATION resource's storage-type map for a single-segment relationship aggregate. The fold
+  # operates on destination records (Traverse Read B), so guard_field/2 (binary/sensitive rejection)
+  # and the min/max comparator must key off the DESTINATION's types, not the source being read. For a
+  # self-referential traverse the destination IS the source; a cross-resource traverse diverges.
+  # Public @doc false so the cross-resource regression test can assert the resolution directly.
+  @spec aggregate_dest_types(Ash.Resource.t(), Ash.Query.Aggregate.t()) ::
+          %{atom() => {Ash.Type.t(), keyword()}}
+  def aggregate_dest_types(source, %Ash.Query.Aggregate{relationship_path: [rel]}),
+    do: Info.attribute_types(Ash.Resource.Info.related(source, [rel]))
 
   defp fold_and_put(loaded, rel, agg, types) do
     Enum.reduce_while(loaded, {:ok, []}, fn record, {:ok, acc} ->
@@ -621,6 +641,12 @@ defmodule AshArcadic.DataLayer do
   # The traversal fold path (fold_and_put → TraversalAggregate.fold → safe_fold rescue) surfaces
   # this atom when a to_string/inspect/arith error over a mixed destination set is caught value-free.
   defp aggregate_reason(:aggregate_fold_failed), do: "aggregate computation failed"
+
+  # Slice-4 closeout: the traversal fold rejects a field the destination's field policy redacted to
+  # %Ash.ForbiddenField{} (an actor cannot aggregate a field they cannot read) — a field-authz
+  # fail-closed. Value-free: names the field atom only, never a value (the marker carries none).
+  defp aggregate_reason({:aggregate_field_forbidden, field}),
+    do: "aggregate over field #{field} is forbidden by field policy"
 
   # Slice 4: a standalone relationship aggregate run through run_aggregate_query/3 (Ash.aggregate
   # over a non-empty relationship_path) fails closed BEFORE resolving a conn — the per-node subtree

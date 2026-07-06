@@ -119,4 +119,23 @@ defmodule AshArcadic.TraversalAggregateTest do
     assert {:ok, _} =
              TraversalAggregate.fold(recs(), agg(:list, :name, include_nil?: true), types())
   end
+
+  # A field-policy-redacted destination value comes back from Traverse Read B as %Ash.ForbiddenField{}.
+  # Folding it (list returns the marker; count/first count/return it) is a field-authz FAIL-OPEN — an
+  # actor cannot aggregate a field they are not allowed to read. Fail closed value-free (field atom
+  # only, no value — the marker carries none anyway). (Cross-vendor unique catch, Slice-4 closeout.)
+  test "field-policy-redacted (%Ash.ForbiddenField{}) destination value fails the fold closed value-free" do
+    redacted = %Ash.ForbiddenField{field: :name, type: :attribute}
+    recs = [%Dst{id: "a", name: redacted}, %Dst{id: "b", name: "B"}]
+
+    for kind <- [:list, :count, :first, :min, :max] do
+      assert {:error, {:aggregate_field_forbidden, :name}} =
+               TraversalAggregate.fold(recs, agg(kind, :name), types()),
+             "expected #{kind} over a forbidden field to fail closed"
+    end
+
+    # Plain count (no field) and exists read NO field → unaffected by a redaction on other fields.
+    assert TraversalAggregate.fold(recs, agg(:count, nil), types()) == {:ok, 2}
+    assert TraversalAggregate.fold(recs, agg(:exists, nil), types()) == {:ok, true}
+  end
 end

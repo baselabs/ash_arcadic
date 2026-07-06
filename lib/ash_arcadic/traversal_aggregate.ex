@@ -26,10 +26,24 @@ defmodule AshArcadic.TraversalAggregate do
     # gets the ORIGINAL agg and honors the real include_nil?. (Clause 4 is guard_field/2's ONLY
     # include_nil?-reading clause — verified aggregate.ex:31-65 — so this is exact, not a workaround.)
     case Aggregate.guard_field(%{agg | include_nil?: false}, types) do
-      :ok -> safe_fold(records, agg, types)
-      {:error, _} = err -> err
+      :ok ->
+        # Field policy on the destination redacts a field to %Ash.ForbiddenField{} in Traverse Read B.
+        # Folding it (list returns the marker; count/first/min/max count or return it) is a field-authz
+        # FAIL-OPEN — an actor cannot aggregate a field they are not permitted to read. Fail closed
+        # value-free (the marker carries no value; the reason names the field atom only, Rule 4).
+        if agg.field && forbidden_field?(records, agg.field) do
+          {:error, {:aggregate_field_forbidden, agg.field}}
+        else
+          safe_fold(records, agg, types)
+        end
+
+      {:error, _} = err ->
+        err
     end
   end
+
+  defp forbidden_field?(records, field),
+    do: Enum.any?(records, &match?(%Ash.ForbiddenField{}, Map.get(&1, field)))
 
   # Value-free wrapper (Rule 4): a to_string/inspect/arith error over a mixed set must not carry
   # a value across the callback boundary. The guard already rejected unaggregatable fields, so a

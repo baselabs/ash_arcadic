@@ -162,7 +162,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `include_nil?` is **honored** for traversal `list`/`first` (a capability gain over the Slice-3 flat
   path, whose Cypher `collect` drops nulls). Empty/all-null-field sets decode to the aggregate's Ash
   default; the storage-class guard (`sum`/`avg` numeric; `min`/`max`/`first` order-preserving; `list`
-  rejects `:binary`) is reused value-free. `{:aggregate, kind}` / `{:aggregate_relationship, _}` now
+  rejects `:binary`) is reused value-free — keyed off the **destination** resource's storage types
+  (correct for cross-resource traverses, not just self-referential). A **field-policy-redacted**
+  destination value (`%Ash.ForbiddenField{}` from Read B) fails the aggregate **closed** value-free —
+  an actor cannot aggregate a field they are not permitted to read. `{:aggregate, kind}` /
+  `{:aggregate_relationship, _}` now
   advertised; `{:aggregate, :unrelated}` / `{:aggregate, :custom}` stay refused (Ash rejects flat
   inline aggregates upstream). **Standalone `Ash.aggregate` over a relationship path is rejected
   value-free** (`run_aggregate_query/3` fails closed on a non-empty `relationship_path` — load the
