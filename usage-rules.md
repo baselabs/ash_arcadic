@@ -60,10 +60,11 @@ _An Ash DataLayer for ArcadeDB (native OpenCypher over HTTP)._
   `:attribute` resource rides Ash-core's injected discriminator filter. A **per-aggregate
   filter** is honored (ANDed onto the tenant scope); an unpushable per-aggregate filter fails
   closed (`UnsupportedFilter`), never a silently unscoped aggregate.
-- **Empty sets return Ash's per-kind default, not ArcadeDB's.** `sum` / `avg` / `min` / `max` /
-  `first` over an empty (or fully-scoped-out) set → `nil` — a `count(n)` cardinality companion
-  disambiguates the empty set from ArcadeDB's `sum → 0`; `count → 0`; `list → []`. A
-  caller-supplied `default_value` is honored.
+- **Empty (and all-null-field) sets return Ash's per-kind default, not ArcadeDB's.** `sum` /
+  `avg` / `min` / `max` / `first` over a set with no non-null field values → `nil` — a
+  `count(n.<field>)` non-null-count companion disambiguates it from ArcadeDB's `sum → 0`
+  (matching Ash/SQL null-skipping); `count → 0`; `list → []`. A caller-supplied `default` is
+  honored.
 - **Storage-class guard (fail-closed value-free).** `sum` / `avg` require **numeric** storage
   (`:integer` / `:float`) — rejected over `:decimal` (exact-string; ArcadeDB `sum`/`avg` would
   concatenate/error) and every non-numeric type. `min` / `max` / `first` require
@@ -75,6 +76,8 @@ _An Ash DataLayer for ArcadeDB (native OpenCypher over HTTP)._
   aggregate-relationship aggregates, and lateral joins are **not** supported (ArcadeDB has no
   window functions, and a manual traversal cannot be pushed into an aggregate) — use a
   standalone `Ash.aggregate` / `Ash.count` / etc. **Custom** aggregate kinds are unsupported.
+  `include_nil?: true` on `list` / `first` is **unsupported** (ArcadeDB `collect` drops nulls) —
+  it fails closed value-free rather than silently returning a nulls-dropped result.
 
 ## Multitenancy (Plan 2)
 

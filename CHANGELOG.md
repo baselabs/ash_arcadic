@@ -125,9 +125,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   count/sum/avg/min/max/first/list/exists (custom rejected); `{:aggregate,_}` /
   `{:aggregate_relationship,_}` / `{:lateral_join,_}` stay unsupported (ArcadeDB has no window
   functions and a manual traversal can't be pushed into an aggregate — use a standalone
-  `Ash.aggregate`). **Empty sets decode to Ash's per-kind default, not ArcadeDB's:**
-  `sum`/`avg`/`min`/`max`/`first` over an empty set → `nil` (a `count(n)` cardinality companion
-  disambiguates ArcadeDB's `sum → 0`); `count → 0`; `list → []`; a caller `default_value` is
+  `Ash.aggregate`). **Empty (and all-null-field) sets decode to Ash's per-kind default, not
+  ArcadeDB's:** `sum`/`avg`/`min`/`max`/`first` over a set with no non-null field values → `nil`
+  (a `count(n.<field>)` non-null-count companion disambiguates ArcadeDB's `sum → 0`, matching
+  Ash/SQL null-skipping semantics); `count → 0`; `list → []`; a caller `default_value` is
   honored. **Storage-class guard (fail-closed value-free):** `sum`/`avg` require numeric
   (`:integer`/`:float`) storage; `min`/`max`/`first` require order-preserving storage (reject
   `:binary` + `:decimal`, per D27); `list` rejects `:binary` (an encrypted/`sensitive`
@@ -137,6 +138,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`/review-autopilot` closeout (Slice 3, Plan 1, 2026-07-06).** Three correctness/leak gaps
+  between the spec's intent and the shipped query aggregates:
+  - **`include_nil?: true` silently dropped nulls** — a `list`/`first` aggregate with
+    `include_nil?: true` ran plain `collect(...)` (which skips nulls). Now fails closed
+    value-free (spec §6.5); null-preserving support remains a future capability.
+  - **all-null-field aggregates bypassed the Ash default** — the empty-vs-zero companion was
+    `count(n)` (counts rows), so an aggregate over a set whose field is null in every row
+    returned ArcadeDB's raw value (`sum → 0`, `min → nil`) instead of the Ash default. The
+    companion is now `count(n.<field>)` (non-null count), matching Ash/SQL null-skipping.
+  - **`:first` sort by a non-atom field could leak** — an expression/calculation sort field
+    raised a value-carrying `Protocol.UndefinedError`. Now rejected value-free before any
+    identifier coercion (Rule 4).
 - **`/review-autopilot` closeout (Plan 2, 2026-07-05).** Tenant-isolation and
   fail-closed hardening surfaced by the closeout review:
   - **`:attribute` upsert cross-tenant hijack** — the native `MERGE` matched on the

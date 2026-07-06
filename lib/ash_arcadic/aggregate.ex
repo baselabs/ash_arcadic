@@ -111,8 +111,8 @@ defmodule AshArcadic.Aggregate do
   or a value-free `{:error, reason}` from the field guard (§6.4). The WHERE ANDs the
   base query's `filters` with the aggregate's OWN `query.filter` (C2 — a shared RETURN
   can't express distinct per-agg filters, so each aggregate is its own statement). The
-  RETURN uses synthetic alias `agg0`; value-reading kinds append `count(n) AS agg0_card`
-  (§6.1). `:first` prepends `WITH n ORDER BY <agg sort>`.
+  RETURN uses synthetic alias `agg0`; value-reading kinds carry a `count(n.<field>) AS
+  agg0_card` companion (§6.1). `:first` prepends `WITH n ORDER BY <agg sort>`.
   """
   @spec build_statement(Query.t(), Ash.Query.Aggregate.t(), %{atom() => {Ash.Type.t(), keyword()}}) ::
           {:ok, String.t(), map()} | {:error, term()}
