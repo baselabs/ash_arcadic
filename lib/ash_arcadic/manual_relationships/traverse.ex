@@ -388,14 +388,17 @@ defmodule AshArcadic.ManualRelationships.Traverse do
     end
   end
 
-  # Read A — per-hop node authorization (§7.2 step 2a, amended). A BASE authorized read on the
-  # destination resource carrying only actor/authorize?/tenant/domain — NOT `context.query`,
-  # whose caller filter/sort SELECT and SHAPE destinations, not which nodes may be traversed
-  # THROUGH. So ROW POLICY alone decides each node's visibility (a filtered-out but authorized
-  # intermediate is still traversable). Returns the authorized node records; a node absent →
-  # denied (fail-closed). Same :attribute tenant filter / :context tenant DB as any read.
+  # Read A — per-hop node authorization (§7.2 step 2a, amended). An authorized read on the
+  # destination resource under the SAME read action Read B uses (`context.query.action.name` —
+  # the relationship's configured `read_action` or the primary read), so intermediates are
+  # authorized by the same policies that gate destinations (a stricter configured read_action
+  # gates intermediates too — fail-closed). It does NOT carry `context.query`'s caller filter/
+  # sort, which SELECT and SHAPE destinations, not which nodes may be traversed THROUGH (a
+  # filtered-out but authorized intermediate is still traversable). A node absent from the result
+  # → denied (fail-closed). Same :attribute tenant filter / :context tenant DB as any read.
   defp authorize_nodes(context, dest, dest_pk, node_union) do
     dest
+    |> Ash.Query.for_read(context.query.action.name)
     |> Ash.Query.filter(^Ash.Expr.ref(dest_pk) in ^node_union)
     |> Ash.read(
       actor: context.actor,

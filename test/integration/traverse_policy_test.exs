@@ -23,6 +23,19 @@ defmodule AshArcadic.Integration.TraversePolicyTest do
     rec
   end
 
+  defp create_strict(id, org, name, visible, strict_ok) do
+    {:ok, rec} =
+      TraversePolicyNode
+      |> Ash.Changeset.for_create(
+        :create,
+        %{id: id, name: name, visible: visible, strict_ok: strict_ok},
+        tenant: org
+      )
+      |> Ash.create(actor: @admin)
+
+    rec
+  end
+
   defp pol_edge(admin, from, to, org) do
     Arcadic.command!(
       admin,
@@ -87,6 +100,36 @@ defmodule AshArcadic.Integration.TraversePolicyTest do
              "MID",
              "OK"
            ]
+  end
+
+  test "PER-HOP under a configured read_action: an intermediate denied by the stricter action drops the downstream dest",
+       %{admin: admin} do
+    # descendants_strict reads via :strict (requires visible AND strict_ok). `mid` passes the
+    # PRIMARY :read (visible) but FAILS :strict (strict_ok:false). Read A must authorize
+    # intermediates under :strict — the SAME action Read B uses — so `leaf` (reachable ONLY via
+    # mid) is dropped. (A Read A that used the primary :read would authorize mid → leak leaf.)
+    p1 = create_attr("p1", "org1", "P1", true)
+    create_strict("mid", "org1", "MID", true, false)
+    create_attr("leaf", "org1", "LEAF", true)
+    create_attr("ok", "org1", "OK", true)
+    pol_edge(admin, "p1", "mid", "org1")
+    pol_edge(admin, "mid", "leaf", "org1")
+    pol_edge(admin, "p1", "ok", "org1")
+
+    {:ok, loaded} =
+      Ash.load(p1, :descendants_strict, tenant: "org1", actor: @user, authorize?: true)
+
+    names = loaded.descendants_strict |> Enum.map(& &1.name) |> Enum.sort()
+
+    # OK survives; MID denied by :strict; LEAF dropped (its only path crosses the :strict-denied MID).
+    assert names == ["OK"]
+    refute "LEAF" in names
+
+    # Non-vacuity: authorize?: false traverses unrestricted → LEAF + MID reappear.
+    {:ok, unauth} =
+      Ash.load(p1, :descendants_strict, tenant: "org1", actor: @user, authorize?: false)
+
+    assert "LEAF" in (unauth.descendants_strict |> Enum.map(& &1.name))
   end
 
   test "a caller FILTER selects destinations but does NOT block traversal through a filtered-out (but authorized) intermediate",
