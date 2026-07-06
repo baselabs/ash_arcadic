@@ -113,6 +113,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   must have a single-attribute primary key (composite → fail-closed value-free). Adds
   `{:simple_sat, "~> 0.1"}` (the SAT solver `Ash.Policy.Authorizer` requires). **Slice 2
   is now feature-complete** (edge writes + traversal upgrade); closeout review pending.
+- **Query aggregates (Slice 3, Plan 1).** The `run_aggregate_query/3` data-layer callback
+  powers `Ash.count/sum/avg/min/max/first/list/exists?/aggregate` (incl. `uniq?`) and
+  offset-pagination `count: true` over AshArcadic resources, **tenant-scoped fail-closed**
+  (`:context` blank tenant → error, never a base-database read; `:attribute` rides Ash-core's
+  injected discriminator filter). A new pure `AshArcadic.Aggregate` builds ONE parameterized
+  Cypher statement per aggregate — each honoring its **own per-aggregate filter** (ANDed onto
+  the tenant scope; an unpushable per-agg filter fails closed `UnsupportedFilter`, never a
+  silent unscoped aggregate) — reusing the Slice-1 `Query`/`Filter`/`Cast`/`read_conn`
+  primitives (no forked enforcement path). `{:query_aggregate, kind}` is advertised for
+  count/sum/avg/min/max/first/list/exists (custom rejected); `{:aggregate,_}` /
+  `{:aggregate_relationship,_}` / `{:lateral_join,_}` stay unsupported (ArcadeDB has no window
+  functions and a manual traversal can't be pushed into an aggregate — use a standalone
+  `Ash.aggregate`). **Empty sets decode to Ash's per-kind default, not ArcadeDB's:**
+  `sum`/`avg`/`min`/`max`/`first` over an empty set → `nil` (a `count(n)` cardinality companion
+  disambiguates ArcadeDB's `sum → 0`); `count → 0`; `list → []`; a caller `default_value` is
+  honored. **Storage-class guard (fail-closed value-free):** `sum`/`avg` require numeric
+  (`:integer`/`:float`) storage; `min`/`max`/`first` require order-preserving storage (reject
+  `:binary` + `:decimal`, per D27); `list` rejects `:binary` (an encrypted/`sensitive`
+  attribute would otherwise return ciphertext) — a rejected aggregate names only the field +
+  kind, never a value. Adds an `:aggregate` telemetry span (`kinds` / `aggregate_count`).
+  **Slice 3, Plan 2 (per-source traversal limits) is pending.**
 
 ### Fixed
 

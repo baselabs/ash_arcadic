@@ -51,6 +51,31 @@ _An Ash DataLayer for ArcadeDB (native OpenCypher over HTTP)._
   filtering or sorting. (`:binary` attributes are likewise unrangeable/unsortable —
   base64 is not byte-order-preserving.)
 
+## Aggregates (Slice 3, Plan 1)
+
+- **Supported kinds:** `Ash.count / sum / avg / min / max / first / list / exists?` and
+  `Ash.aggregate` (including `uniq?`), plus offset-pagination `count: true`. Each aggregate
+  runs as **one parameterized Cypher statement**, **tenant-scoped fail-closed** — the same
+  posture as reads: a `:context` blank tenant errors (never a base-database read), and an
+  `:attribute` resource rides Ash-core's injected discriminator filter. A **per-aggregate
+  filter** is honored (ANDed onto the tenant scope); an unpushable per-aggregate filter fails
+  closed (`UnsupportedFilter`), never a silently unscoped aggregate.
+- **Empty sets return Ash's per-kind default, not ArcadeDB's.** `sum` / `avg` / `min` / `max` /
+  `first` over an empty (or fully-scoped-out) set → `nil` — a `count(n)` cardinality companion
+  disambiguates the empty set from ArcadeDB's `sum → 0`; `count → 0`; `list → []`. A
+  caller-supplied `default_value` is honored.
+- **Storage-class guard (fail-closed value-free).** `sum` / `avg` require **numeric** storage
+  (`:integer` / `:float`) — rejected over `:decimal` (exact-string; ArcadeDB `sum`/`avg` would
+  concatenate/error) and every non-numeric type. `min` / `max` / `first` require
+  **order-preserving** storage — rejected over `:binary` and `:decimal` (same D27 reason
+  sort is restricted). `list` rejects **`:binary`** (an encrypted-binary / `sensitive`
+  attribute would otherwise return ciphertext into the result). `count` / `exists?` are always
+  allowed. A rejected aggregate names only the field + kind — never a value.
+- **Unsupported:** inline field aggregates (`add_aggregates`), relationship /
+  aggregate-relationship aggregates, and lateral joins are **not** supported (ArcadeDB has no
+  window functions, and a manual traversal cannot be pushed into an aggregate) — use a
+  standalone `Ash.aggregate` / `Ash.count` / etc. **Custom** aggregate kinds are unsupported.
+
 ## Multitenancy (Plan 2)
 
 - **`:context` = database-per-tenant** (strongest isolation): `set_tenant/3`
