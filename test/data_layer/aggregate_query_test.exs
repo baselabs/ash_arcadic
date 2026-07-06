@@ -73,4 +73,19 @@ defmodule AshArcadic.DataLayer.AggregateQueryTest do
     assert Exception.message(err) =~ "computed"
     assert Exception.message(err) =~ "not a stored attribute"
   end
+
+  test "run_aggregate_query/3 rejects a value-reading aggregate over a SKIPPED field (value-free)" do
+    # DB-free: :computed is DECLARED (:string, so it passes guard_field's range-comparable check)
+    # but `arcade do skip [:computed] end` → NOT an ArcadeDB property. min(n.computed) would read a
+    # non-existent property → null → the Ash default (silent nil). Must fail closed value-free —
+    # the guard fires before build_statement/Arcadic.query. count/exists (presence-only) stay allowed.
+    query = AshArcadic.DataLayer.resource_to_query(AshArcadic.Test.Basic, AshArcadic.Test.Domain)
+    agg = struct(Ash.Query.Aggregate, name: :m, kind: :min, field: :computed, uniq?: false)
+
+    assert {:error, %AshArcadic.Errors.QueryFailed{} = err} =
+             AshArcadic.DataLayer.run_aggregate_query(query, [agg], AshArcadic.Test.Basic)
+
+    assert Exception.message(err) =~ "computed"
+    assert Exception.message(err) =~ "not a stored attribute"
+  end
 end
