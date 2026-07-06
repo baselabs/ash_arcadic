@@ -407,6 +407,9 @@ defmodule AshArcadic.DataLayer do
 
   defp aggregate_reason({:unsupported_kind, kind}), do: "aggregate kind #{kind} is unsupported"
 
+  defp aggregate_reason({:include_nil_unsupported, kind}),
+    do: "aggregate #{kind} with include_nil?: true is unsupported (ArcadeDB collect drops nulls)"
+
   # An aggregate carrying its OWN query.filter with an operator AshArcadic can't push down.
   # build_statement/3 → translate_agg_filter/2 propagates {:error, %UnsupportedFilter{}}.
   # The struct captures ONLY the operator module + field atom (never the filtered value —

@@ -90,6 +90,20 @@ defmodule AshArcadic.AggregateTest do
       assert {:error, {:unsupported_kind, :custom}} =
                Aggregate.guard_field(agg(:custom, field: calc), @types)
     end
+
+    test "include_nil?: true on list/first fails closed value-free (§6.5 — collect drops nulls)" do
+      assert {:error, {:include_nil_unsupported, :list}} =
+               Aggregate.guard_field(agg(:list, field: :name, include_nil?: true), @types)
+
+      assert {:error, {:include_nil_unsupported, :first}} =
+               Aggregate.guard_field(agg(:first, field: :amount, include_nil?: true), @types)
+
+      # include_nil?: false (the default) is unaffected — list/first still pass their storage guard.
+      assert Aggregate.guard_field(agg(:list, field: :name, include_nil?: false), @types) == :ok
+
+      assert Aggregate.guard_field(agg(:first, field: :amount, include_nil?: false), @types) ==
+               :ok
+    end
   end
 
   describe "return_expr/2 — per-kind Cypher honoring field/uniq? (§6.2)" do
@@ -178,6 +192,15 @@ defmodule AshArcadic.AggregateTest do
     test "a non-aggregatable field fails closed value-free (no cypher built)" do
       assert {:error, {:unaggregatable, :price, :sum}} =
                Aggregate.build_statement(base_query(), agg(:sum, field: :price), @types)
+    end
+
+    test "include_nil?: true propagates the value-free rejection (no cypher built)" do
+      assert {:error, {:include_nil_unsupported, :list}} =
+               Aggregate.build_statement(
+                 base_query(),
+                 agg(:list, field: :name, include_nil?: true),
+                 @types
+               )
     end
 
     test "an unsupported per-aggregate filter fails closed via translate (not swallowed)" do

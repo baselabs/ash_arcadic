@@ -6,7 +6,9 @@ defmodule AshArcadic.Aggregate do
   caller name (Rule 1). Value-reading aggregates over non-summable/non-orderable/
   sensitive (`:binary`) storage fail closed value-free — a correctness guard mirroring
   `{:sort, :binary}` AND a leak guard (a `min`/`list` over an encrypted-binary attr
-  would order-by / return ciphertext into the result; §6.4). Empty sets decode to the
+  would order-by / return ciphertext into the result; §6.4). A `list`/`first` requesting
+  `include_nil?: true` also fails closed value-free (ArcadeDB `collect` drops nulls; §6.5).
+  Empty sets — and value-reading sets with no non-null field values — decode to the
   aggregate struct's own `.default_value` (spec §6.3).
   """
 
@@ -35,6 +37,13 @@ defmodule AshArcadic.Aggregate do
 
   def guard_field(%Ash.Query.Aggregate{kind: kind}, _types) when kind in [:count, :exists],
     do: :ok
+
+  # `list`/`first` with `include_nil?: true` is unsupportable: ArcadeDB `collect` drops nulls
+  # and no null-preserving construction is confirmed (spec §6.5 / S3-19). Fail closed value-free
+  # (a clean "not supported" rejection) rather than silently returning a nulls-dropped result.
+  def guard_field(%Ash.Query.Aggregate{kind: kind, include_nil?: true}, _types)
+      when kind in [:list, :first],
+      do: {:error, {:include_nil_unsupported, kind}}
 
   def guard_field(%Ash.Query.Aggregate{kind: kind, field: field}, types)
       when kind in @value_reading do
