@@ -25,6 +25,7 @@ defmodule AshArcadic.DataLayer do
   alias AshArcadic.DataLayer.Info
   alias AshArcadic.Errors.CreateFailed
   alias AshArcadic.Errors.QueryFailed
+  alias AshArcadic.Errors.UnsupportedFilter
   alias AshArcadic.Errors.UpdateFailed
   alias AshArcadic.Query.Filter
   alias AshArcadic.Telemetry
@@ -170,6 +171,19 @@ defmodule AshArcadic.DataLayer do
   def can?(_, {:filter_expr, %Ash.Query.BooleanExpression{}}), do: true
   def can?(_, {:filter_expr, %Ash.Query.Not{}}), do: true
   def can?(_, {:filter_expr, _}), do: false
+  # Query aggregates (Slice 3) — Ash.count/sum/aggregate route to run_aggregate_query/3,
+  # gated per kind here. {:aggregate,_} (inline field loading) and {:aggregate_relationship,_}
+  # (relationship-spanning) stay false (§12): a manual traversal can't be pushed into an
+  # aggregate query, and ArcadeDB has no window functions for inline loading.
+  def can?(_, {:query_aggregate, :count}), do: true
+  def can?(_, {:query_aggregate, :sum}), do: true
+  def can?(_, {:query_aggregate, :avg}), do: true
+  def can?(_, {:query_aggregate, :min}), do: true
+  def can?(_, {:query_aggregate, :max}), do: true
+  def can?(_, {:query_aggregate, :first}), do: true
+  def can?(_, {:query_aggregate, :list}), do: true
+  def can?(_, {:query_aggregate, :exists}), do: true
+  def can?(_, {:query_aggregate, _}), do: false
   def can?(_, {:lateral_join, _}), do: false
   def can?(_, {:aggregate, _}), do: false
   def can?(_, :transact), do: true
@@ -300,6 +314,114 @@ defmodule AshArcadic.DataLayer do
 
   defp row_count({:ok, records}), do: length(records)
   defp row_count(_), do: 0
+
+  @impl true
+  def run_aggregate_query(%AshArcadic.Query{} = query, aggregates, resource) do
+    Telemetry.span(
+      :aggregate,
+      %{
+        resource: resource,
+        multitenancy: strategy(resource),
+        kinds: Enum.map(aggregates, & &1.kind),
+        aggregate_count: length(aggregates),
+        tenant?: not is_nil(query.tenant),
+        in_transaction?: AshArcadic.Transaction.in_transaction?()
+      },
+      fn ->
+        result = do_run_aggregate(query, resource, aggregates)
+        {result, %{result: Telemetry.result_tag(result)}}
+      end
+    )
+  end
+
+  # Conn resolved SOLELY via read_conn/2 — a :context blank tenant fails closed
+  # :tenant_required (never the base database → no unscoped cross-tenant aggregate).
+  # :attribute carries Ash's injected tenant filter in query.filters. One statement per
+  # aggregate (per-agg filters, C2); first failure halts value-free. read_conn/2 can also
+  # yield :cross_database_transaction / :transaction_begin_failed (its @spec) when an
+  # aggregate runs inside an Ash transaction; the catch-all maps those value-free via
+  # conn_error_reason/1 — fail CLOSED, never a CaseClauseError on a multitenant read.
+  defp do_run_aggregate(query, resource, aggregates) do
+    case read_conn(query, resource) do
+      {:ok, conn} ->
+        reduce_aggregates(conn, query, aggregates, Info.attribute_types(resource))
+
+      {:error, :tenant_required} ->
+        {:error,
+         QueryFailed.exception(
+           query: "ArcadeDB aggregate query",
+           reason: "multitenancy tenant required for :context read"
+         )}
+
+      {:error, reason} ->
+        {:error,
+         QueryFailed.exception(
+           query: "ArcadeDB aggregate query",
+           reason: conn_error_reason(reason)
+         )}
+    end
+  end
+
+  # One statement per aggregate (per-agg filters, C2); first failure halts value-free,
+  # dropping the accumulated results (no partial map leaks past a failed aggregate).
+  defp reduce_aggregates(conn, query, aggregates, attr_types) do
+    Enum.reduce_while(aggregates, {:ok, %{}}, fn agg, {:ok, acc} ->
+      case run_one_aggregate(conn, query, agg, attr_types) do
+        {:ok, value} -> {:cont, {:ok, Map.put(acc, agg.name, value)}}
+        {:error, _} = error -> {:halt, error}
+      end
+    end)
+  end
+
+  defp run_one_aggregate(conn, query, agg, attr_types) do
+    case AshArcadic.Aggregate.build_statement(query, agg, attr_types) do
+      {:ok, cypher, params} ->
+        case Arcadic.query(conn, cypher, params) do
+          {:ok, rows} ->
+            {:ok, AshArcadic.Aggregate.decode(rows, agg, attr_types)}
+
+          {:error, error} ->
+            {:error,
+             QueryFailed.exception(
+               query: "ArcadeDB aggregate query",
+               reason: redact_db_error(error)
+             )}
+        end
+
+      {:error, reason} ->
+        {:error,
+         QueryFailed.exception(
+           query: "ArcadeDB aggregate query",
+           reason: aggregate_reason(reason)
+         )}
+    end
+  end
+
+  # Value-free reason strings — the atom/field NAME only, never a value (Rule 4).
+  defp aggregate_reason({:unaggregatable, field, kind}),
+    do:
+      "aggregate #{kind} unsupported on field #{field} (non-numeric/non-orderable/sensitive storage)"
+
+  defp aggregate_reason(:expression_field),
+    do: "aggregate over an expression/calculation field is unsupported"
+
+  defp aggregate_reason({:unsupported_kind, kind}), do: "aggregate kind #{kind} is unsupported"
+
+  # An aggregate carrying its OWN query.filter with an operator AshArcadic can't push down.
+  # build_statement/3 → translate_agg_filter/2 propagates {:error, %UnsupportedFilter{}}.
+  # The struct captures ONLY the operator module + field atom (never the filtered value —
+  # unsupported_filter.ex contract), so both are value-free to name (Rule 4).
+  #
+  # These four heads EXHAUSTIVELY cover build_statement/3's {:error, _} surface: guard_field/2
+  # yields the three tuple/atom shapes above; translate_agg_filter/2 yields %UnsupportedFilter{}.
+  # No defensive _other catch-all — dialyzer proves the union is closed (a dead clause reds
+  # pattern_match_cov). A future build_statement error shape reopens dialyzer coverage here
+  # rather than passing through a dead clause — a stronger fail-closed guarantee than a
+  # catch-all that can never run. The FunctionClauseError this task fixes came from a MISSING
+  # head (%UnsupportedFilter{}), now present.
+  defp aggregate_reason(%UnsupportedFilter{operator: operator, field: field}),
+    do:
+      "aggregate filter uses unsupported operator #{inspect(operator)} on field #{inspect(field)}"
 
   @impl true
   def create(resource, changeset) do

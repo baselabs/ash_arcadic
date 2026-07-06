@@ -32,8 +32,17 @@ defmodule AshArcadic.DataLayer.CanTest do
     assert DL.can?(AshArcadic.Test.Basic, :traverse)
   end
 
-  test "aggregates/lateral_join false" do
+  test "query aggregates advertised per kind; aggregate/aggregate_relationship/lateral_join stay false" do
+    for kind <- [:count, :sum, :avg, :min, :max, :first, :list, :exists] do
+      assert DL.can?(AshArcadic.Test.Basic, {:query_aggregate, kind}),
+             "expected can?({:query_aggregate, #{kind}})"
+    end
+
+    refute DL.can?(AshArcadic.Test.Basic, {:query_aggregate, :custom})
+
+    # These stay false — the design does NOT add inline/relationship aggregates or lateral joins.
     refute DL.can?(AshArcadic.Test.Basic, {:aggregate, :count})
+    refute DL.can?(AshArcadic.Test.Basic, {:aggregate_relationship, %{}})
     refute DL.can?(AshArcadic.Test.Basic, {:lateral_join, []})
   end
 
