@@ -310,19 +310,23 @@ defmodule AshArcadic.DataLayer do
          row_count: row_count(result),
          result: Telemetry.result_tag(result),
          tenant?: not is_nil(query.tenant),
-         in_transaction?: AshArcadic.Transaction.in_transaction?()
+         in_transaction?: AshArcadic.Transaction.in_transaction?(),
+         traversal_aggregate?: query.aggregates != [],
+         aggregate_kinds: Enum.map(query.aggregates, & &1.kind),
+         aggregate_count: length(query.aggregates)
        }}
     end)
   end
 
-  defp do_run_query(query, resource) do
+  defp do_run_query(%AshArcadic.Query{aggregates: aggs} = query, resource) do
     case read_conn(query, resource) do
       {:ok, conn} ->
         {cypher, params} = AshArcadic.Query.to_cypher(query)
 
         case Arcadic.query(conn, cypher, params) do
           {:ok, rows} ->
-            {:ok, decode_records(resource, rows)}
+            records = decode_records(resource, rows)
+            attach_traversal_aggregates(records, aggs, resource)
 
           {:error, error} ->
             {:error,
@@ -340,6 +344,95 @@ defmodule AshArcadic.DataLayer do
            reason: "multitenancy tenant required for :context read"
          )}
     end
+  end
+
+  # No stashed aggregates → records unchanged (Slice-1/2/3 parity).
+  defp attach_traversal_aggregates(records, [], _resource), do: {:ok, records}
+
+  defp attach_traversal_aggregates(records, aggs, resource) do
+    types = Info.attribute_types(resource)
+
+    # Each aggregate: one batched authorized Ash.load over ALL records at once (Traverse UNWIND $ids
+    # → not N+1), then fold + attach per record. Multi-segment paths fail closed value-free (non-goal).
+    # NOTE: add_aggregate/3 PREPENDS, so `aggs` is in reverse declaration order — harmless here because
+    # each aggregate is loaded+folded+attached INDEPENDENTLY by its own .load/.name key (no positional
+    # zipping against anything). (Aggregates sharing a rel+query could share one load — future opt.)
+    Enum.reduce_while(aggs, {:ok, records}, fn agg, {:ok, recs} ->
+      case load_and_attach(recs, agg, types) do
+        {:ok, recs2} -> {:cont, {:ok, recs2}}
+        {:error, _} = err -> {:halt, err}
+      end
+    end)
+  end
+
+  defp load_and_attach(records, %Ash.Query.Aggregate{relationship_path: [rel]} = agg, types) do
+    ctx = agg.context || %{}
+
+    load_opts = [
+      actor: Map.get(ctx, :actor),
+      # REAL authz threaded (never authorize?:false — per-hop intermediate authz is the only
+      # enforcement point for the traversal; V4). Ash always populates ctx.authorize? on the
+      # inline entrypoint; the default here is FAIL-CLOSED (true), not false.
+      authorize?: Map.get(ctx, :authorize?, true),
+      tenant: Map.get(ctx, :tenant)
+    ]
+
+    # Load the manual Traverse rel with the aggregate's OWN destination query (filter + Ash-injected
+    # policy) → Traverse Read B applies it; records come back already authorized/deduped/filtered/sorted.
+    # agg.query may be nil (a count with no destination filter) → load the plain rel.
+    load = if agg.query, do: [{rel, agg.query}], else: [rel]
+
+    case Ash.load(records, load, load_opts) do
+      {:ok, loaded} -> fold_and_put(loaded, rel, agg, types)
+      {:error, error} -> {:error, traversal_aggregate_error(error)}
+    end
+  end
+
+  defp load_and_attach(_records, %Ash.Query.Aggregate{relationship_path: path}, _types)
+       when length(path) != 1,
+       do:
+         {:error,
+          QueryFailed.exception(
+            query: "ArcadeDB traversal aggregate",
+            reason: "multi-segment relationship aggregate unsupported"
+          )}
+
+  defp fold_and_put(loaded, rel, agg, types) do
+    Enum.reduce_while(loaded, {:ok, []}, fn record, {:ok, acc} ->
+      dests = List.wrap(Map.get(record, rel))
+
+      case AshArcadic.TraversalAggregate.fold(dests, agg, types) do
+        {:ok, value} ->
+          {:cont, {:ok, [put_agg(record, agg, value) | acc]}}
+
+        # Wrap value-free as a QueryFailed (class :invalid), consistent with the multi-segment
+        # branch — never a bare string (which Ash coerces to an :unknown/500-class error).
+        {:error, reason} ->
+          {:halt,
+           {:error,
+            QueryFailed.exception(
+              query: "ArcadeDB traversal aggregate",
+              reason: aggregate_reason(reason)
+            )}}
+      end
+    end)
+    |> case do
+      {:ok, rev} -> {:ok, Enum.reverse(rev)}
+      {:error, _} = err -> err
+    end
+  end
+
+  # Attach per Ash's re-read contract (attach_fields): .load → direct field;
+  # else → record.aggregates[name].
+  defp put_agg(record, %Ash.Query.Aggregate{load: nil, name: name}, value),
+    do: Map.update!(record, :aggregates, &Map.put(&1, name, value))
+
+  defp put_agg(record, %Ash.Query.Aggregate{load: load}, value),
+    do: Map.put(record, load, value)
+
+  # Value-free (Rule 4): a traversal error already redacted by Traverse.load; wrap as a QueryFailed.
+  defp traversal_aggregate_error(error) do
+    QueryFailed.exception(query: "ArcadeDB traversal aggregate", reason: redact_db_error(error))
   end
 
   # Rows are flat vertex maps (probe: RETURN n → %{"@rid" => .., "@cat" => "v", <props>}).
@@ -509,18 +602,24 @@ defmodule AshArcadic.DataLayer do
   defp aggregate_reason({:include_nil_unsupported, kind}),
     do: "aggregate #{kind} with include_nil?: true is unsupported (ArcadeDB collect drops nulls)"
 
+  # The traversal fold path (fold_and_put → TraversalAggregate.fold → safe_fold rescue) surfaces
+  # this atom when a to_string/inspect/arith error over a mixed destination set is caught value-free.
+  defp aggregate_reason(:aggregate_fold_failed), do: "aggregate computation failed"
+
   # An aggregate carrying its OWN query.filter with an operator AshArcadic can't push down.
   # build_statement/3 → translate_agg_filter/2 propagates {:error, %UnsupportedFilter{}}.
   # The struct captures ONLY the operator module + field atom (never the filtered value —
   # unsupported_filter.ex contract), so both are value-free to name (Rule 4).
   #
-  # These four heads EXHAUSTIVELY cover build_statement/3's {:error, _} surface: guard_field/2
-  # yields the three tuple/atom shapes above; translate_agg_filter/2 yields %UnsupportedFilter{}.
-  # No defensive _other catch-all — dialyzer proves the union is closed (a dead clause reds
-  # pattern_match_cov). A future build_statement error shape reopens dialyzer coverage here
-  # rather than passing through a dead clause — a stronger fail-closed guarantee than a
-  # catch-all that can never run. The FunctionClauseError this task fixes came from a MISSING
-  # head (%UnsupportedFilter{}), now present.
+  # These heads EXHAUSTIVELY cover the two callers' {:error, _} surfaces: build_statement/3
+  # (via run_one_aggregate) — guard_field/2 yields the three tuple/atom shapes above and
+  # translate_agg_filter/2 yields %UnsupportedFilter{}; AND the traversal fold path
+  # (fold_and_put → TraversalAggregate.fold) — guard_field/2 (same shapes) plus safe_fold's
+  # rescue, which contributes the extra :aggregate_fold_failed head above. No defensive _other
+  # catch-all — dialyzer proves the union is closed (a dead clause reds pattern_match_cov). A
+  # future error shape from EITHER caller reopens dialyzer coverage here rather than passing
+  # through a dead clause — a stronger fail-closed guarantee than a catch-all that can never run.
+  # The FunctionClauseError this task fixes came from a MISSING head (%UnsupportedFilter{}), now present.
   defp aggregate_reason(%UnsupportedFilter{operator: operator, field: field}),
     do:
       "aggregate filter uses unsupported operator #{inspect(operator)} on field #{inspect(field)}"

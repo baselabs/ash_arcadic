@@ -60,6 +60,10 @@ defmodule AshArcadic.Test.TraversePolicyNode do
     end
   end
 
+  aggregates do
+    count :descendant_count, :descendants
+  end
+
   policies do
     # Admin bypass so seeding/verification reads are unrestricted; the traversal load runs
     # as a non-admin actor to exercise the row filter.
