@@ -27,13 +27,17 @@ defmodule AshArcadic.ManualRelationships.Traverse do
       *Read B*: a STANDARD authorized `Ash.read` narrowing `context.query` (the
       relationship/caller **filter + sort** + domain + tenant) to those surviving dest PKs,
       applying row policy, **field policy** (redaction), and the `:attribute` tenant filter /
-      `:context` tenant DB. This module never decodes a vertex. NOTE: Ash rejects `limit`/
-      `offset` on manual relationships, so there is no per-source-vs-union paging concern; the
-      caller `filter`/`sort` apply to destinations by Read B.
+      `:context` tenant DB. This module never decodes a vertex. NOTE: Ash rejects DYNAMIC
+      `limit`/`offset` on manual relationships; per-source paging is therefore the STATIC
+      `per_source_limit`/`per_source_offset` opts, applied as a post-authz, post-sort top-N
+      slice in Phase 3 (`regroup`), never via Ash paging. The caller `filter`/`sort` apply to
+      destinations by Read B.
     * **Phase 3 (regroup).** Assembles each source's records from Read B in READ order (so the
       caller sort survives), keeping those whose PK survived per-hop authorization — a
       destination reachable ONLY through a row-policy-denied intermediate is dropped, while a
-      destination with any fully-authorized path survives; deduped per source, cardinality-aware.
+      destination with any fully-authorized path survives; deduped per source, then sliced to the
+      per-source `per_source_offset..+per_source_limit` top-N (post-authz, post-sort; `nil` limit =
+      unbounded), cardinality-aware.
 
   It returns a source-PK-keyed map of **authorized** destination records; authorization is
   enforced by **row policy on EVERY node on the path** (Read A), not only the returned
@@ -71,8 +75,10 @@ defmodule AshArcadic.ManualRelationships.Traverse do
     dest = context.relationship.destination
     card = context.relationship.cardinality
 
-    {_edge, direction, _min, max_depth, _scope_edges?, _psl, _pso} =
+    {_edge, direction, _min, max_depth, _scope_edges?, per_source_limit, _pso} =
       opts_tuple = validate_opts!(opts)
+
+    check_cardinality!(per_source_limit, card)
 
     Telemetry.span(
       :traverse,
@@ -153,6 +159,17 @@ defmodule AshArcadic.ManualRelationships.Traverse do
 
     {per_source_limit, per_source_offset}
   end
+
+  @doc false
+  # per_source_limit is meaningless on a :one relationship (a single dest can't be
+  # top-N). Fail closed value-free at load time (config error). Unit-tested directly
+  # (the raise through Ash.load is re-wrapped, so assert on THIS, not the load path).
+  def check_cardinality!(nil, _card), do: :ok
+
+  def check_cardinality!(_limit, :one),
+    do: raise(ArgumentError, "traverse :per_source_limit is unsupported on a :one relationship")
+
+  def check_cardinality!(_limit, _many), do: :ok
 
   @doc false
   # Pure per-node-scope decision from both endpoints' strategies/attrs:
@@ -315,18 +332,27 @@ defmodule AshArcadic.ManualRelationships.Traverse do
   end
 
   @doc false
-  # Phase-3 regroup (Option B §7.2 step 3b). Given each source's surviving dest-PK set and the
-  # authorized DESTINATION records (Read B — caller filter + sort applied), emit each source's
-  # records by iterating `records` in READ order (so the caller sort survives), keeping those
-  # whose PK is in that source's surviving set. A dest that survived per-hop authorization but
-  # was dropped by the caller's destination filter is absent from `records` → naturally excluded.
-  # Sources with no surviving/authorized dest → cardinalize([], card).
-  def regroup(surviving, records, dest_pk, card) do
+  # Phase-3 regroup (Option B §7.2) + per-source top-N slice (Slice-3). Iterates Read-B
+  # `records` in READ order (caller sort survives), keeps each source's surviving-authorized
+  # PKs, then slices `per_source_offset..+per_source_limit` per source. The slice is POST-authz
+  # (Read A) and POST-sort (Read B) — a policy-denied dest never consumed a slot, and the top-N
+  # is by the caller sort. nil limit + 0 offset → no slice (Slice-2 parity). :one cardinalizes.
+  def regroup(surviving, records, dest_pk, card, per_source_limit \\ nil, per_source_offset \\ 0) do
     Map.new(surviving, fn {src_key, dest_set} ->
-      recs = Enum.filter(records, fn r -> MapSet.member?(dest_set, Map.get(r, dest_pk)) end)
+      recs =
+        records
+        |> Enum.filter(fn r -> MapSet.member?(dest_set, Map.get(r, dest_pk)) end)
+        |> slice_per_source(per_source_limit, per_source_offset)
+
       {src_key, cardinalize(recs, card)}
     end)
   end
+
+  # nil limit + 0 offset → untouched (Slice-2 behavior). Otherwise drop offset then take limit
+  # (nil limit after an offset → take the rest).
+  defp slice_per_source(recs, nil, 0), do: recs
+  defp slice_per_source(recs, nil, offset), do: Enum.drop(recs, offset)
+  defp slice_per_source(recs, limit, offset), do: recs |> Enum.drop(offset) |> Enum.take(limit)
 
   # Orchestration: resolve database + tenant scope + dest-PK + conn (all fail-closed), build
   # the Phase-1 reachability statement, run it, assemble reachability, then run the Phase-2
@@ -337,8 +363,8 @@ defmodule AshArcadic.ManualRelationships.Traverse do
          source,
          dest,
          card,
-         {edge_label, direction, min_depth, max_depth, scope_edges?, _per_source_limit,
-          _per_source_offset}
+         {edge_label, direction, min_depth, max_depth, scope_edges?, per_source_limit,
+          per_source_offset}
        ) do
     with {:ok, database} <- resolve_database(source, context.tenant),
          {:ok, tenant_attr, tenant} <- resolve_tenant(source, dest, context.tenant),
@@ -375,7 +401,17 @@ defmodule AshArcadic.ManualRelationships.Traverse do
           }
 
           {reach_map, node_union} = assemble_reachability(rows, reach_spec)
-          {finish_load(reach_map, node_union, dest, dest_pk, card, context), length(rows)}
+
+          {finish_load(
+             reach_map,
+             node_union,
+             dest,
+             dest_pk,
+             card,
+             context,
+             per_source_limit,
+             per_source_offset
+           ), length(rows)}
 
         {:error, error} ->
           {{:error, wrap_traverse_error(error)}, 0}
@@ -393,25 +429,25 @@ defmodule AshArcadic.ManualRelationships.Traverse do
   # Two reads because a manual relationship must apply per-hop policy over ALL nodes yet apply
   # the caller's DESTINATION filter/sort over destinations only (Ash rejects limit/offset on
   # manual relationships, so no per-source paging concern here).
-  defp finish_load(_reach_map, [], _dest, _dest_pk, _card, _context), do: {:ok, %{}}
+  defp finish_load(_reach_map, [], _dest, _dest_pk, _card, _context, _psl, _pso), do: {:ok, %{}}
 
-  defp finish_load(reach_map, node_union, dest, dest_pk, card, context) do
+  defp finish_load(reach_map, node_union, dest, dest_pk, card, context, psl, pso) do
     with {:ok, authorized_nodes} <- authorize_nodes(context, dest, dest_pk, node_union) do
       authorized_set = MapSet.new(authorized_nodes, &Map.get(&1, dest_pk))
       surviving = surviving_dests(reach_map, authorized_set)
       dest_union = surviving |> Map.values() |> Enum.flat_map(&MapSet.to_list/1) |> Enum.uniq()
-      read_dests(surviving, dest_union, dest_pk, card, context)
+      read_dests(surviving, dest_union, dest_pk, card, context, psl, pso)
     end
   end
 
   # Read B + regroup. Empty surviving union → no read (no `IN []`); regroup over [] defaults each
   # source to []/nil.
-  defp read_dests(surviving, [], dest_pk, card, _context),
-    do: {:ok, regroup(surviving, [], dest_pk, card)}
+  defp read_dests(surviving, [], dest_pk, card, _context, psl, pso),
+    do: {:ok, regroup(surviving, [], dest_pk, card, psl, pso)}
 
-  defp read_dests(surviving, dest_union, dest_pk, card, context) do
+  defp read_dests(surviving, dest_union, dest_pk, card, context, psl, pso) do
     case authorized_read(context, dest_pk, dest_union) do
-      {:ok, records} -> {:ok, regroup(surviving, records, dest_pk, card)}
+      {:ok, records} -> {:ok, regroup(surviving, records, dest_pk, card, psl, pso)}
       {:error, error} -> {:error, error}
     end
   end

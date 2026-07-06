@@ -487,4 +487,59 @@ defmodule AshArcadic.ManualRelationships.TraverseTest do
       end
     end
   end
+
+  describe "regroup/6 — per-source top-N slice (post-authz, post-sort)" do
+    # records are Read-B output in caller-sort order; surviving maps each source to its
+    # authorized dest-PK set. The slice takes per_source_offset..+per_source_limit per source.
+    test "limit caps each source independently, preserving read order" do
+      surviving = %{%{id: "s1"} => MapSet.new(["a", "b", "c"]), %{id: "s2"} => MapSet.new(["d"])}
+      records = [%{id: "a"}, %{id: "b"}, %{id: "c"}, %{id: "d"}]
+      out = Traverse.regroup(surviving, records, :id, :many, 2, 0)
+      # capped at 2, first-two-in-order
+      assert out[%{id: "s1"}] == [%{id: "a"}, %{id: "b"}]
+      # its 1 survives
+      assert out[%{id: "s2"}] == [%{id: "d"}]
+    end
+
+    test "offset skips within each source" do
+      surviving = %{%{id: "s1"} => MapSet.new(["a", "b", "c"])}
+      records = [%{id: "a"}, %{id: "b"}, %{id: "c"}]
+      out = Traverse.regroup(surviving, records, :id, :many, 1, 1)
+      # offset 1, limit 1
+      assert out[%{id: "s1"}] == [%{id: "b"}]
+    end
+
+    test "nil limit + 0 offset = no slice (Slice-2 behavior preserved)" do
+      surviving = %{%{id: "s1"} => MapSet.new(["a", "b", "c"])}
+      records = [%{id: "a"}, %{id: "b"}, %{id: "c"}]
+      out = Traverse.regroup(surviving, records, :id, :many, nil, 0)
+      assert out[%{id: "s1"}] == [%{id: "a"}, %{id: "b"}, %{id: "c"}]
+    end
+
+    test "slice follows Read-B READ order (caller sort), not PK order" do
+      # records arrive in caller-sort order c,a,b (NOT ascending PK) — the slice must take the
+      # first two IN THAT ORDER (c,a), proving it preserves read order rather than re-sorting.
+      surviving = %{%{id: "s1"} => MapSet.new(["a", "b", "c"])}
+      records = [%{id: "c"}, %{id: "a"}, %{id: "b"}]
+      out = Traverse.regroup(surviving, records, :id, :many, 2, 0)
+      assert out[%{id: "s1"}] == [%{id: "c"}, %{id: "a"}]
+    end
+  end
+
+  describe "check_cardinality!/2 — :one reject (unit; the load-path raise is Ash-wrapped)" do
+    test "nil limit is always fine" do
+      assert Traverse.check_cardinality!(nil, :one) == :ok
+      assert Traverse.check_cardinality!(nil, :many) == :ok
+    end
+
+    test ":many with a limit is fine" do
+      assert Traverse.check_cardinality!(5, :many) == :ok
+    end
+
+    test ":one with a limit raises value-free" do
+      assert_raise ArgumentError, ~r/per_source_limit/, fn ->
+        Traverse.check_cardinality!(5, :one)
+      end
+    end
+  end
 end
