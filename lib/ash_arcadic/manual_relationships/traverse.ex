@@ -427,8 +427,9 @@ defmodule AshArcadic.ManualRelationships.Traverse do
   #   surviving_dests — keep a destination only if it has a fully-authorized path.
   #   Read B — read the surviving DESTINATIONS through the caller's query (filter + sort).
   # Two reads because a manual relationship must apply per-hop policy over ALL nodes yet apply
-  # the caller's DESTINATION filter/sort over destinations only (Ash rejects limit/offset on
-  # manual relationships, so no per-source paging concern here).
+  # the caller's DESTINATION filter/sort over destinations only (Ash rejects DYNAMIC limit/offset
+  # on manual relationships; per-source paging is the static per_source_limit/offset slice applied
+  # post-authz in regroup, never here).
   defp finish_load(_reach_map, [], _dest, _dest_pk, _card, _context, _psl, _pso), do: {:ok, %{}}
 
   defp finish_load(reach_map, node_union, dest, dest_pk, card, context, psl, pso) do
