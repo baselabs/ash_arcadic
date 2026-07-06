@@ -10,6 +10,7 @@ defmodule AshArcadic.Test.ContextDoc do
   attributes do
     attribute :id, :string, primary_key?: true, allow_nil?: false, public?: true
     attribute :name, :string, public?: true
+    attribute :amount, :integer, public?: true
   end
 
   multitenancy do
@@ -17,7 +18,7 @@ defmodule AshArcadic.Test.ContextDoc do
   end
 
   actions do
-    default_accept [:id, :name]
+    default_accept [:id, :name, :amount]
     defaults [:read, :create, :update, :destroy]
   end
 end
