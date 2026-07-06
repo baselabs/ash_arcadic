@@ -177,9 +177,10 @@ _An Ash DataLayer for ArcadeDB (native OpenCypher over HTTP)._
   **filter + sort**), applying row policy, **field policy** (redaction), and the tenant
   filter / database; (3) regroup per source. The tenant boundary is enforced **twice over**
   (the path predicate + the reads' `:attribute` filter / `:context` database), both
-  fail-closed. **Ash rejects `limit`/`offset` on manual relationships** (it raises
-  `Ash.Error.Load.InvalidQuery`), so a traversal relationship cannot be loaded with a limit —
-  use a downstream read/pagination over the loaded set instead.
+  fail-closed. **Ash rejects *dynamic* `limit`/`offset` on manual relationships** (it raises
+  `Ash.Error.Load.InvalidQuery`), so a traversal relationship cannot be loaded with a caller
+  limit; for a bounded per-source result use the static **`per_source_limit`** /
+  **`per_source_offset`** opts (below), or a downstream read/pagination over the loaded set.
 - **Authorization is PER-HOP (row policy on every node of the path).** Read A authorizes
   **every node on each path** (destinations *and* intermediates) by row policy; a destination
   is returned only if it has a path whose **every** node is authorized. So a destination
@@ -191,6 +192,18 @@ _An Ash DataLayer for ArcadeDB (native OpenCypher over HTTP)._
   **different resource** carrying a **different** policy is a Slice-3 concern and **fails
   closed** here (such a destination is dropped). Field-policy redaction still applies to the
   returned destinations.
+- **Per-source limits are STATIC manual opts (Slice 3, Plan 2).** `per_source_limit`
+  (a positive integer, default `nil` = unbounded) and `per_source_offset` (a non-negative
+  integer, default `0`) on the manual `Traverse` opts cap each source's reachable destinations
+  at a per-source top-N, sliced `offset..+limit` **by the relationship's own `sort`**. The slice
+  is **output-shaping applied AFTER per-hop authorization and the caller sort** (in `regroup`,
+  over the already-authorized Read-B destinations) — **not a query-cost bound**: Read B still
+  reads the full authorized union first, so the top-N is by rank among the *authorized*
+  destinations and a policy-denied destination **never consumes a slot**. `per_source_limit` is
+  **meaningless on a `:one` relationship and rejected value-free**. These are static because Ash
+  rejects *dynamic* limit/offset on manual relationships (above); declare them on the resource's
+  manual opts, e.g. `manual {AshArcadic.ManualRelationships.Traverse, edge_label: :KNOWS,
+  max_depth: 3, per_source_limit: 10}` with the relationship's `sort` setting the ranking.
 
 ## Edge writes (Slice 2, Plan 1)
 

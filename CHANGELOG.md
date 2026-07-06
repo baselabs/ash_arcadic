@@ -134,7 +134,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `:binary` + `:decimal`, per D27); `list` rejects `:binary` (an encrypted/`sensitive`
   attribute would otherwise return ciphertext) — a rejected aggregate names only the field +
   kind, never a value. Adds an `:aggregate` telemetry span (`kinds` / `aggregate_count`).
-  **Slice 3, Plan 2 (per-source traversal limits) is pending.**
+- **Per-source traversal limits (Slice 3, Plan 2 — spec §7).** Two static opts on the
+  `AshArcadic.ManualRelationships.Traverse` manual relationship — **`per_source_limit`**
+  (a positive integer; default `nil` = unbounded) and **`per_source_offset`** (a non-negative
+  integer; default `0`) — cap each source's reachable destinations at a per-source top-N,
+  sliced `offset..+limit` by the relationship's own **sort**. The slice is applied
+  **POST-authorization** (over the already row-policy-authorized, already-sorted Read-B
+  destinations in `regroup`, never a DB-side `CALL{}` limit that would slice reachability
+  before authz) — a policy-denied destination **never consumes a slot** (integration-proven on
+  a fan-out star: denying a sibling yields the next-ranked survivor, not a short result). Ash
+  rejects *dynamic* `limit`/`offset` on manual relationships, so these are static
+  resource-declared opts; `per_source_limit` is **rejected value-free on a `:one` relationship**
+  (a single destination cannot be a top-N). **Completes Slice 3.**
 
 ### Fixed
 
