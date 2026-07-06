@@ -16,6 +16,7 @@ defmodule AshArcadic.Query do
     :offset,
     filters: [],
     sort: [],
+    aggregates: [],
     params: %{}
   ]
 
@@ -30,6 +31,7 @@ defmodule AshArcadic.Query do
           offset: non_neg_integer() | nil,
           filters: [String.t()],
           sort: [{atom(), :asc | :desc}],
+          aggregates: [Ash.Query.Aggregate.t()],
           params: map()
         }
 
