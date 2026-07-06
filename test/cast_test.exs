@@ -82,4 +82,20 @@ defmodule AshArcadic.CastTest do
     assert Cast.range_comparable?(Ash.Type.Integer, [])
     assert Cast.range_comparable?(Ash.Type.Date, [])
   end
+
+  describe "numeric_storage?/2" do
+    test "true only for integer/float storage" do
+      assert Cast.numeric_storage?(Ash.Type.Integer, [])
+      assert Cast.numeric_storage?(Ash.Type.Float, [])
+    end
+
+    test "false for decimal (exact-string), binary, string, boolean, date/time" do
+      refute Cast.numeric_storage?(Ash.Type.Decimal, [])
+      refute Cast.numeric_storage?(Ash.Type.Binary, [])
+      refute Cast.numeric_storage?(Ash.Type.String, [])
+      refute Cast.numeric_storage?(Ash.Type.Boolean, [])
+      refute Cast.numeric_storage?(Ash.Type.Date, [])
+      refute Cast.numeric_storage?(Ash.Type.UtcDatetime, [])
+    end
+  end
 end

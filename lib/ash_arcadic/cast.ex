@@ -59,6 +59,18 @@ defmodule AshArcadic.Cast do
   end
 
   @doc """
+  Whether an attribute's storage type is numerically summable/averageable
+  (`:integer`/`:float`). False for `:decimal` (stored as an exact string, so ArcadeDB
+  `sum`/`avg` would concatenate/error, D27) and every non-numeric class. Drives the
+  aggregate sum/avg guard (a sum over a non-numeric attr fails LOUD, never silently
+  wrong or leaking).
+  """
+  @spec numeric_storage?(Ash.Type.t(), keyword()) :: boolean()
+  def numeric_storage?(type, constraints) do
+    Ash.Type.storage_type(type, constraints) in [:integer, :float]
+  end
+
+  @doc """
   Builds resource attributes from a flat ArcadeDB row map. Routes STRICTLY by
   `attribute_map` (declared attr → property name): reads only declared-attribute
   keys, `load_value`-coerces each by its type, and ignores every `@`-prefixed
