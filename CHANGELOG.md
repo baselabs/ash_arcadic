@@ -147,6 +147,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   resource-declared opts; `per_source_limit` and `per_source_offset` are **rejected value-free
   on a `:one` relationship** (a single destination cannot be a top-N or be offset into).
   **Completes Slice 3.**
+- **Traversal aggregates (Slice 4).** Declared aggregates —
+  `count`/`sum`/`avg`/`min`/`max`/`first`/`list`/`exists` — over a manual `Traverse`
+  relationship (`aggregates do count :descendant_count, :descendants end`) now compute over a
+  node's **reachable subtree**, **POST-authorization in Elixir** (never a DB-side Cypher aggregate,
+  which would count policy-denied nodes and double-count multi-path nodes). `add_aggregate/3`
+  stashes the aggregate onto `%AshArcadic.Query{}`; `run_query/2` computes it over the just-read
+  parents via ONE batched authorized `Ash.load` (Traverse's `UNWIND $ids` — not N+1), threading the
+  **real `authorize?`/`actor`/`tenant`** (never `authorize?: false`), then a new thin
+  `AshArcadic.TraversalAggregate` folds each source's authorized, node-deduped, tenant-scoped
+  destinations (`guard_field` before every fold; fold wrapped value-free). A **policy-denied
+  intermediate drops its entire subtree** (integration-proven, mutation-proven: `s→mid(denied)→deep`
+  under a non-admin actor counts neither `mid` nor `deep`) and a **cross-tenant node is not counted**.
+  `include_nil?` is **honored** for traversal `list`/`first` (a capability gain over the Slice-3 flat
+  path, whose Cypher `collect` drops nulls). Empty/all-null-field sets decode to the aggregate's Ash
+  default; the storage-class guard (`sum`/`avg` numeric; `min`/`max`/`first` order-preserving; `list`
+  rejects `:binary`) is reused value-free. `{:aggregate, kind}` / `{:aggregate_relationship, _}` now
+  advertised; `{:aggregate, :unrelated}` / `{:aggregate, :custom}` stay refused (Ash rejects flat
+  inline aggregates upstream). **Standalone `Ash.aggregate` over a relationship path is rejected
+  value-free** (`run_aggregate_query/3` fails closed on a non-empty `relationship_path` — load the
+  aggregate inline instead; the standalone cross-row collapse semantics are unresolved). Adds
+  value-free `traversal_aggregate?`/`aggregate_kinds`/`aggregate_count` telemetry metadata.
 
 ### Fixed
 

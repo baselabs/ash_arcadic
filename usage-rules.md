@@ -72,12 +72,36 @@ _An Ash DataLayer for ArcadeDB (native OpenCypher over HTTP)._
   sort is restricted). `list` rejects **`:binary`** (an encrypted-binary / `sensitive`
   attribute would otherwise return ciphertext into the result). `count` / `exists?` are always
   allowed. A rejected aggregate names only the field + kind — never a value.
-- **Unsupported:** inline field aggregates (`add_aggregates`), relationship /
-  aggregate-relationship aggregates, and lateral joins are **not** supported (ArcadeDB has no
-  window functions, and a manual traversal cannot be pushed into an aggregate) — use a
-  standalone `Ash.aggregate` / `Ash.count` / etc. **Custom** aggregate kinds are unsupported.
-  `include_nil?: true` on `list` / `first` is **unsupported** (ArcadeDB `collect` drops nulls) —
-  it fails closed value-free rather than silently returning a nulls-dropped result.
+- **Unsupported (this flat/query path):** flat inline field aggregates (`add_aggregates` over a
+  non-relationship) and lateral joins are **not** supported (ArcadeDB has no window functions).
+  **Custom** aggregate kinds are unsupported. `include_nil?: true` on `list` / `first` is
+  **unsupported on this flat path** (ArcadeDB `collect` drops nulls) — it fails closed value-free
+  (the **traversal** aggregate path below *does* honor it). **Relationship aggregates over a manual
+  `Traverse` relationship ARE supported** as of Slice 4 — see *Traversal aggregates* below; but a
+  **standalone** `Ash.aggregate` over a relationship path is rejected value-free (load it inline).
+
+## Traversal aggregates (Slice 4)
+
+- **Declare** an aggregate over a manual `Traverse` relationship in an `aggregates do … end`
+  block — e.g. `aggregates do count :descendant_count, :descendants end` — for any kind
+  (`count`/`sum`/`avg`/`min`/`max`/`first`/`list`/`exists`). It computes over the node's
+  **reachable subtree** (what the `Traverse` relationship reaches).
+- **Computed POST-authorization, in Elixir** — never a DB-side Cypher aggregate. The subtree is
+  loaded through one batched authorized `Ash.load` (Traverse's `UNWIND $ids`, not N+1) threading the
+  **real `authorize?`/`actor`/`tenant`**, then folded in `AshArcadic.TraversalAggregate` over the
+  already-authorized, **node-deduped**, tenant-scoped, filtered, sorted destinations. Consequences a
+  DB-side aggregate would get wrong: a **policy-denied intermediate drops its entire subtree** (a
+  destination reachable only through a denied hop is not counted), a **cross-tenant node is not
+  counted**, and multi-path nodes are deduped (no double-count for `sum`/`avg`).
+- **`include_nil?` is honored** for traversal `list`/`first` (Elixir null control) — the asymmetry
+  vs. the flat aggregate path above (which fails it closed because Cypher `collect` drops nulls).
+  Empty / all-null-field sets return the aggregate's Ash default; the same value-free storage-class
+  guard applies (`sum`/`avg` numeric; `min`/`max`/`first` order-preserving; `list` rejects `:binary`).
+- **Load it inline** (`Ash.read(load: [:descendant_count])` / `Ash.load(record, :descendant_count)`).
+  A **standalone** `Ash.aggregate` over a relationship path is **rejected value-free** — its cross-row
+  collapse semantics are unresolved; the per-node subtree rollup is delivered by the inline load path.
+- **Not supported:** multi-segment relationship paths fail closed value-free (compose two authorized
+  reads instead).
 
 ## Multitenancy (Plan 2)
 
