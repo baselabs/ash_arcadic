@@ -458,8 +458,6 @@ defmodule AshArcadic.ManualRelationships.TraverseTest do
   end
 
   describe "validate_opts!/1 — per-source limit opts (Slice-3 P2)" do
-    alias AshArcadic.ManualRelationships.Traverse
-
     defp base_opts, do: [edge_label: :KNOWS, max_depth: 3]
 
     test "defaults: per_source_limit nil, per_source_offset 0" do
@@ -474,6 +472,12 @@ defmodule AshArcadic.ManualRelationships.TraverseTest do
     test "rejects a non-positive limit" do
       assert_raise ArgumentError, ~r/per_source_limit/, fn ->
         Traverse.validate_opts!(base_opts() ++ [per_source_limit: 0])
+      end
+    end
+
+    test "rejects a non-integer limit" do
+      assert_raise ArgumentError, ~r/per_source_limit/, fn ->
+        Traverse.validate_opts!(base_opts() ++ [per_source_limit: 1.5])
       end
     end
 
