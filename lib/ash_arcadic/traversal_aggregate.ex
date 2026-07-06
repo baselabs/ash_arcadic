@@ -28,10 +28,13 @@ defmodule AshArcadic.TraversalAggregate do
     case Aggregate.guard_field(%{agg | include_nil?: false}, types) do
       :ok ->
         # Field policy on the destination redacts a field to %Ash.ForbiddenField{} in Traverse Read B.
-        # Folding it (list returns the marker; count/first/min/max count or return it) is a field-authz
-        # FAIL-OPEN — an actor cannot aggregate a field they are not permitted to read. Fail closed
-        # value-free (the marker carries no value; the reason names the field atom only, Rule 4).
-        if agg.field && forbidden_field?(records, agg.field) do
+        # A VALUE-READING kind (count-with-field/list/first/sum/avg/min/max) that folds it is a
+        # field-authz FAIL-OPEN — an actor cannot aggregate a field they are not permitted to read.
+        # Fail closed value-free (the marker carries no value; the reason names the field atom only,
+        # Rule 4). `:exists` is excluded: do_fold(:exists) is `records != []` and reads NO field value,
+        # so a redaction on its (optional) field leaks nothing — failing it closed would be an
+        # over-restriction. Plain count(nil) is excluded by the `agg.field` nil check.
+        if agg.field && agg.kind != :exists && forbidden_field?(records, agg.field) do
           {:error, {:aggregate_field_forbidden, agg.field}}
         else
           safe_fold(records, agg, types)

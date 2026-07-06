@@ -134,8 +134,12 @@ defmodule AshArcadic.TraversalAggregateTest do
              "expected #{kind} over a forbidden field to fail closed"
     end
 
-    # Plain count (no field) and exists read NO field → unaffected by a redaction on other fields.
+    # Plain count (no field) reads NO field → unaffected by a redaction on other fields.
     assert TraversalAggregate.fold(recs, agg(:count, nil), types()) == {:ok, 2}
+
+    # exists reads NO field value (records != []), so it is unaffected EVEN with a redacted field —
+    # failing it closed would be an over-restriction (it leaks nothing about the field's value).
     assert TraversalAggregate.fold(recs, agg(:exists, nil), types()) == {:ok, true}
+    assert TraversalAggregate.fold(recs, agg(:exists, :name), types()) == {:ok, true}
   end
 end
