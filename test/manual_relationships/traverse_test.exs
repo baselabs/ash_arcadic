@@ -524,21 +524,42 @@ defmodule AshArcadic.ManualRelationships.TraverseTest do
       out = Traverse.regroup(surviving, records, :id, :many, 2, 0)
       assert out[%{id: "s1"}] == [%{id: "c"}, %{id: "a"}]
     end
+
+    test "nil limit + non-zero offset skips the offset and keeps the rest (skip-N, take-rest)" do
+      # Covers the slice_per_source(recs, nil, offset) branch: an offset with an UNBOUNDED limit
+      # drops `offset` records and returns the remainder (a valid :many config — offset without
+      # limit). Previously reachable but unexercised by any regroup/6 test.
+      surviving = %{%{id: "s1"} => MapSet.new(["a", "b", "c"])}
+      records = [%{id: "a"}, %{id: "b"}, %{id: "c"}]
+      out = Traverse.regroup(surviving, records, :id, :many, nil, 1)
+      assert out[%{id: "s1"}] == [%{id: "b"}, %{id: "c"}]
+    end
   end
 
-  describe "check_cardinality!/2 — :one reject (unit; the load-path raise is Ash-wrapped)" do
-    test "nil limit is always fine" do
-      assert Traverse.check_cardinality!(nil, :one) == :ok
-      assert Traverse.check_cardinality!(nil, :many) == :ok
+  describe "check_cardinality!/3 — :one reject for limit AND offset (unit; the load-path raise is Ash-wrapped)" do
+    test "no paging (nil limit, 0 offset) is always fine" do
+      assert Traverse.check_cardinality!(nil, 0, :one) == :ok
+      assert Traverse.check_cardinality!(nil, 0, :many) == :ok
     end
 
-    test ":many with a limit is fine" do
-      assert Traverse.check_cardinality!(5, :many) == :ok
+    test ":many with a limit and/or offset is fine" do
+      assert Traverse.check_cardinality!(5, 0, :many) == :ok
+      assert Traverse.check_cardinality!(nil, 3, :many) == :ok
+      assert Traverse.check_cardinality!(5, 3, :many) == :ok
     end
 
     test ":one with a limit raises value-free" do
       assert_raise ArgumentError, ~r/per_source_limit/, fn ->
-        Traverse.check_cardinality!(5, :one)
+        Traverse.check_cardinality!(5, 0, :one)
+      end
+    end
+
+    test ":one with a non-zero offset raises value-free (offset is meaningless on a single dest)" do
+      # F1 (closeout should-fix): per_source_offset on a :one relationship silently returned the
+      # (offset+1)-th destination instead of failing closed — spec §7.1 says the paging opts
+      # "apply only to cardinality: :many". Now rejected value-free, symmetric with the limit reject.
+      assert_raise ArgumentError, ~r/per_source_offset/, fn ->
+        Traverse.check_cardinality!(nil, 2, :one)
       end
     end
   end

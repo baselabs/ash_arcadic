@@ -75,10 +75,10 @@ defmodule AshArcadic.ManualRelationships.Traverse do
     dest = context.relationship.destination
     card = context.relationship.cardinality
 
-    {_edge, direction, _min, max_depth, _scope_edges?, per_source_limit, _pso} =
+    {_edge, direction, _min, max_depth, _scope_edges?, per_source_limit, per_source_offset} =
       opts_tuple = validate_opts!(opts)
 
-    check_cardinality!(per_source_limit, card)
+    check_cardinality!(per_source_limit, per_source_offset, card)
 
     Telemetry.span(
       :traverse,
@@ -161,15 +161,22 @@ defmodule AshArcadic.ManualRelationships.Traverse do
   end
 
   @doc false
-  # per_source_limit is meaningless on a :one relationship (a single dest can't be
-  # top-N). Fail closed value-free at load time (config error). Unit-tested directly
-  # (the raise through Ash.load is re-wrapped, so assert on THIS, not the load path).
-  def check_cardinality!(nil, _card), do: :ok
+  # per_source_limit AND per_source_offset are meaningless on a :one relationship (a single
+  # dest can't be top-N, nor offset into — spec §7.1: the paging opts "apply only to
+  # cardinality: :many"). Any non-default paging on a :one rel fails closed value-free at load
+  # time (config error) — symmetric guards, since an offset on :one would otherwise silently
+  # return the (offset+1)-th destination instead of the first. Unit-tested directly (the raise
+  # through Ash.load is re-wrapped, so assert on THIS, not the load path).
+  def check_cardinality!(nil, 0, _card), do: :ok
 
-  def check_cardinality!(_limit, :one),
-    do: raise(ArgumentError, "traverse :per_source_limit is unsupported on a :one relationship")
+  def check_cardinality!(_limit, _offset, :one),
+    do:
+      raise(
+        ArgumentError,
+        "traverse :per_source_limit / :per_source_offset are unsupported on a :one relationship"
+      )
 
-  def check_cardinality!(_limit, _many), do: :ok
+  def check_cardinality!(_limit, _offset, _many), do: :ok
 
   @doc false
   # Pure per-node-scope decision from both endpoints' strategies/attrs:
