@@ -483,23 +483,39 @@ defmodule AshArcadic.DataLayer do
   # aggregate runs inside an Ash transaction; the catch-all maps those value-free via
   # conn_error_reason/1 — fail CLOSED, never a CaseClauseError on a multitenant read.
   defp do_run_aggregate(query, resource, aggregates) do
-    case read_conn(query, resource) do
-      {:ok, conn} ->
-        reduce_aggregates(conn, query, aggregates, resource, Info.attribute_types(resource))
+    # Slice 4: a standalone relationship aggregate (Ash.aggregate over a non-empty rel path) fails
+    # closed value-free BEFORE resolving a conn — the per-node subtree rollup is delivered by the
+    # inline load path (Ash.read(load: [:descendant_count])); the standalone cross-row collapse
+    # semantics are unresolved, so ship no silent-wrong-result (spec §6.5 amendment, plan Task 4).
+    # A MIXED flat+relationship batch (Ash splits aggregates only by :bypass, never by rel path)
+    # fails the WHOLE call closed — a co-batched flat aggregate is collateral-rejected intentionally:
+    # partitioning to run-flat + reject-rel would ship a partial result map alongside the error,
+    # breaking reduce_aggregates' first-failure-halts convention (do NOT "fix" into a partition).
+    if Enum.any?(aggregates, &(&1.relationship_path not in [nil, []])) do
+      {:error,
+       QueryFailed.exception(
+         query: "ArcadeDB aggregate query",
+         reason: aggregate_reason(:relationship_aggregate_standalone_unsupported)
+       )}
+    else
+      case read_conn(query, resource) do
+        {:ok, conn} ->
+          reduce_aggregates(conn, query, aggregates, resource, Info.attribute_types(resource))
 
-      {:error, :tenant_required} ->
-        {:error,
-         QueryFailed.exception(
-           query: "ArcadeDB aggregate query",
-           reason: "multitenancy tenant required for :context read"
-         )}
+        {:error, :tenant_required} ->
+          {:error,
+           QueryFailed.exception(
+             query: "ArcadeDB aggregate query",
+             reason: "multitenancy tenant required for :context read"
+           )}
 
-      {:error, reason} ->
-        {:error,
-         QueryFailed.exception(
-           query: "ArcadeDB aggregate query",
-           reason: conn_error_reason(reason)
-         )}
+        {:error, reason} ->
+          {:error,
+           QueryFailed.exception(
+             query: "ArcadeDB aggregate query",
+             reason: conn_error_reason(reason)
+           )}
+      end
     end
   end
 
@@ -605,6 +621,13 @@ defmodule AshArcadic.DataLayer do
   # The traversal fold path (fold_and_put → TraversalAggregate.fold → safe_fold rescue) surfaces
   # this atom when a to_string/inspect/arith error over a mixed destination set is caught value-free.
   defp aggregate_reason(:aggregate_fold_failed), do: "aggregate computation failed"
+
+  # Slice 4: a standalone relationship aggregate run through run_aggregate_query/3 (Ash.aggregate
+  # over a non-empty relationship_path) fails closed BEFORE resolving a conn — the per-node subtree
+  # rollup is delivered by the inline load path; the standalone cross-row collapse is unresolved, so
+  # ship no silent-wrong-result. Value-free: names no rel/field (Rule 4).
+  defp aggregate_reason(:relationship_aggregate_standalone_unsupported),
+    do: "standalone relationship aggregates are unsupported; load the aggregate inline instead"
 
   # An aggregate carrying its OWN query.filter with an operator AshArcadic can't push down.
   # build_statement/3 → translate_agg_filter/2 propagates {:error, %UnsupportedFilter{}}.

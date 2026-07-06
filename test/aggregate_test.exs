@@ -294,4 +294,26 @@ defmodule AshArcadic.AggregateTest do
       assert Aggregate.decode(rows, agg_with_default(:min, nil, field: :amount), @types) == nil
     end
   end
+
+  describe "run_aggregate_query/3 — relationship-path aggregate (Slice-4 standalone fail-closed)" do
+    test "a non-empty relationship_path fails closed value-free, BEFORE resolving a conn" do
+      # AshArcadic.Test.Basic uses MockClient (no app-env fetch); the rel-path guard fires in
+      # do_run_aggregate BEFORE read_conn, so no live server is needed for this unit assertion.
+      q = %AshArcadic.Query{label: :Basic, tenant: nil, filters: [], params: %{}}
+
+      agg = %Ash.Query.Aggregate{
+        kind: :count,
+        field: nil,
+        relationship_path: [:descendants],
+        name: :dc,
+        query: nil
+      }
+
+      assert {:error, %AshArcadic.Errors.QueryFailed{} = err} =
+               AshArcadic.DataLayer.run_aggregate_query(q, [agg], AshArcadic.Test.Basic)
+
+      assert err.reason =~ "standalone"
+      refute err.reason =~ "descendants"
+    end
+  end
 end
