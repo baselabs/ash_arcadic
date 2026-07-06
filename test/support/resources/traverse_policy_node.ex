@@ -43,6 +43,21 @@ defmodule AshArcadic.Test.TraversePolicyNode do
          edge_label: :POL_PARENT_OF, direction: :outgoing, min_depth: 1, max_depth: 3}
       )
     end
+
+    # Slice-3 P2: per-source top-N. Caps each source's reachable destinations at the top-2 by
+    # the relationship sort (id asc), applied POST-authorization in regroup.
+    has_many :descendants_top2, __MODULE__ do
+      manual(
+        {AshArcadic.ManualRelationships.Traverse,
+         edge_label: :POL_PARENT_OF,
+         direction: :outgoing,
+         min_depth: 1,
+         max_depth: 4,
+         per_source_limit: 2}
+      )
+
+      sort(id: :asc)
+    end
   end
 
   policies do
