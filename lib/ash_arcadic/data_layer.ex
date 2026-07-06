@@ -185,6 +185,18 @@ defmodule AshArcadic.DataLayer do
   def can?(_, {:query_aggregate, :exists}), do: true
   def can?(_, {:query_aggregate, _}), do: false
   def can?(_, {:lateral_join, _}), do: false
+  # Slice 4: relationship aggregates over a manual Traverse rel, computed post-authz in Elixir.
+  # {:aggregate_relationship, rel} is a COMPILE gate (verifier) — true for every manual rel.
+  # {:aggregate, kind}=true enables the inline add_aggregate/run_query path; {:aggregate,:unrelated}
+  # STAYS false so Ash refuses flat inline aggregates upstream (add_aggregate only gets rel aggs).
+  def can?(_, {:aggregate_relationship, _}), do: true
+  def can?(_, {:aggregate, :unrelated}), do: false
+  def can?(_, {:aggregate, :custom}), do: false
+
+  def can?(_, {:aggregate, kind})
+      when kind in [:count, :sum, :avg, :min, :max, :first, :list, :exists],
+      do: true
+
   def can?(_, {:aggregate, _}), do: false
   def can?(_, :transact), do: true
   def can?(_, :traverse), do: true
@@ -363,6 +375,12 @@ defmodule AshArcadic.DataLayer do
       end
     )
   end
+
+  @impl true
+  # Stash each relationship aggregate onto the query; run_query computes + attaches them over the
+  # just-read parent records (add_aggregate receives NO records — Ash contract, ETS pattern).
+  def add_aggregate(%AshArcadic.Query{aggregates: aggs} = query, aggregate, _resource),
+    do: {:ok, %{query | aggregates: [aggregate | aggs]}}
 
   # Conn resolved SOLELY via read_conn/2 — a :context blank tenant fails closed
   # :tenant_required (never the base database → no unscoped cross-tenant aggregate).

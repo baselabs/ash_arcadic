@@ -42,8 +42,14 @@ defmodule AshArcadic.DataLayer.SkeletonTest do
     assert AshArcadic.DataLayer.can?(AshArcadic.Test.Basic, :traverse)
     assert AshArcadic.DataLayer.can?(AshArcadic.Test.Basic, {:query_aggregate, :count})
     assert AshArcadic.DataLayer.can?(AshArcadic.Test.Basic, {:query_aggregate, :sum})
-    refute AshArcadic.DataLayer.can?(AshArcadic.Test.Basic, {:aggregate, :count})
-    refute AshArcadic.DataLayer.can?(AshArcadic.Test.Basic, {:aggregate_relationship, %{}})
+    # Slice 4: relationship aggregates enabled; flat/unrelated inline aggregates REFUSED
+    # ({:aggregate,:unrelated}=false → Ash rejects flat inline upstream, so add_aggregate only
+    # ever gets relationship aggregates).
+    assert AshArcadic.DataLayer.can?(AshArcadic.Test.Basic, {:aggregate, :count})
+    assert AshArcadic.DataLayer.can?(AshArcadic.Test.Basic, {:aggregate, :sum})
+    assert AshArcadic.DataLayer.can?(AshArcadic.Test.Basic, {:aggregate_relationship, %{}})
+    refute AshArcadic.DataLayer.can?(AshArcadic.Test.Basic, {:aggregate, :unrelated})
+    refute AshArcadic.DataLayer.can?(AshArcadic.Test.Basic, {:aggregate, :custom})
     refute AshArcadic.DataLayer.can?(AshArcadic.Test.Basic, {:query_aggregate, :custom})
     refute AshArcadic.DataLayer.can?(AshArcadic.Test.Basic, {:lateral_join, []})
   end

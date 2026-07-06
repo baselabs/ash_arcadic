@@ -32,7 +32,7 @@ defmodule AshArcadic.DataLayer.CanTest do
     assert DL.can?(AshArcadic.Test.Basic, :traverse)
   end
 
-  test "query aggregates advertised per kind; aggregate/aggregate_relationship/lateral_join stay false" do
+  test "query + relationship aggregates advertised per kind ({:aggregate, kind} + {:aggregate_relationship}); flat/unrelated + lateral_join stay false" do
     for kind <- [:count, :sum, :avg, :min, :max, :first, :list, :exists] do
       assert DL.can?(AshArcadic.Test.Basic, {:query_aggregate, kind}),
              "expected can?({:query_aggregate, #{kind}})"
@@ -40,9 +40,15 @@ defmodule AshArcadic.DataLayer.CanTest do
 
     refute DL.can?(AshArcadic.Test.Basic, {:query_aggregate, :custom})
 
-    # These stay false — the design does NOT add inline/relationship aggregates or lateral joins.
-    refute DL.can?(AshArcadic.Test.Basic, {:aggregate, :count})
-    refute DL.can?(AshArcadic.Test.Basic, {:aggregate_relationship, %{}})
+    # Slice 4: relationship aggregates enabled (compile gate + per-kind); flat/unrelated REFUSED.
+    for kind <- [:count, :sum, :avg, :min, :max, :first, :list, :exists] do
+      assert DL.can?(AshArcadic.Test.Basic, {:aggregate, kind}),
+             "expected can?({:aggregate, #{kind}}) for relationship aggregates"
+    end
+
+    assert DL.can?(AshArcadic.Test.Basic, {:aggregate_relationship, %{}})
+    refute DL.can?(AshArcadic.Test.Basic, {:aggregate, :unrelated})
+    refute DL.can?(AshArcadic.Test.Basic, {:aggregate, :custom})
     refute DL.can?(AshArcadic.Test.Basic, {:lateral_join, []})
   end
 
