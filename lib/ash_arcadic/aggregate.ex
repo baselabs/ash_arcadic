@@ -12,6 +12,8 @@ defmodule AshArcadic.Aggregate do
 
   alias AshArcadic.Cast
   alias AshArcadic.Identifier
+  alias AshArcadic.Query
+  alias AshArcadic.Query.Filter
 
   @value_reading ~w(sum avg min max first list)a
 
@@ -91,6 +93,64 @@ defmodule AshArcadic.Aggregate do
       when kind in [:sum, :avg, :min, :max] do
     {"#{kind}(n.#{ident(field)}) AS #{alias}, count(n) AS #{alias}_card", :companion}
   end
+
+  @doc """
+  Builds `{:ok, cypher, params}` for ONE aggregate over the base `%AshArcadic.Query{}`,
+  or a value-free `{:error, reason}` from the field guard (§6.4). The WHERE ANDs the
+  base query's `filters` with the aggregate's OWN `query.filter` (C2 — a shared RETURN
+  can't express distinct per-agg filters, so each aggregate is its own statement). The
+  RETURN uses synthetic alias `agg0`; value-reading kinds append `count(n) AS agg0_card`
+  (§6.1). `:first` prepends `WITH n ORDER BY <agg sort>`.
+  """
+  @spec build_statement(Query.t(), Ash.Query.Aggregate.t(), %{atom() => {Ash.Type.t(), keyword()}}) ::
+          {:ok, String.t(), map()} | {:error, term()}
+  def build_statement(%Query{} = base, %Ash.Query.Aggregate{} = agg, types) do
+    with :ok <- guard_field(agg, types),
+         {:ok, query, agg_clause} <- translate_agg_filter(base, agg) do
+      label = Identifier.validate!(base.label)
+      where = build_where(base.filters ++ agg_clause)
+      order = order_prefix(agg)
+      {expr, companion} = return_expr(agg, "agg0")
+      expr = append_first_companion(expr, companion, agg.kind)
+      cypher = "MATCH (n:#{label})" <> order <> where <> " RETURN #{expr}"
+      {:ok, cypher, query.params}
+    end
+  end
+
+  # Only :first needs the companion appended here — the WITH reshapes the row so
+  # return_expr leaves it off; :sum/:avg/:min/:max already inline their own companion.
+  defp append_first_companion(expr, :companion, :first), do: expr <> ", count(n) AS agg0_card"
+  defp append_first_companion(expr, _companion, _kind), do: expr
+
+  # The aggregate's OWN filter (agg.query.filter), translated against the base query so
+  # params accumulate. nil query or nil filter → no extra clause. UnsupportedFilter
+  # propagates value-free (fail-closed — never a silently-dropped filter).
+  defp translate_agg_filter(base, %Ash.Query.Aggregate{query: %{filter: %Ash.Filter{} = f}}) do
+    case Filter.translate(f, base) do
+      {:ok, query, ""} -> {:ok, query, []}
+      {:ok, query, clause} -> {:ok, query, [clause]}
+      {:error, _} = err -> err
+    end
+  end
+
+  defp translate_agg_filter(base, _agg), do: {:ok, base, []}
+
+  # ORDER BY prefix for :first (uses the aggregate's query.sort; empty → no prefix,
+  # first is arbitrary per Ash). Only :first needs a WITH-projection before RETURN.
+  defp order_prefix(%Ash.Query.Aggregate{kind: :first, query: %{sort: [_ | _] = sort}}) do
+    order =
+      Enum.map_join(sort, ", ", fn {field, dir} ->
+        d = if dir == :desc, do: "DESC", else: "ASC"
+        "n.#{ident(field)} #{d}"
+      end)
+
+    " WITH n ORDER BY #{order}"
+  end
+
+  defp order_prefix(_agg), do: ""
+
+  defp build_where([]), do: ""
+  defp build_where(parts), do: " WHERE " <> Enum.join(parts, " AND ")
 
   defp ident(field), do: field |> to_string() |> Identifier.validate!()
 end

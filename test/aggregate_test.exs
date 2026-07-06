@@ -126,4 +126,72 @@ defmodule AshArcadic.AggregateTest do
       assert {"count(n) > 0 AS agg0", :plain} = Aggregate.return_expr(agg(:exists), "agg0")
     end
   end
+
+  describe "build_statement/3 — one statement per aggregate (§6.1)" do
+    alias AshArcadic.Query
+
+    defp base_query(filters \\ [], params \\ %{}) do
+      %Query{resource: __MODULE__, label: :Person, filters: filters, params: params}
+    end
+
+    test "count over the base filter (no field), no companion" do
+      q = base_query(["n.t = $param1"], %{"param1" => "org1"})
+
+      assert {:ok, cypher, params} =
+               Aggregate.build_statement(q, agg(:count), @types)
+
+      assert cypher == "MATCH (n:Person) WHERE n.t = $param1 RETURN count(n) AS agg0"
+      assert params == %{"param1" => "org1"}
+    end
+
+    test "sum carries the cardinality companion" do
+      assert {:ok, cypher, _} =
+               Aggregate.build_statement(base_query(), agg(:sum, field: :amount), @types)
+
+      assert cypher == "MATCH (n:Person) RETURN sum(n.amount) AS agg0, count(n) AS agg0_card"
+    end
+
+    test "first emits WITH n ORDER BY <sort> then head(collect) + companion" do
+      sort_q = %Ash.Query{sort: [{:amount, :desc}]}
+      a = agg(:first, field: :amount, query: sort_q)
+      assert {:ok, cypher, _} = Aggregate.build_statement(base_query(), a, @types)
+
+      assert cypher ==
+               "MATCH (n:Person) WITH n ORDER BY n.amount DESC RETURN head(collect(n.amount)) AS agg0, count(n) AS agg0_card"
+    end
+
+    test "per-aggregate filter is ANDed onto the base filter (C2)" do
+      # base filter scopes tenant; the aggregate's own filter (age == 5) is distinct.
+      # Uses AshArcadic.Test.Basic's EXISTING :age integer attribute — Basic's attribute_map
+      # is pinned by skeleton_test.exs (== assertion), so do NOT add attributes to Basic.
+      # Filter.translate reads attr names structurally, so parsing against Basic while the
+      # base_query resource is the test module is fine (translate ignores the query resource).
+      q = base_query(["n.t = $param1"], %{"param1" => "org1"})
+      agg_query = %Ash.Query{filter: Ash.Filter.parse!(AshArcadic.Test.Basic, age: 5)}
+      a = agg(:count, query: agg_query)
+      assert {:ok, cypher, params} = Aggregate.build_statement(q, a, @types)
+      assert cypher =~ "WHERE n.t = $param1 AND n.age = $param2"
+      assert cypher =~ "RETURN count(n) AS agg0"
+      assert params["param2"] == 5
+    end
+
+    test "a non-aggregatable field fails closed value-free (no cypher built)" do
+      assert {:error, {:unaggregatable, :price, :sum}} =
+               Aggregate.build_statement(base_query(), agg(:sum, field: :price), @types)
+    end
+
+    test "an unsupported per-aggregate filter fails closed via translate (not swallowed)" do
+      # Distinct from the guard_field path: :count passes guard_field (no field), so
+      # execution REACHES translate_agg_filter. A range op on Basic's :binary :secret
+      # attr PARSES but Filter.translate rejects it (range-comparable guard) →
+      # {:error, %UnsupportedFilter{}}. build_statement must propagate that, NOT build
+      # cypher — a swallowed error here would drop the agg filter into an unscoped read.
+      require Ash.Query
+      rejected = Ash.Query.filter(AshArcadic.Test.Basic, secret > ^<<1, 2, 3>>).filter
+      a = agg(:count, query: %Ash.Query{filter: rejected})
+
+      assert {:error, %AshArcadic.Errors.UnsupportedFilter{field: :secret}} =
+               Aggregate.build_statement(base_query(), a, @types)
+    end
+  end
 end
