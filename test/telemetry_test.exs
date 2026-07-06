@@ -57,4 +57,21 @@ defmodule AshArcadic.TelemetryTest do
     assert Map.has_key?(meta, :in_transaction?)
     assert is_boolean(meta.in_transaction?)
   end
+
+  test "aggregate span metadata keys are on the value-free allowlist" do
+    assert :kinds in AshArcadic.Telemetry.allowed_meta_keys()
+    assert :aggregate_count in AshArcadic.Telemetry.allowed_meta_keys()
+
+    meta = %{
+      resource: Foo,
+      multitenancy: :attribute,
+      kinds: [:count, :sum],
+      aggregate_count: 2,
+      tenant?: true,
+      in_transaction?: false,
+      result: :ok
+    }
+
+    assert AshArcadic.Telemetry.validate!(meta) == meta
+  end
 end
