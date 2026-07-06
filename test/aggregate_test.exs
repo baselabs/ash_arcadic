@@ -194,4 +194,63 @@ defmodule AshArcadic.AggregateTest do
                Aggregate.build_statement(base_query(), a, @types)
     end
   end
+
+  describe "decode/3 — Ash per-kind defaults + coercion (§6.3)" do
+    defp agg_with_default(kind, default, opts \\ []) do
+      agg(kind, Keyword.merge([default_value: default], opts))
+    end
+
+    test "non-empty sum returns the value (card>0)" do
+      rows = [%{"agg0" => 150, "agg0_card" => 3}]
+      assert Aggregate.decode(rows, agg_with_default(:sum, nil, field: :amount), @types) == 150
+    end
+
+    test "empty sum → struct default (nil), NOT ArcadeDB's 0 (probe G7)" do
+      rows = [%{"agg0" => 0, "agg0_card" => 0}]
+      assert Aggregate.decode(rows, agg_with_default(:sum, nil, field: :amount), @types) == nil
+    end
+
+    test "empty sum with caller default: 0 → 0 (honors struct default_value, C1)" do
+      rows = [%{"agg0" => 0, "agg0_card" => 0}]
+      assert Aggregate.decode(rows, agg_with_default(:sum, 0, field: :amount), @types) == 0
+    end
+
+    test "count → 0 over empty, no companion needed" do
+      assert Aggregate.decode([%{"agg0" => 0}], agg_with_default(:count, 0), @types) == 0
+    end
+
+    test "exists coerces to a real boolean" do
+      assert Aggregate.decode([%{"agg0" => true}], agg_with_default(:exists, nil), @types) == true
+
+      assert Aggregate.decode([%{"agg0" => false}], agg_with_default(:exists, nil), @types) ==
+               false
+    end
+
+    test "list → [] over empty (no companion)" do
+      assert Aggregate.decode(
+               [%{"agg0" => []}],
+               agg_with_default(:list, [], field: :name),
+               @types
+             ) == []
+    end
+
+    test "value-returning min over :decimal coerces the stored string to a Decimal (S3-22)" do
+      # decode/3 tested in ISOLATION here — guard_field/2 blocks min-over-:decimal upstream
+      # (range_comparable? is false for :decimal), so this row shape never reaches decode in
+      # production. The test pins the coercion contract (Cast.load_value by field type) only.
+      rows = [%{"agg0" => "9.50", "agg0_card" => 2}]
+      types = Map.put(@types, :price, {Ash.Type.Decimal, []})
+
+      assert %Decimal{} =
+               Aggregate.decode(rows, agg_with_default(:min, nil, field: :price), types)
+    end
+
+    test "empty min → struct default even though card companion is 0" do
+      # non-nil raw agg0 makes this INDEPENDENTLY discriminating: only the card==0 guard
+      # (not a coincidental nil) forces the struct default. A mutation reading raw agg0
+      # would return 99 here → red.
+      rows = [%{"agg0" => 99, "agg0_card" => 0}]
+      assert Aggregate.decode(rows, agg_with_default(:min, nil, field: :amount), @types) == nil
+    end
+  end
 end

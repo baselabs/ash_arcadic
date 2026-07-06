@@ -117,6 +117,40 @@ defmodule AshArcadic.Aggregate do
     end
   end
 
+  @doc """
+  Decodes the single result row for one aggregate to its Ash value (§6.3). When the
+  cardinality companion reports `agg0_card == 0` (or an inherently empty result —
+  `count → 0`, `list → []`), returns the aggregate struct's `.default_value` (which Ash
+  pre-populates as `caller_default || default_value(kind)`) — NOT ArcadeDB's `sum → 0`
+  (probe G7). `exists` coerces to a boolean; value-returning kinds (`min`/`max`/`first`
+  and `list` elements) coerce through `Cast.load_value/2` by the field's storage type.
+  """
+  @spec decode([map()], Ash.Query.Aggregate.t(), %{atom() => {Ash.Type.t(), keyword()}}) :: term()
+  def decode([], agg, _types), do: agg.default_value
+
+  def decode([row | _], %Ash.Query.Aggregate{kind: :count} = agg, _types),
+    do: Map.get(row, "agg0", agg.default_value)
+
+  def decode([row | _], %Ash.Query.Aggregate{kind: :exists}, _types),
+    do: Map.get(row, "agg0") == true
+
+  def decode([row | _], %Ash.Query.Aggregate{kind: :list, field: field} = agg, types) do
+    case Map.get(row, "agg0") do
+      nil -> agg.default_value
+      [] -> agg.default_value
+      values when is_list(values) -> Enum.map(values, &Cast.load_value(&1, Map.get(types, field)))
+    end
+  end
+
+  def decode([row | _], %Ash.Query.Aggregate{kind: kind, field: field} = agg, types)
+      when kind in [:sum, :avg, :min, :max, :first] do
+    if Map.get(row, "agg0_card", 0) == 0 do
+      agg.default_value
+    else
+      coerce_value(kind, Map.get(row, "agg0"), field, types)
+    end
+  end
+
   # Only :first needs the companion appended here — the WITH reshapes the row so
   # return_expr leaves it off; :sum/:avg/:min/:max already inline their own companion.
   defp append_first_companion(expr, :companion, :first), do: expr <> ", count(n) AS agg0_card"
@@ -151,6 +185,11 @@ defmodule AshArcadic.Aggregate do
 
   defp build_where([]), do: ""
   defp build_where(parts), do: " WHERE " <> Enum.join(parts, " AND ")
+
+  # sum/avg are numeric already (no string storage — guarded); min/max/first return a
+  # stored value of the field's type → coerce like a read row (decimal→Decimal, etc.).
+  defp coerce_value(kind, value, _field, _types) when kind in [:sum, :avg], do: value
+  defp coerce_value(_kind, value, field, types), do: Cast.load_value(value, Map.get(types, field))
 
   defp ident(field), do: field |> to_string() |> Identifier.validate!()
 end
