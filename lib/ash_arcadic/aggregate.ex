@@ -66,11 +66,13 @@ defmodule AshArcadic.Aggregate do
 
   @doc """
   The RETURN expression for one aggregate, aliased to `alias` (a synthetic `agg<i>`).
-  Value-reading kinds return `{expr, :companion}` — the caller appends `count(n) AS
-  <alias>_card` so decode can map an empty set (`card == 0`) to the struct default
-  (ArcadeDB `sum` over empty = 0 ≠ Ash nil, probe G7). `count`/`exists`/`list` return
-  `{expr, :plain}` (correct as returned; `list` empty → `[]`). `<f>` is
-  `Identifier.validate!`-checked. `:first` ordering is emitted by `build_statement/3`
+  Value-reading kinds return `{expr, :companion}` — a `count(n.<field>) AS <alias>_card`
+  companion (inlined here for sum/avg/min/max, appended by `build_statement/3` for `:first`).
+  The companion counts NON-NULL field values, so decode maps both an empty set AND an
+  all-null-field set (`card == 0`) to the struct default — matching Ash/SQL aggregate
+  semantics, which skip nulls (ArcadeDB `sum` over empty/all-null = 0 ≠ Ash nil, probe G7).
+  `count`/`exists`/`list` return `{expr, :plain}` (correct as returned; `list` empty → `[]`).
+  `<f>` is `Identifier.validate!`-checked. `:first` ordering is emitted by `build_statement/3`
   (a `WITH n ORDER BY …` prefix), not here.
 
   Assumes `guard_field/2` has already passed for this aggregate — `field` MUST be an
@@ -100,7 +102,8 @@ defmodule AshArcadic.Aggregate do
 
   def return_expr(%Ash.Query.Aggregate{kind: kind, field: field}, alias)
       when kind in [:sum, :avg, :min, :max] do
-    {"#{kind}(n.#{ident(field)}) AS #{alias}, count(n) AS #{alias}_card", :companion}
+    f = ident(field)
+    {"#{kind}(n.#{f}) AS #{alias}, count(n.#{f}) AS #{alias}_card", :companion}
   end
 
   @doc """
@@ -121,7 +124,7 @@ defmodule AshArcadic.Aggregate do
       where = build_where(base.filters ++ agg_clause)
       order = order_prefix(agg)
       {expr, companion} = return_expr(agg, "agg0")
-      expr = append_first_companion(expr, companion, agg.kind)
+      expr = append_first_companion(expr, companion, agg)
       cypher = "MATCH (n:#{label})" <> order <> where <> " RETURN #{expr}"
       {:ok, cypher, query.params}
     end
@@ -163,8 +166,12 @@ defmodule AshArcadic.Aggregate do
 
   # Only :first needs the companion appended here — the WITH reshapes the row so
   # return_expr leaves it off; :sum/:avg/:min/:max already inline their own companion.
-  defp append_first_companion(expr, :companion, :first), do: expr <> ", count(n) AS agg0_card"
-  defp append_first_companion(expr, _companion, _kind), do: expr
+  # The companion counts NON-NULL field values (count(n.<field>)), so an all-null-field set
+  # decodes to the Ash default, not the raw collect()-of-nothing head.
+  defp append_first_companion(expr, :companion, %Ash.Query.Aggregate{kind: :first, field: field}),
+    do: expr <> ", count(n.#{ident(field)}) AS agg0_card"
+
+  defp append_first_companion(expr, _companion, _agg), do: expr
 
   # The aggregate's OWN filter (agg.query.filter), translated against the base query so
   # params accumulate. nil query or nil filter → no extra clause. UnsupportedFilter

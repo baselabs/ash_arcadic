@@ -44,6 +44,15 @@ defmodule AshArcadic.Integration.AggregateTest do
     end
   end
 
+  # Rows that exist but leave :amount unset (nil) — an all-null-field set (distinct from empty).
+  defp seed_attr_no_amount(tenant, count) do
+    for i <- 1..count do
+      AttributeDoc
+      |> Ash.Changeset.for_create(:create, %{id: "#{tenant}_#{i}"}, tenant: tenant)
+      |> Ash.create!(authorize?: false)
+    end
+  end
+
   describe "query aggregates over :attribute (tenant-scoped by org_id)" do
     test "count/sum/avg/min/max scoped to caller tenant; cross-tenant EXCLUDED (non-vacuous)" do
       seed_attr("org1", [10, 20, 30])
@@ -63,6 +72,29 @@ defmodule AshArcadic.Integration.AggregateTest do
     test "empty tenant → count 0, sum nil (Ash default, not ArcadeDB 0 — probe G7)" do
       assert {:ok, 0} == Ash.count(AttributeDoc, tenant: "org_empty", authorize?: false)
       assert {:ok, nil} == Ash.sum(AttributeDoc, :amount, tenant: "org_empty", authorize?: false)
+    end
+
+    test "all-null field → Ash default, not raw ArcadeDB value (count(n.<field>) skips nulls)" do
+      # Rows exist for the tenant, but :amount is nil in every one. Live-verified: ArcadeDB
+      # sum→0, min/max/avg→nil, count(n)→3, count(n.amount)→0. The companion counts NON-NULL
+      # field values, so decode applies the Ash default for a no-non-null-values set — matching
+      # ash_postgres/ETS (SQL aggregates skip nulls). A count(n) companion would return raw 0/nil.
+      seed_attr_no_amount("org_null", 3)
+
+      # count(n) still counts the rows — the fix is scoped to value-reading kinds.
+      assert {:ok, 3} == Ash.count(AttributeDoc, tenant: "org_null", authorize?: false)
+
+      # sum over an all-null field → nil (NOT ArcadeDB's 0); a caller default is honored.
+      assert {:ok, nil} == Ash.sum(AttributeDoc, :amount, tenant: "org_null", authorize?: false)
+
+      assert {:ok, 0} ==
+               Ash.sum(AttributeDoc, :amount, tenant: "org_null", authorize?: false, default: 0)
+
+      # min over an all-null field → nil; caller default honored.
+      assert {:ok, nil} == Ash.min(AttributeDoc, :amount, tenant: "org_null", authorize?: false)
+
+      assert {:ok, 7} ==
+               Ash.min(AttributeDoc, :amount, tenant: "org_null", authorize?: false, default: 7)
     end
 
     test "exists? / list / count(uniq?)" do

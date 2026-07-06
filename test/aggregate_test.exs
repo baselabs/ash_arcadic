@@ -117,14 +117,14 @@ defmodule AshArcadic.AggregateTest do
                Aggregate.return_expr(agg(:count, field: :amount, uniq?: true), "agg0")
     end
 
-    test "sum/avg/min/max carry a count companion for empty-set disambiguation" do
-      assert {"sum(n.amount) AS agg0, count(n) AS agg0_card", :companion} =
+    test "sum/avg/min/max carry a count(n.<field>) companion (empty AND all-null-field → default)" do
+      assert {"sum(n.amount) AS agg0, count(n.amount) AS agg0_card", :companion} =
                Aggregate.return_expr(agg(:sum, field: :amount), "agg0")
 
-      assert {"avg(n.amount) AS agg0, count(n) AS agg0_card", :companion} =
+      assert {"avg(n.amount) AS agg0, count(n.amount) AS agg0_card", :companion} =
                Aggregate.return_expr(agg(:avg, field: :amount), "agg0")
 
-      assert {"min(n.amount) AS agg0, count(n) AS agg0_card", :companion} =
+      assert {"min(n.amount) AS agg0, count(n.amount) AS agg0_card", :companion} =
                Aggregate.return_expr(agg(:min, field: :amount), "agg0")
     end
 
@@ -162,7 +162,8 @@ defmodule AshArcadic.AggregateTest do
       assert {:ok, cypher, _} =
                Aggregate.build_statement(base_query(), agg(:sum, field: :amount), @types)
 
-      assert cypher == "MATCH (n:Person) RETURN sum(n.amount) AS agg0, count(n) AS agg0_card"
+      assert cypher ==
+               "MATCH (n:Person) RETURN sum(n.amount) AS agg0, count(n.amount) AS agg0_card"
     end
 
     test "first emits WITH n ORDER BY <sort> then head(collect) + companion" do
@@ -171,7 +172,7 @@ defmodule AshArcadic.AggregateTest do
       assert {:ok, cypher, _} = Aggregate.build_statement(base_query(), a, @types)
 
       assert cypher ==
-               "MATCH (n:Person) WITH n ORDER BY n.amount DESC RETURN head(collect(n.amount)) AS agg0, count(n) AS agg0_card"
+               "MATCH (n:Person) WITH n ORDER BY n.amount DESC RETURN head(collect(n.amount)) AS agg0, count(n.amount) AS agg0_card"
     end
 
     test "per-aggregate filter is ANDed onto the base filter (C2)" do
