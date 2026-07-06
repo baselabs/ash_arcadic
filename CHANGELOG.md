@@ -144,8 +144,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   before authz) — a policy-denied destination **never consumes a slot** (integration-proven on
   a fan-out star: denying a sibling yields the next-ranked survivor, not a short result). Ash
   rejects *dynamic* `limit`/`offset` on manual relationships, so these are static
-  resource-declared opts; `per_source_limit` is **rejected value-free on a `:one` relationship**
-  (a single destination cannot be a top-N). **Completes Slice 3.**
+  resource-declared opts; `per_source_limit` and `per_source_offset` are **rejected value-free
+  on a `:one` relationship** (a single destination cannot be a top-N or be offset into).
+  **Completes Slice 3.**
 
 ### Fixed
 

@@ -199,8 +199,8 @@ _An Ash DataLayer for ArcadeDB (native OpenCypher over HTTP)._
   is **output-shaping applied AFTER per-hop authorization and the caller sort** (in `regroup`,
   over the already-authorized Read-B destinations) — **not a query-cost bound**: Read B still
   reads the full authorized union first, so the top-N is by rank among the *authorized*
-  destinations and a policy-denied destination **never consumes a slot**. `per_source_limit` is
-  **meaningless on a `:one` relationship and rejected value-free**. These are static because Ash
+  destinations and a policy-denied destination **never consumes a slot**. `per_source_limit` and
+  `per_source_offset` are **meaningless on a `:one` relationship and rejected value-free**. These are static because Ash
   rejects *dynamic* limit/offset on manual relationships (above); declare them on the resource's
   manual opts, e.g. `manual {AshArcadic.ManualRelationships.Traverse, edge_label: :KNOWS,
   max_depth: 3, per_source_limit: 10}` with the relationship's `sort` setting the ranking.
