@@ -70,7 +70,9 @@ defmodule AshArcadic.ManualRelationships.Traverse do
     source = context.relationship.source
     dest = context.relationship.destination
     card = context.relationship.cardinality
-    {_edge, direction, _min, max_depth, _scope_edges?} = opts_tuple = validate_opts!(opts)
+
+    {_edge, direction, _min, max_depth, _scope_edges?, _psl, _pso} =
+      opts_tuple = validate_opts!(opts)
 
     Telemetry.span(
       :traverse,
@@ -91,8 +93,11 @@ defmodule AshArcadic.ManualRelationships.Traverse do
   @doc false
   # Validates the manual opts. Raises a value-free ArgumentError on any bad value
   # (config/programmer error). Returns {edge_label, direction, min_depth, max_depth,
-  # scope_edges?} (scope_edges? default true — the `relationships(p)` opt-out is
-  # `scope_edges: false`; used by build_traverse for :attribute paths only).
+  # scope_edges?, per_source_limit, per_source_offset} (scope_edges? default true — the
+  # `relationships(p)` opt-out is `scope_edges: false`; used by build_traverse for
+  # :attribute paths only). per_source_limit default nil = unbounded (a positive integer
+  # caps each source's destinations); per_source_offset default 0 = no skip (a non-negative
+  # integer skips that many per source).
   def validate_opts!(opts) do
     edge_label =
       Keyword.get(opts, :edge_label) ||
@@ -124,7 +129,29 @@ defmodule AshArcadic.ManualRelationships.Traverse do
       raise ArgumentError, "traverse :scope_edges must be a boolean"
     end
 
-    {edge_label, direction, min_depth, max_depth, scope_edges?}
+    {per_source_limit, per_source_offset} = validate_paging!(opts)
+
+    {edge_label, direction, min_depth, max_depth, scope_edges?, per_source_limit,
+     per_source_offset}
+  end
+
+  # Validates the per-source paging opts (Slice-3 P2), returning {per_source_limit,
+  # per_source_offset}. per_source_limit default nil = unbounded (else a positive integer);
+  # per_source_offset default 0 = no skip (else a non-negative integer). Value-free raises.
+  defp validate_paging!(opts) do
+    per_source_limit = Keyword.get(opts, :per_source_limit)
+
+    unless is_nil(per_source_limit) or (is_integer(per_source_limit) and per_source_limit >= 1) do
+      raise ArgumentError, "traverse :per_source_limit must be a positive integer or nil"
+    end
+
+    per_source_offset = Keyword.get(opts, :per_source_offset, 0)
+
+    unless is_integer(per_source_offset) and per_source_offset >= 0 do
+      raise ArgumentError, "traverse :per_source_offset must be a non-negative integer"
+    end
+
+    {per_source_limit, per_source_offset}
   end
 
   @doc false
@@ -310,7 +337,8 @@ defmodule AshArcadic.ManualRelationships.Traverse do
          source,
          dest,
          card,
-         {edge_label, direction, min_depth, max_depth, scope_edges?}
+         {edge_label, direction, min_depth, max_depth, scope_edges?, _per_source_limit,
+          _per_source_offset}
        ) do
     with {:ok, database} <- resolve_database(source, context.tenant),
          {:ok, tenant_attr, tenant} <- resolve_tenant(source, dest, context.tenant),

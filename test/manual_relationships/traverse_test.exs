@@ -4,13 +4,13 @@ defmodule AshArcadic.ManualRelationships.TraverseTest do
   alias AshArcadic.ManualRelationships.Traverse
 
   describe "validate_opts!/1" do
-    test "defaults direction :outgoing, min_depth 1; returns {edge, dir, min, max, scope_edges?}" do
-      assert {:PARENT_OF, :outgoing, 1, 3, true} =
+    test "defaults direction :outgoing, min_depth 1; returns {edge, dir, min, max, scope_edges?, psl, pso}" do
+      assert {:PARENT_OF, :outgoing, 1, 3, true, nil, 0} =
                Traverse.validate_opts!(edge_label: :PARENT_OF, max_depth: 3)
     end
 
     test "honors explicit direction + min_depth" do
-      assert {:KNOWS, :incoming, 2, 4, true} =
+      assert {:KNOWS, :incoming, 2, 4, true, nil, 0} =
                Traverse.validate_opts!(
                  edge_label: :KNOWS,
                  direction: :incoming,
@@ -20,7 +20,7 @@ defmodule AshArcadic.ManualRelationships.TraverseTest do
     end
 
     test "honors explicit scope_edges: false (the documented opt-out)" do
-      assert {:KNOWS, :incoming, 2, 4, false} =
+      assert {:KNOWS, :incoming, 2, 4, false, nil, 0} =
                Traverse.validate_opts!(
                  edge_label: :KNOWS,
                  direction: :incoming,
@@ -454,6 +454,33 @@ defmodule AshArcadic.ManualRelationships.TraverseTest do
     test ":error result zeroes both counts value-free" do
       assert Traverse.stop_meta({:error, :boom}, 5, 3) ==
                %{destination_count: 0, row_count: 0, depth: 3, result: :error}
+    end
+  end
+
+  describe "validate_opts!/1 — per-source limit opts (Slice-3 P2)" do
+    alias AshArcadic.ManualRelationships.Traverse
+
+    defp base_opts, do: [edge_label: :KNOWS, max_depth: 3]
+
+    test "defaults: per_source_limit nil, per_source_offset 0" do
+      assert {:KNOWS, :outgoing, 1, 3, true, nil, 0} = Traverse.validate_opts!(base_opts())
+    end
+
+    test "accepts a positive limit and non-negative offset" do
+      opts = base_opts() ++ [per_source_limit: 5, per_source_offset: 2]
+      assert {:KNOWS, :outgoing, 1, 3, true, 5, 2} = Traverse.validate_opts!(opts)
+    end
+
+    test "rejects a non-positive limit" do
+      assert_raise ArgumentError, ~r/per_source_limit/, fn ->
+        Traverse.validate_opts!(base_opts() ++ [per_source_limit: 0])
+      end
+    end
+
+    test "rejects a negative offset" do
+      assert_raise ArgumentError, ~r/per_source_offset/, fn ->
+        Traverse.validate_opts!(base_opts() ++ [per_source_offset: -1])
+      end
     end
   end
 end
