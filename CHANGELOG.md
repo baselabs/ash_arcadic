@@ -9,6 +9,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Standard (attribute-FK) relationships (Slice 5).** `belongs_to` / `has_many` /
+  `has_one` / `many_to_many` are first-class for AshArcadic-backed resources — an
+  attribute FK stored as a vertex property (NOT a graph edge), loaded/aggregated via
+  Ash's core batched-`IN` loader over the existing `run_query` (no new callback). Ships:
+  the `{:filter_relationship, standard}` capability (value-keyed off `is_nil(rel.manual)`,
+  so `belongs_to`/`m2m` — which carry no `:manual` field — are covered); a
+  `ValidateRelationshipFk` compile-verifier (a `sensitive` join attribute fails closed,
+  value-free); an `internal?` telemetry tag distinguishing relationship-filter nested reads;
+  standard-rel aggregates via the Slice-4 fold (incl. `%Ash.ForbiddenField{}` field-policy
+  fail-closed); `exists(rel, …)` and m2m loading (two-`IN` path), tenant-scoped. Manual
+  `Traverse` relationships remain fail-closed for filtering (unchanged, regression-pinned).
+- **Fail-closed relationship-filter authorization (Slice 5, security).** A source-on-related
+  FILTER routes through Ash's separate-read IN-rewrite, which reads the destination
+  `authorize?: false` — bypassing the destination's row policy and oracling field-policy-protected
+  values (tenant isolation is unaffected). AshArcadic now **rejects** (`"not filterable"`, for
+  every actor) filtering across a relationship whose destination carries any authorizer; loading
+  and aggregates are unaffected. (Known limitation: the `exists` path is not yet gated — a
+  filter-ops-slice follow-up.)
+- **Filter-on-aggregate fails closed (Slice 5).** `filter(res, <aggregate> > n)` previously
+  mis-translated to a non-existent stored property and silently returned `[]`; it now fails
+  closed with a value-free `%UnsupportedFilter{}` (aggregate/calculation Refs are computed, not
+  stored). A constant-folded boolean predicate (`exists` over an empty match set) now correctly
+  translates to a `true`/`false` Cypher literal instead of erroring.
+
 - AshArcadic data-layer foundation (Slice 1, Plan 1) — server-free: the
   `arcade do … end` DSL section + `AshArcadic.DataLayer.Info` introspection; the
   `Ash.DataLayer` behaviour skeleton (`can?/2` advertising `:multitenancy` only,

@@ -103,6 +103,31 @@ _An Ash DataLayer for ArcadeDB (native OpenCypher over HTTP)._
 - **Not supported:** multi-segment relationship paths fail closed value-free (compose two authorized
   reads instead).
 
+## Standard (attribute-FK) relationships (Slice 5)
+
+- **A standard relationship is a property FK, not a graph edge.** `belongs_to` / `has_many` /
+  `has_one` / `many_to_many` store the FK as a vertex property; Ash's core batched-`IN` loader
+  (over AshArcadic's `run_query`) does the loading/aggregating — there is no new callback and no
+  edge write. Use a **graph edge** (a manual `Traverse` relationship + edge-write) only when you
+  need graph traversal semantics; use a **standard relationship** for ordinary FK associations.
+- **A join/FK attribute must NOT be `sensitive`.** A `sensitive` attribute is app-side-encrypted
+  binary and cannot be `IN`-joined; declaring one as a relationship join key fails the build
+  (`ValidateRelationshipFk`, value-free).
+- **Filtering across a relationship is fail-closed to authorizer-bearing destinations.** A
+  source-on-related filter (`filter(Post, author.name == x)`) routes through Ash's separate-read
+  IN-rewrite, which reads the DESTINATION **without** per-hop authorization. To prevent an
+  unauthorized row-policy bypass / field-policy oracle, AshArcadic **rejects** (`"not filterable"`,
+  for every actor including admin) filtering across a relationship whose destination resource
+  carries any authorizer. Filter against a destination with no authorizer, or filter/load the
+  destination directly. **Loading and aggregates are unaffected** — they apply authorization
+  correctly. (Tenant isolation always holds on every delegated read.) _Known limitation:_ the
+  `exists(rel, …)` path is not yet gated by this guard (a filter-ops-slice follow-up) — do not rely
+  on `exists` over a relationship to a policy-protected field.
+- **Filtering across a manual `Traverse` relationship is unsupported** (fail-closed, `"not
+  filterable"`) — its per-hop authz cannot be preserved by the IN-rewrite.
+- **Filter-on-aggregate is unsupported** (`filter(res, some_agg > n)`) — it fails closed value-free
+  (`%UnsupportedFilter{}`); an aggregate is a computed fold value, not a stored property.
+
 ## Multitenancy (Plan 2)
 
 - **`:context` = database-per-tenant** (strongest isolation): `set_tenant/3`
