@@ -120,9 +120,13 @@ _An Ash DataLayer for ArcadeDB (native OpenCypher over HTTP)._
   for every actor including admin) filtering across a relationship whose destination resource
   carries any authorizer. Filter against a destination with no authorizer, or filter/load the
   destination directly. **Loading and aggregates are unaffected** — they apply authorization
-  correctly. (Tenant isolation always holds on every delegated read.) _Known limitation:_ the
-  `exists(rel, …)` path is not yet gated by this guard (a filter-ops-slice follow-up) — do not rely
-  on `exists` over a relationship to a policy-protected field.
+  correctly. (Tenant isolation always holds on every delegated read.) _Known limitation (Ash-core, not
+  data-layer-fixable):_ the `exists(rel, …)` path is NOT gated by this guard — Ash decomposes a related
+  `exists` into flat reads before the data layer sees it, so there is no capability/translator hook, and
+  the one data-layer lever (rejecting any `internal?` read over an authorizer-bearing resource) was tried
+  and **reverted** because it also rejects legitimate relationship-referencing read policies
+  (`relates_to_actor_via` / `accessing_from` / `authorize_if expr(exists(rel, …))`). Do NOT rely on
+  `exists` over a relationship to a policy-protected field; the proper fix is an upstream Ash-core hook.
 - **Filtering across a manual `Traverse` relationship is unsupported** (fail-closed, `"not
   filterable"`) — its per-hop authz cannot be preserved by the IN-rewrite.
 - **Filter-on-aggregate is unsupported** (`filter(res, some_agg > n)`) — it fails closed value-free
