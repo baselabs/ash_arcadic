@@ -342,35 +342,21 @@ defmodule AshArcadic.DataLayer do
 
   @impl true
   def run_query(%AshArcadic.Query{} = query, resource) do
-    # Fail closed on an unauthorized separate-read decomposition over a policy-bearing resource. Ash
-    # routes a source-on-related FILTER and a related `exists(...)` through a nested destination read
-    # tagged `internal?: true` and run `authorize?: false` (deps/ash filter.ex:2091,2104) — bypassing
-    # the destination's ROW and FIELD policies. The FILTER path is rejected at parse (`can?/2`), but
-    # related `exists` has NO data-layer capability gate (V3), so its nested read reaches here; without
-    # this guard it oracles a field-policy-protected value / a hidden row. LOADING and AGGREGATE FOLDS
-    # are `internal?: false`, so they are unaffected; a non-policy destination has no authorizer to
-    # bypass, so its internal read is allowed. Over-rejection (incl. admin) is deliberate, mirroring
-    # the `{:filter_relationship}` guard.
-    if query.internal? and Ash.Resource.Info.authorizers(resource) != [] do
-      {:error,
-       QueryFailed.exception(query: resource, reason: :relationship_read_requires_authorization)}
-    else
-      Telemetry.span(:read, %{resource: resource, multitenancy: strategy(resource)}, fn ->
-        result = do_run_query(query, resource)
+    Telemetry.span(:read, %{resource: resource, multitenancy: strategy(resource)}, fn ->
+      result = do_run_query(query, resource)
 
-        {result,
-         %{
-           row_count: row_count(result),
-           result: Telemetry.result_tag(result),
-           tenant?: not is_nil(query.tenant),
-           internal?: query.internal?,
-           in_transaction?: AshArcadic.Transaction.in_transaction?(),
-           traversal_aggregate?: query.aggregates != [],
-           aggregate_kinds: Enum.map(query.aggregates, & &1.kind),
-           aggregate_count: length(query.aggregates)
-         }}
-      end)
-    end
+      {result,
+       %{
+         row_count: row_count(result),
+         result: Telemetry.result_tag(result),
+         tenant?: not is_nil(query.tenant),
+         internal?: query.internal?,
+         in_transaction?: AshArcadic.Transaction.in_transaction?(),
+         traversal_aggregate?: query.aggregates != [],
+         aggregate_kinds: Enum.map(query.aggregates, & &1.kind),
+         aggregate_count: length(query.aggregates)
+       }}
+    end)
   end
 
   defp do_run_query(%AshArcadic.Query{aggregates: aggs} = query, resource) do

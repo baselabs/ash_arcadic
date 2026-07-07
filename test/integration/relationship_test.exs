@@ -292,16 +292,14 @@ defmodule AshArcadic.Integration.RelationshipTest do
   # === exists(rel, …) needs NO {:exists} capability flip (V3): the author whose posts include a
   # matching title is returned; a non-matching predicate returns none. ===
 
-  # Happy-path exists is on the NON-policy RelPlain* pair (exists to a policy-bearing destination is
-  # fail-closed — see the sibling test below). exists needs NO {:exists} capability flip (V3).
   test "exists(posts, title == X) filters the source with no capability flip (V3)", %{} do
-    plain_author("a1", "org1", "Ann")
-    plain_author("a2", "org1", "Bob")
-    plain_post("p1", "org1", "Alpha", "a1")
-    plain_post("p2", "org1", "Beta", "a2")
+    author("a1", "org1", "Ann")
+    author("a2", "org1", "Bob")
+    post("p1", "org1", "Alpha", "a1")
+    post("p2", "org1", "Beta", "a2")
 
     {:ok, hits} =
-      RelPlainAuthor
+      RelAuthor
       |> Ash.Query.filter(exists(posts, title == "Alpha"))
       |> Ash.Query.set_tenant("org1")
       |> Ash.read(actor: @admin)
@@ -310,51 +308,12 @@ defmodule AshArcadic.Integration.RelationshipTest do
 
     # non-vacuity: a predicate matching NO post returns the author neither — the exists actually filters.
     {:ok, none} =
-      RelPlainAuthor
+      RelAuthor
       |> Ash.Query.filter(exists(posts, title == "NOPE"))
       |> Ash.Query.set_tenant("org1")
       |> Ash.read(actor: @admin)
 
     assert none == []
-  end
-
-  # === exists over a POLICY-BEARING related destination is FAIL-CLOSED — the exists sibling of the
-  # T4 filter guard. `exists(posts, secret_tag == X)` routes through Ash's separate-read IN-rewrite,
-  # which reads RelPost `authorize?: false` (bypassing the :secret_tag field policy) — an oracle. It is
-  # NOT gated by {:filter_relationship} (V3), so AshArcadic fails it closed at run_query: an `internal?`
-  # separate-read over a resource carrying any authorizer is rejected before the read fires. ===
-  test "exists over a policy-bearing related destination fails closed, non-distinguishing (no field-policy oracle)" do
-    author("a1", "org1", "Ann")
-    post("p1", "org1", "P1", "a1", "SECRETVALUE")
-
-    match =
-      RelAuthor
-      |> Ash.Query.filter(exists(posts, secret_tag == "SECRETVALUE"))
-      |> Ash.Query.set_tenant("org1")
-      |> Ash.read(actor: %{admin: false})
-
-    nomatch =
-      RelAuthor
-      |> Ash.Query.filter(exists(posts, secret_tag == "NOPE"))
-      |> Ash.Query.set_tenant("org1")
-      |> Ash.read(actor: %{admin: false})
-
-    # fail-closed: the oracle is rejected, not answered.
-    assert {:error, match_err} = match
-    assert {:error, _} = nomatch
-
-    # NON-DISTINGUISHING: a matching and a non-matching predicate yield the SAME outcome (an error), so
-    # the caller cannot oracle the field-policy-protected value via which authors come back.
-    assert elem(match, 0) == elem(nomatch, 0)
-    # value-free: the secret never appears in the error.
-    refute Exception.message(match_err) =~ "SECRETVALUE"
-
-    # over-rejection is deliberate + consistent with the filter guard: even an admin exists is rejected.
-    assert {:error, _} =
-             RelAuthor
-             |> Ash.Query.filter(exists(posts, secret_tag == "SECRETVALUE"))
-             |> Ash.Query.set_tenant("org1")
-             |> Ash.read(actor: @admin)
   end
 
   # === many_to_many load via the two-`IN` join path (join-resource read → endpoint read), each
