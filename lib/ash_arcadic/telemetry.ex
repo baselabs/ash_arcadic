@@ -7,7 +7,7 @@ defmodule AshArcadic.Telemetry do
   # tenant identity into span metadata. `rls?` is dropped (no ArcadeDB RLS);
   # `in_transaction?` is added.
 
-  @allowed_meta_keys ~w(resource multitenancy tenant? stale? in_transaction?
+  @allowed_meta_keys ~w(resource multitenancy tenant? internal? stale? in_transaction?
                         properties? direction row_count batch_size group_count
                         destination_count depth result kinds aggregate_count
                         traversal_aggregate? aggregate_kinds)a

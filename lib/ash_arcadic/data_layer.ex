@@ -201,6 +201,14 @@ defmodule AshArcadic.DataLayer do
   def can?(_, {:aggregate, _}), do: false
   def can?(_, :transact), do: true
   def can?(_, :traverse), do: true
+  # Slice 5: standard (attribute-FK) relationships. {:filter_relationship, rel} is Ash's gate for
+  # filtering a SOURCE on a related field (filter.ex:3599). True for STANDARD rels — has_many/has_one
+  # carry manual: nil; belongs_to/many_to_many have NO :manual field (Map.get → nil) — so Ash routes
+  # the filter through a separate destination read + source-IN rewrite ({:join} stays false). A MANUAL
+  # Traverse rel carries manual: {mod, opts} → false: a clean "not filterable" reject, NOT an IN-rewrite
+  # over the traversal destination WITHOUT per-hop authz (V1). Loading + aggregates already work via
+  # Ash's core batched-IN loader over run_query — no new callback.
+  def can?(_, {:filter_relationship, rel}), do: is_nil(Map.get(rel, :manual))
   def can?(_, _), do: false
 
   @impl true
@@ -240,7 +248,15 @@ defmodule AshArcadic.DataLayer do
     # Captures the raw query tenant for ALL strategies (Ash sets private.tenant even
     # for :attribute, where set_tenant never fires). Pure annotation — feeds the
     # `tenant?` telemetry tag; no read behavior changes (no RLS to scope).
-    {:ok, %{query | tenant: get_in(context, [:private, :tenant])}}
+    # `internal?` distinguishes a nested relationship-filter read (Ash sets
+    # private.internal? for the separate-read IN path) from a top-level read — a
+    # value-free telemetry tag consumed by the run_query :read span.
+    {:ok,
+     %{
+       query
+       | tenant: get_in(context, [:private, :tenant]),
+         internal?: get_in(context, [:private, :internal?]) == true
+     }}
   end
 
   @impl true
@@ -311,6 +327,7 @@ defmodule AshArcadic.DataLayer do
          row_count: row_count(result),
          result: Telemetry.result_tag(result),
          tenant?: not is_nil(query.tenant),
+         internal?: query.internal?,
          in_transaction?: AshArcadic.Transaction.in_transaction?(),
          traversal_aggregate?: query.aggregates != [],
          aggregate_kinds: Enum.map(query.aggregates, & &1.kind),

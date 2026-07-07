@@ -81,4 +81,26 @@ defmodule AshArcadic.DataLayer.CanTest do
 
     refute DL.can?(AshArcadic.Test.Basic, {:filter_expr, %Ash.Query.Function.If{}})
   end
+
+  test "filter_relationship: true for STANDARD rels (any type), false for MANUAL Traverse rels (V1 fail-closed)" do
+    # has_many/has_one carry manual: nil (standard). belongs_to and many_to_many have NO :manual
+    # field (Map.get → nil). ALL are STANDARD → filterable via Ash's separate-read IN path (join
+    # stays false). A manual Traverse rel carries manual: {mod, opts} → NOT filterable: Ash rejects
+    # the filter clean ("not filterable"), NOT routed to an unauthorized IN-rewrite over the traversal
+    # destination (V1). The clause keys off the VALUE (is_nil(Map.get(rel, :manual))), not key-presence.
+    assert DL.can?(AshArcadic.Test.Basic, {:filter_relationship, %{manual: nil}})
+
+    # belongs_to / many_to_many shape — NO :manual key. Must still be filterable (regression pin for
+    # the %{manual: nil}-pattern bug the plan reviewer caught).
+    assert DL.can?(AshArcadic.Test.Basic, {:filter_relationship, %{name: :author}})
+
+    refute DL.can?(
+             AshArcadic.Test.Basic,
+             {:filter_relationship, %{manual: {AshArcadic.ManualRelationships.Traverse, []}}}
+           )
+
+    # join / lateral_join stay false — routes standard-rel filters to the separate-read path.
+    refute DL.can?(AshArcadic.Test.Basic, {:join, AshArcadic.Test.Basic})
+    refute DL.can?(AshArcadic.Test.Basic, {:lateral_join, []})
+  end
 end

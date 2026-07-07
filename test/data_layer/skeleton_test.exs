@@ -52,5 +52,35 @@ defmodule AshArcadic.DataLayer.SkeletonTest do
     refute AshArcadic.DataLayer.can?(AshArcadic.Test.Basic, {:aggregate, :custom})
     refute AshArcadic.DataLayer.can?(AshArcadic.Test.Basic, {:query_aggregate, :custom})
     refute AshArcadic.DataLayer.can?(AshArcadic.Test.Basic, {:lateral_join, []})
+
+    # Slice 5: standard (attribute-FK) relationships — filter_relationship enabled for standard
+    # rels (has_many/has_one manual: nil; belongs_to/m2m have no :manual key); manual Traverse rels
+    # stay false (fail-closed reject, V1).
+    assert AshArcadic.DataLayer.can?(
+             AshArcadic.Test.Basic,
+             {:filter_relationship, %{manual: nil}}
+           )
+
+    assert AshArcadic.DataLayer.can?(
+             AshArcadic.Test.Basic,
+             {:filter_relationship, %{name: :author}}
+           )
+
+    refute AshArcadic.DataLayer.can?(
+             AshArcadic.Test.Basic,
+             {:filter_relationship, %{manual: {AshArcadic.ManualRelationships.Traverse, []}}}
+           )
+  end
+
+  test "set_context/3 captures private.internal? onto the query (default false when absent)" do
+    q = AshArcadic.DataLayer.resource_to_query(AshArcadic.Test.Basic, AshArcadic.Test.Domain)
+
+    {:ok, internal} =
+      AshArcadic.DataLayer.set_context(AshArcadic.Test.Basic, q, %{private: %{internal?: true}})
+
+    assert internal.internal? == true
+
+    {:ok, top_level} = AshArcadic.DataLayer.set_context(AshArcadic.Test.Basic, q, %{private: %{}})
+    assert top_level.internal? == false
   end
 end

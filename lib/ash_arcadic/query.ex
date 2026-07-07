@@ -17,7 +17,8 @@ defmodule AshArcadic.Query do
     filters: [],
     sort: [],
     aggregates: [],
-    params: %{}
+    params: %{},
+    internal?: false
   ]
 
   @type t :: %__MODULE__{
@@ -32,7 +33,8 @@ defmodule AshArcadic.Query do
           filters: [String.t()],
           sort: [{atom(), :asc | :desc}],
           aggregates: [Ash.Query.Aggregate.t()],
-          params: map()
+          params: map(),
+          internal?: boolean()
         }
 
   @doc """
