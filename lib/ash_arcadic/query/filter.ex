@@ -13,10 +13,12 @@ defmodule AshArcadic.Query.Filter do
 
   ## Supported
   eq · not_eq · gt · lt · gte · lte · in · is_nil · and · or · not ·
-  contains · string_starts_with · string_ends_with
+  contains · string_starts_with · string_ends_with · literal `true`/`false`
+  (Ash lowers a no-match `exists(rel, …)` to a bare boolean)
 
   ## Not supported (→ UnsupportedFilter)
-  like · ilike · attribute-to-attribute comparisons · aggregate/exists subqueries
+  like · ilike · attribute-to-attribute comparisons · a filter ON an aggregate or
+  calculation Ref (a COMPUTED value, not a stored property — Finding A)
 
   ArcadeDB `CONTAINS`/`STARTS WITH`/`ENDS WITH` are case-SENSITIVE; a `:ci_string`
   attribute's case-insensitive semantics are not preserved (usage-rules).
@@ -53,6 +55,31 @@ defmodule AshArcadic.Query.Filter do
     with {:ok, query, clause} <- do_translate(expr, query) do
       {:ok, query, "NOT (#{clause})"}
     end
+  end
+
+  # A literal boolean filter expression (Ash lowers `exists(rel, …)` over an EMPTY match set — and a
+  # constant-folded predicate — to a bare `true`/`false`). Emit the Cypher literal directly: ArcadeDB
+  # `WHERE true` matches every row, `WHERE false` matches none (both probe-verified). Without this a
+  # no-match `exists` hits the catch-all and fails with a spurious %UnsupportedFilter{} (a wrong error
+  # for a legitimately-empty result).
+  defp do_translate(true, query), do: {:ok, query, "true"}
+  defp do_translate(false, query), do: {:ok, query, "false"}
+
+  # Finding A: an aggregate/calculation Ref is a COMPUTED value, not a stored ArcadeDB property —
+  # emitting `n.<name> > $p` silently matches nothing ({:ok, []}, a wrong result). Reject structurally,
+  # BEFORE the operator clauses, mirroring the Ref-to-Ref guard's shape + unsupported_shape/1 derivation.
+  # The first clause covers operator forms (`post_count > 1` carries `left:`); the second covers function
+  # forms (`contains(some_calc, …)` carries `arguments:`). Value-free (names the aggregate + operator).
+  defp do_translate(%_op{left: %Ash.Query.Ref{attribute: %agg_mod{}}} = expr, _query)
+       when agg_mod in [Ash.Query.Aggregate, Ash.Query.Calculation] do
+    {operator, field} = unsupported_shape(expr)
+    {:error, UnsupportedFilter.exception(operator: operator, field: field)}
+  end
+
+  defp do_translate(%_op{arguments: [%Ash.Query.Ref{attribute: %agg_mod{}} | _]} = expr, _query)
+       when agg_mod in [Ash.Query.Aggregate, Ash.Query.Calculation] do
+    {operator, field} = unsupported_shape(expr)
+    {:error, UnsupportedFilter.exception(operator: operator, field: field)}
   end
 
   # Attribute-to-attribute comparison carries a Ref on the right — no bindable

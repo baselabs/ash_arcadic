@@ -16,6 +16,8 @@ defmodule AshArcadic.Test.RelPost do
     attribute :title, :string, public?: true
     # Field-policy-protected NON-FK attribute — the Task-4 field-policy-oracle surface.
     attribute :secret_tag, :string, public?: true
+    # Numeric attr — exercises the `sum` aggregate happy path (Slice-5 Task 5).
+    attribute :views, :integer, public?: true
   end
 
   multitenancy do
@@ -28,6 +30,11 @@ defmodule AshArcadic.Test.RelPost do
       attribute_type: :string,
       source_attribute: :author_id,
       destination_attribute: :id
+
+    many_to_many :tags, AshArcadic.Test.RelTag,
+      through: AshArcadic.Test.RelPostTag,
+      source_attribute_on_join_resource: :post_id,
+      destination_attribute_on_join_resource: :tag_id
   end
 
   policies do
@@ -52,7 +59,7 @@ defmodule AshArcadic.Test.RelPost do
   end
 
   actions do
-    default_accept [:id, :org_id, :title, :author_id, :secret_tag]
+    default_accept [:id, :org_id, :title, :author_id, :secret_tag, :views]
     defaults [:read, :create]
   end
 end

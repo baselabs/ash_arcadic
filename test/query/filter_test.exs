@@ -80,4 +80,25 @@ defmodule AshArcadic.Query.FilterTest do
     assert {:error, %UnsupportedFilter{}} =
              t(Ash.Query.filter(AshArcadic.Test.Basic, name == age))
   end
+
+  # Finding A: an aggregate/calculation Ref in a filter is a COMPUTED value, not a stored ArcadeDB
+  # property. Emitting `n.post_count > $p` silently matches NOTHING (a wrong result). The translator
+  # must reject it structurally with a value-free %UnsupportedFilter{} naming operator + aggregate.
+  test "TRIPWIRE (Finding A): a comparison on an aggregate Ref fails LOUD as UnsupportedFilter" do
+    q = AshArcadic.Test.RelAuthor |> Ash.Query.filter(post_count > 1)
+
+    # PROVE the discriminator is really an aggregate struct (not a stored attribute) — else the
+    # assertion below would be vacuous (a stored attr would translate to a WHERE fragment, not error).
+    assert %Ash.Query.Operator.GreaterThan{
+             left: %Ash.Query.Ref{attribute: %Ash.Query.Aggregate{}}
+           } =
+             q.filter.expression
+
+    assert {:error,
+            %UnsupportedFilter{operator: Ash.Query.Operator.GreaterThan, field: :post_count} = err} =
+             Filter.translate(q.filter, %Query{resource: AshArcadic.Test.RelAuthor})
+
+    # value-free (Rule 4): names the aggregate + operator, never a row/threshold value.
+    refute Exception.message(err) =~ "1"
+  end
 end

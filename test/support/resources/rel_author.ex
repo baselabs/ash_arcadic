@@ -36,6 +36,17 @@ defmodule AshArcadic.Test.RelAuthor do
 
   aggregates do
     count :post_count, :posts
+    # Slice-5 Task-5 aggregate matrix over the standard has_many :posts (property FK):
+    # a field-policy-protected dest field (:secret_tag) — a non-admin fold must fail closed
+    # (guard rejects the %Ash.ForbiddenField{} marker). Admin bypasses the field policy.
+    list :post_secrets, :posts, :secret_tag
+    # STRING dest field — range-comparable, exercises list/first/min/max over :title.
+    list :post_titles, :posts, :title
+    first :first_title, :posts, :title
+    min :min_title, :posts, :title
+    max :max_title, :posts, :title
+    # Numeric dest field — exercises sum's happy path over :views.
+    sum :total_views, :posts, :views
   end
 
   policies do

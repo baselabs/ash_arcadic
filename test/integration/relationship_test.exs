@@ -16,7 +16,9 @@ defmodule AshArcadic.Integration.RelationshipTest do
     RelMixedCtxPost,
     RelPlainAuthor,
     RelPlainPost,
-    RelPost
+    RelPost,
+    RelPostTag,
+    RelTag
   }
 
   @admin %{admin: true}
@@ -25,6 +27,8 @@ defmodule AshArcadic.Integration.RelationshipTest do
     on_exit(fn ->
       Arcadic.command!(admin, "MATCH (n:RelAuthor) DETACH DELETE n")
       Arcadic.command!(admin, "MATCH (n:RelPost) DETACH DELETE n")
+      Arcadic.command!(admin, "MATCH (n:RelTag) DETACH DELETE n")
+      Arcadic.command!(admin, "MATCH (n:RelPostTag) DETACH DELETE n")
       Arcadic.command!(admin, "MATCH (n:RelPlainAuthor) DETACH DELETE n")
       Arcadic.command!(admin, "MATCH (n:RelPlainPost) DETACH DELETE n")
       Arcadic.command!(admin, "MATCH (n:RelMixedAttrPost) DETACH DELETE n")
@@ -69,17 +73,46 @@ defmodule AshArcadic.Integration.RelationshipTest do
     a
   end
 
-  defp post(id, org, title, author_id, secret \\ nil) do
+  defp post(id, org, title, author_id, secret \\ nil, views \\ nil) do
     {:ok, p} =
       RelPost
       |> Ash.Changeset.for_create(
         :create,
-        %{id: id, org_id: org, title: title, author_id: author_id, secret_tag: secret},
+        %{
+          id: id,
+          org_id: org,
+          title: title,
+          author_id: author_id,
+          secret_tag: secret,
+          views: views
+        },
         tenant: org
       )
       |> Ash.create(actor: @admin)
 
     p
+  end
+
+  defp tag(id, org, name) do
+    {:ok, t} =
+      RelTag
+      |> Ash.Changeset.for_create(:create, %{id: id, org_id: org, name: name}, tenant: org)
+      |> Ash.create(actor: @admin)
+
+    t
+  end
+
+  defp posttag(id, org, post_id, tag_id) do
+    {:ok, j} =
+      RelPostTag
+      |> Ash.Changeset.for_create(
+        :create,
+        %{id: id, org_id: org, post_id: post_id, tag_id: tag_id},
+        tenant: org
+      )
+      |> Ash.create(actor: @admin)
+
+    j
   end
 
   defp plain_author(id, org, name) do
@@ -141,6 +174,181 @@ defmodule AshArcadic.Integration.RelationshipTest do
 
     {:ok, a} = Ash.load(a, :post_count, tenant: "org1", actor: @admin)
     assert a.post_count == 2
+  end
+
+  # === §6.4 STANDARD-REL AGGREGATE MATRIX over the has_many :posts (property FK). Each kind PROBED
+  # against the live DB before asserting (anti-vacuity). list/first/min/max over the STRING :title;
+  # sum over the numeric :views. ===
+
+  test "standard-rel aggregate matrix: list / first / min / max (String :title) + sum (numeric :views)",
+       %{} do
+    a = author("a1", "org1", "Ann")
+    post("p1", "org1", "Alpha", "a1", nil, 10)
+    post("p2", "org1", "Beta", "a1", nil, 20)
+
+    {:ok, a} =
+      Ash.load(
+        a,
+        [:post_count, :post_titles, :first_title, :min_title, :max_title, :total_views],
+        tenant: "org1",
+        actor: @admin
+      )
+
+    assert a.post_count == 2
+    assert Enum.sort(a.post_titles) == ["Alpha", "Beta"]
+
+    # Read B applies sort → :first is the first in read order; both bounds are a real title (not nil).
+    assert a.first_title in ["Alpha", "Beta"]
+    assert a.min_title == "Alpha"
+    assert a.max_title == "Beta"
+
+    # sum over the numeric dest field folds arithmetically (10 + 20), NOT a string-concat / DB error.
+    assert a.total_views == 30
+  end
+
+  test "standard-rel aggregate over an empty relationship yields the empty/default fold", %{} do
+    a = author("solo", "org1", "Solo")
+
+    {:ok, a} =
+      Ash.load(a, [:post_count, :post_titles, :first_title, :total_views],
+        tenant: "org1",
+        actor: @admin
+      )
+
+    # count over no rows = 0; list over no rows = default_value (nil, no explicit default set);
+    # first/sum over an empty set = default_value (nil). Non-vacuity: post_count == 0 proves the
+    # aggregate actually ran over an empty set (not a NotLoaded passthrough).
+    assert a.post_count == 0
+    assert a.post_titles in [nil, []]
+    assert a.first_title == nil
+    assert a.total_views == nil
+  end
+
+  # === STANDARD-REL FIELD-POLICY FAIL-CLOSED tripwire: the standard separate loader redacts a
+  # field-policy-protected dest field to %Ash.ForbiddenField{} (Traverse Read B), so a value-reading
+  # `list` fold over it must NOT leak the value — it hits the fold's fail-closed {:error, _} branch
+  # for a non-admin. Admin bypasses the field policy (values load, redacted-away). ===
+
+  test "standard-rel list aggregate over a field-policy-protected dest field fails closed (non-admin)",
+       %{} do
+    a = author("a1", "org1", "Ann")
+    post("p1", "org1", "P1", "a1", "SECRETVALUE")
+    result = Ash.load(a, :post_secrets, tenant: "org1", actor: %{admin: false})
+
+    case result do
+      {:ok, loaded} ->
+        refute "SECRETVALUE" in List.wrap(loaded.post_secrets),
+               "aggregate leaked a field-policy-protected value"
+
+      {:error, error} ->
+        # value-free (Rule 4): the fail-closed reason names the field atom only, never the value.
+        refute Exception.message(error) =~ "SECRETVALUE"
+        :ok
+    end
+  end
+
+  test "standard-rel list aggregate over a field-policy-protected dest field succeeds for admin (bypass)",
+       %{} do
+    a = author("a1", "org1", "Ann")
+    post("p1", "org1", "P1", "a1", "SECRETVALUE")
+    {:ok, loaded} = Ash.load(a, :post_secrets, tenant: "org1", actor: @admin)
+
+    # Admin bypasses the field policy → the value is present (proves the fold path is exercised).
+    assert "SECRETVALUE" in List.wrap(loaded.post_secrets)
+  end
+
+  # === Finding A: a filter ON an aggregate is a COMPUTED value, not a stored ArcadeDB property.
+  # `filter(RelAuthor, post_count > 1)` PREVIOUSLY translated to `n.post_count > $p` and silently
+  # returned {:ok, []} (a WRONG result). It must now fail closed value-free with %UnsupportedFilter{}.
+  # Admin bypasses the row policy so the filter reaches Query.Filter.translate. ===
+
+  test "filter-on-aggregate fails closed with a value-free UnsupportedFilter (Finding A)", %{} do
+    author("a1", "org1", "Ann")
+    author("a2", "org1", "Bob")
+    post("p1", "org1", "P1", "a1")
+    post("p2", "org1", "P2", "a1")
+    post("p3", "org1", "P3", "a2")
+
+    result =
+      RelAuthor
+      |> Ash.Query.filter(post_count > 1)
+      |> Ash.Query.set_tenant("org1")
+      |> Ash.read(actor: @admin)
+
+    assert {:error, error} = result
+    # attributable: names the aggregate + operator …
+    assert Exception.message(error) =~ "post_count"
+    # … value-free: never a seeded row value (Rule 4).
+    refute Exception.message(error) =~ "Ann"
+
+    # non-vacuity of the surfaced error type: it is AshArcadic's own %UnsupportedFilter{} naming the
+    # aggregate, not an opaque DB/case-clause error and NOT the pre-guard silent {:ok, []}.
+    assert Enum.any?(
+             List.wrap(error) ++ List.wrap(Map.get(error, :errors)),
+             &match?(%AshArcadic.Errors.UnsupportedFilter{field: :post_count}, &1)
+           )
+  end
+
+  # === exists(rel, …) needs NO {:exists} capability flip (V3): the author whose posts include a
+  # matching title is returned; a non-matching predicate returns none. ===
+
+  test "exists(posts, title == X) filters the source with no capability flip (V3)", %{} do
+    author("a1", "org1", "Ann")
+    author("a2", "org1", "Bob")
+    post("p1", "org1", "Alpha", "a1")
+    post("p2", "org1", "Beta", "a2")
+
+    {:ok, hits} =
+      RelAuthor
+      |> Ash.Query.filter(exists(posts, title == "Alpha"))
+      |> Ash.Query.set_tenant("org1")
+      |> Ash.read(actor: @admin)
+
+    assert Enum.map(hits, & &1.id) == ["a1"]
+
+    # non-vacuity: a predicate matching NO post returns the author neither — the exists actually filters.
+    {:ok, none} =
+      RelAuthor
+      |> Ash.Query.filter(exists(posts, title == "NOPE"))
+      |> Ash.Query.set_tenant("org1")
+      |> Ash.read(actor: @admin)
+
+    assert none == []
+  end
+
+  # === many_to_many load via the two-`IN` join path (join-resource read → endpoint read), each
+  # tenant-scoped. NO sensitive join attrs (ValidateRelationshipFk would reject). ===
+
+  test "many_to_many load resolves the endpoints via the two-IN path, tenant-scoped", %{} do
+    author("a1", "org1", "Ann")
+    post("p1", "org1", "P1", "a1")
+    tag("t1", "org1", "red")
+    tag("t2", "org1", "blue")
+    posttag("j1", "org1", "p1", "t1")
+    posttag("j2", "org1", "p1", "t2")
+
+    {:ok, p} = Ash.get(RelPost, "p1", tenant: "org1", actor: @admin)
+    {:ok, p} = Ash.load(p, :tags, tenant: "org1", actor: @admin)
+    assert p.tags |> Enum.map(& &1.name) |> Enum.sort() == ["blue", "red"]
+  end
+
+  test "many_to_many load is tenant-scoped: a same-id join in another tenant is unreachable",
+       %{} do
+    author("a1", "org1", "Ann")
+    post("p1", "org1", "P1", "a1")
+    tag("t1", "org1", "red")
+    posttag("j1", "org1", "p1", "t1")
+
+    # A same-id join + tag seeded in org2 must NOT surface on an org1 load (fabricated cross-tenant row).
+    author("a1", "org2", "AnnB")
+    post("p1", "org2", "P1B", "a1")
+    tag("t2", "org2", "blue")
+    posttag("j2", "org2", "p1", "t2")
+
+    {:ok, p} = Ash.get(RelPost, "p1", tenant: "org1", actor: @admin)
+    {:ok, p} = Ash.load(p, :tags, tenant: "org1", actor: @admin)
+    assert p.tags |> Enum.map(& &1.name) == ["red"]
+    refute "blue" in Enum.map(p.tags, & &1.name)
   end
 
   # === §6.2 FAIL-CLOSED authz: a source-on-related filter to a POLICY-BEARING destination is
