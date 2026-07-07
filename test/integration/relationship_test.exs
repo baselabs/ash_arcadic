@@ -677,6 +677,21 @@ defmodule AshArcadic.Integration.RelationshipTest do
     refute "pb" in Enum.map(posts, & &1.id)
   end
 
+  # V1 GUARD (LOAD-BEARING): filtering across a MANUAL Traverse rel MUST be rejected fail-closed
+  # ("not filterable") — never routed to Ash's separate-read IN-rewrite (which runs over the traversal
+  # destination WITHOUT per-hop authz). This breaks RED if {:filter_relationship, manual} is ever
+  # flipped true. (Also doubly-guarded now: TraversePolicyNode is policy-bearing, so the Task-4
+  # dest-authorizer guard independently rejects it — the mutation below bypasses BOTH.)
+  test "filtering across a manual Traverse relationship is rejected fail-closed (not filterable)" do
+    result =
+      AshArcadic.Test.TraversePolicyNode
+      |> Ash.Query.filter(descendants.name == "x")
+      |> Ash.read(tenant: "org1", actor: @admin)
+
+    assert {:error, error} = result
+    assert Exception.message(error) =~ "not filterable"
+  end
+
   defp collect_spans(acc) do
     receive do
       {:read_span, internal?, resource} -> collect_spans([{internal?, resource} | acc])
