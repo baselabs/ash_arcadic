@@ -103,4 +103,18 @@ defmodule AshArcadic.DataLayer.CanTest do
     refute DL.can?(AshArcadic.Test.Basic, {:join, AshArcadic.Test.Basic})
     refute DL.can?(AshArcadic.Test.Basic, {:lateral_join, []})
   end
+
+  test "filter_relationship fails closed on a policy-bearing destination (Slice-5 amendment)" do
+    refute DL.can?(
+             AshArcadic.Test.RelPost,
+             {:filter_relationship, %{manual: nil, destination: AshArcadic.Test.RelAuthor}}
+           )
+
+    assert DL.can?(
+             AshArcadic.Test.RelPost,
+             {:filter_relationship, %{manual: nil, destination: AshArcadic.Test.RelPlainAuthor}}
+           )
+
+    assert DL.can?(AshArcadic.Test.Basic, {:filter_relationship, %{manual: nil}})
+  end
 end

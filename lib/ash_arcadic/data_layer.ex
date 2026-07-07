@@ -208,8 +208,31 @@ defmodule AshArcadic.DataLayer do
   # Traverse rel carries manual: {mod, opts} → false: a clean "not filterable" reject, NOT an IN-rewrite
   # over the traversal destination WITHOUT per-hop authz (V1). Loading + aggregates already work via
   # Ash's core batched-IN loader over run_query — no new callback.
-  def can?(_, {:filter_relationship, rel}), do: is_nil(Map.get(rel, :manual))
+  def can?(_, {:filter_relationship, rel}) do
+    # Slice 5 (fail-closed, amended): standard rels are filterable, EXCEPT when the destination
+    # carries ANY authorizer. Ash routes a source-on-related filter through the separate-read
+    # IN-rewrite, which reads the destination with authorize?: false (deps/ash filter.ex:2091,2104) —
+    # that flag disables the WHOLE authz pipeline (every authorizer, not just Ash.Policy.Authorizer),
+    # bypassing the destination's ROW policy and ORACLING field-policy-protected values. can? is
+    # actor-agnostic and cannot apply the policy, so it fails closed at parse (check_filterable,
+    # filter.ex:3599). Loading + aggregate folds do NOT use {:filter_relationship} — unaffected.
+    # Manual Traverse rels stay false (V1). Use Map.get (bare-map unit asserts have no :destination).
+    is_nil(Map.get(rel, :manual)) and not destination_has_authorizer?(Map.get(rel, :destination))
+  end
+
   def can?(_, _), do: false
+
+  # Slice 5 (fail-closed): true when the filter destination carries ANY authorizer. Used by
+  # can?({:filter_relationship, rel}) to reject a source-on-related filter to an authorizer-bearing
+  # dest — the separate-read IN-rewrite reads it authorize?:false, which bypasses ALL authz (not just
+  # Ash.Policy.Authorizer) → row-policy bypass + field-policy oracle. A custom (non-Ash.Policy)
+  # authorizer is equally bypassed, so reject on a NON-EMPTY authorizer list, never on a specific one.
+  # is_atom guard: the bare-map unit asserts pass no :destination key (Map.get → nil → false).
+  defp destination_has_authorizer?(dest) when is_atom(dest) and not is_nil(dest) do
+    Ash.Resource.Info.authorizers(dest) != []
+  end
+
+  defp destination_has_authorizer?(_), do: false
 
   @impl true
   def resource_to_query(resource, _domain) do
