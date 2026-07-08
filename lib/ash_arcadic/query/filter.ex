@@ -72,14 +72,12 @@ defmodule AshArcadic.Query.Filter do
   # forms (`contains(some_calc, …)` carries `arguments:`). Value-free (names the aggregate + operator).
   defp do_translate(%_op{left: %Ash.Query.Ref{attribute: %agg_mod{}}} = expr, _query)
        when agg_mod in [Ash.Query.Aggregate, Ash.Query.Calculation] do
-    {operator, field} = unsupported_shape(expr)
-    {:error, UnsupportedFilter.exception(operator: operator, field: field)}
+    reject_unsupported(expr)
   end
 
   defp do_translate(%_op{arguments: [%Ash.Query.Ref{attribute: %agg_mod{}} | _]} = expr, _query)
        when agg_mod in [Ash.Query.Aggregate, Ash.Query.Calculation] do
-    {operator, field} = unsupported_shape(expr)
-    {:error, UnsupportedFilter.exception(operator: operator, field: field)}
+    reject_unsupported(expr)
   end
 
   # Attribute-to-attribute comparison carries a Ref on the right — no bindable
@@ -94,8 +92,7 @@ defmodule AshArcadic.Query.Filter do
               Ash.Query.Operator.GreaterThanOrEqual,
               Ash.Query.Operator.LessThanOrEqual
             ] do
-    {operator, field} = unsupported_shape(expr)
-    {:error, UnsupportedFilter.exception(operator: operator, field: field)}
+    reject_unsupported(expr)
   end
 
   defp do_translate(
@@ -204,8 +201,7 @@ defmodule AshArcadic.Query.Filter do
 
   # Catch-all: unsupported. Surface operator/function module + field only.
   defp do_translate(expr, _query) do
-    {operator, field} = unsupported_shape(expr)
-    {:error, UnsupportedFilter.exception(operator: operator, field: field)}
+    reject_unsupported(expr)
   end
 
   defp binary_op(query, attr, cypher_op, value) do
@@ -234,6 +230,13 @@ defmodule AshArcadic.Query.Filter do
 
   defp attr_constraints(%{constraints: constraints}) when is_list(constraints), do: constraints
   defp attr_constraints(_attr), do: []
+
+  # Value-free rejection shared by the aggregate/calc-Ref guards, the attribute-to-attribute guard,
+  # and the catch-all — derive {operator, field} from the expression shape, never the value.
+  defp reject_unsupported(expr) do
+    {operator, field} = unsupported_shape(expr)
+    {:error, UnsupportedFilter.exception(operator: operator, field: field)}
+  end
 
   defp unsupported_shape(%mod{left: %Ash.Query.Ref{attribute: %{name: name}}}), do: {mod, name}
 
