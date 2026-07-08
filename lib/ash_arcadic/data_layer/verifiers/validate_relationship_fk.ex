@@ -6,9 +6,28 @@ defmodule AshArcadic.DataLayer.Verifiers.ValidateRelationshipFk do
   loading builds `dest.<fk> IN [<plaintext pks>]`, so a sensitive join key silently breaks loading
   and leaks via filter presence/absence. Fail closed, value-free (names the attribute atom only).
 
-  Each FK is LOCAL to exactly one resource (the resource that declares it as an attribute), so
-  checking every resource's join attributes that are in ITS OWN attribute set covers all positions —
-  including `many_to_many` through-resource FKs, which are checked by the join resource's own verifier.
+  ## Coverage boundary (verified at Slice-5 closeout, 2026-07-08)
+
+  This verifier runs per-resource and flags a join attribute only when it is BOTH in the current
+  resource's own attribute set (`local`) AND its `sensitive` list. Coverage is therefore per-resource
+  and LOCAL:
+
+  - `belongs_to.source_attribute` — local to the source (the FK lives here) → caught directly.
+  - `many_to_many` join-resource FKs — local to the JOIN resource, which idiomatically declares them
+    as the `source_attribute` of its own `belongs_to` to each endpoint → caught by the JOIN resource's
+    own run (NOT by the `*_on_join_resource` slots below, which name attributes remote to the declaring
+    resource and so never satisfy the `local` check — they are kept as defensive belt-and-suspenders,
+    not the coverage mechanism).
+
+  KNOWN LIMITATION (routed follow-up): a `has_many`/`has_one` `destination_attribute` names an
+  attribute on the DESTINATION resource. It is caught only when the destination independently declares
+  a relationship using that attribute as a LOCAL join key (the idiomatic inverse `belongs_to`). A
+  `has_many`/`has_one` whose sensitive `destination_attribute` has no such inverse on the destination
+  is NOT caught — a per-resource Spark verifier cannot read a sibling resource's `sensitive` list at
+  compile without compile-ordering fragility (circular relationships would deadlock). The failure mode
+  is a SILENT-EMPTY relationship load (an encrypted-binary FK compared against plaintext PKs never
+  matches), NOT a value disclosure; and it requires a deliberate misconfiguration. The robust closure
+  is a runtime sensitive-field filter guard (a filter-ops concern), tracked for a follow-up slice.
   """
   use Spark.Dsl.Verifier
   alias Spark.Dsl.Verifier
