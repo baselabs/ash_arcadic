@@ -112,7 +112,12 @@ _An Ash DataLayer for ArcadeDB (native OpenCypher over HTTP)._
   need graph traversal semantics; use a **standard relationship** for ordinary FK associations.
 - **A join/FK attribute must NOT be `sensitive`.** A `sensitive` attribute is app-side-encrypted
   binary and cannot be `IN`-joined; declaring one as a relationship join key fails the build
-  (`ValidateRelationshipFk`, value-free).
+  (`ValidateRelationshipFk`, value-free). _Coverage boundary:_ the check is per-resource and local —
+  it catches a sensitive `belongs_to` `source_attribute` and a sensitive join-resource FK directly.
+  A `has_many`/`has_one` sensitive `destination_attribute` is caught only when the destination
+  declares the idiomatic inverse `belongs_to`; a sensitive `destination_attribute` with no inverse
+  is not caught at compile (a per-resource verifier cannot read a sibling's `sensitive` list) — its
+  effect is a silently-empty load, not a leak. Don't mark a relationship FK `sensitive`.
 - **Filtering across a relationship is fail-closed to authorizer-bearing destinations.** A
   source-on-related filter (`filter(Post, author.name == x)`) routes through Ash's separate-read
   IN-rewrite, which reads the DESTINATION **without** per-hop authorization. To prevent an
@@ -129,8 +134,16 @@ _An Ash DataLayer for ArcadeDB (native OpenCypher over HTTP)._
   `exists` over a relationship to a policy-protected field; the proper fix is an upstream Ash-core hook.
 - **Filtering across a manual `Traverse` relationship is unsupported** (fail-closed, `"not
   filterable"`) — its per-hop authz cannot be preserved by the IN-rewrite.
+- **Filtering a source on a `many_to_many`-related field is unsupported.** `filter(Tag, posts.title
+  == x)` is rejected by Ash-core (`"cannot access multiple resources for a data layer that can't be
+  joined…"`) because a m2m filter crosses the join resource and AshArcadic advertises no join. Load
+  the m2m and filter in memory, or use a standalone read. **m2m loading and aggregates work.**
 - **Filter-on-aggregate is unsupported** (`filter(res, some_agg > n)`) — it fails closed value-free
   (`%UnsupportedFilter{}`); an aggregate is a computed fold value, not a stored property.
+- **Index FK properties for large relationships (performance).** A relationship load/filter resolves
+  through `WHERE dest.<fk> IN [<source_pks>]`; without an ArcadeDB index on the FK property this is a
+  full-label scan. For large destination sets, add an index on the FK property in your host-app
+  `arcadic` migration (as you would the primary key).
 
 ## Multitenancy (Plan 2)
 

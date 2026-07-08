@@ -25,8 +25,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `authorize?: false` — bypassing the destination's row policy and oracling field-policy-protected
   values (tenant isolation is unaffected). AshArcadic now **rejects** (`"not filterable"`, for
   every actor) filtering across a relationship whose destination carries any authorizer; loading
-  and aggregates are unaffected. (Known limitation: the `exists` path is not yet gated — a
-  filter-ops-slice follow-up.)
+  and aggregates are unaffected. (Known limitation, **Ash-core, not data-layer-fixable:** the
+  `exists(rel, …)` path is not gated by this guard — Ash decomposes a related `exists` into flat
+  reads before the data layer sees it, and the one data-layer lever over-rejects Ash's own
+  relationship-referencing read policies; the proper fix is an upstream Ash-core hook. See
+  `usage-rules.md`. Filtering a source on a **many_to_many** related field is likewise unsupported —
+  Ash rejects it (`"cannot access multiple resources…"`) because AshArcadic advertises no join; m2m
+  loading and aggregates work.)
 - **Filter-on-aggregate fails closed (Slice 5).** `filter(res, <aggregate> > n)` previously
   mis-translated to a non-existent stored property and silently returned `[]`; it now fails
   closed with a value-free `%UnsupportedFilter{}` (aggregate/calculation Refs are computed, not
