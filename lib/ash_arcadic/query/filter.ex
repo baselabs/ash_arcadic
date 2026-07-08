@@ -184,6 +184,18 @@ defmodule AshArcadic.Query.Filter do
     {:ok, query, "n.#{identifier(attr)} IS NOT NULL"}
   end
 
+  # A string function whose non-first argument is a Ref is an attribute-to-attribute comparison in
+  # function form (contains(name, other_ref)) — no bindable value. Reject structurally BEFORE the
+  # function clauses, mirroring the operator Ref-to-Ref guard. Covers a plain OR aggregate/calc Ref.
+  defp do_translate(%mod{arguments: [%Ash.Query.Ref{}, %Ash.Query.Ref{} | _]} = expr, _query)
+       when mod in [
+              Ash.Query.Function.Contains,
+              Ash.Query.Function.StringStartsWith,
+              Ash.Query.Function.StringEndsWith
+            ] do
+    reject_unsupported(expr)
+  end
+
   defp do_translate(
          %Ash.Query.Function.Contains{arguments: [%Ash.Query.Ref{attribute: attr}, value]},
          query

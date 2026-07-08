@@ -163,5 +163,21 @@ defmodule AshArcadic.Query.FilterTest do
       assert {:ok, _q, "n.name = $param1"} =
                Filter.translate(f, %AshArcadic.Query{resource: nil})
     end
+
+    test "a string function with a Ref in a NON-first argument fails closed value-free" do
+      # contains(name, <other Ref>) — an attribute-to-attribute in function form. Currently reaches
+      # Cast.serialize_value(%Ref{}) and fails LOUD at ArcadeDB; must be a clean UnsupportedFilter.
+      # Cover ALL THREE string functions the guard lists (else a dropped module regresses silently).
+      assert {:error, %UnsupportedFilter{operator: Ash.Query.Function.Contains, field: :name}} =
+               t(Ash.Query.filter(AshArcadic.Test.Basic, contains(name, age)))
+
+      assert {:error,
+              %UnsupportedFilter{operator: Ash.Query.Function.StringStartsWith, field: :name}} =
+               t(Ash.Query.filter(AshArcadic.Test.Basic, string_starts_with(name, age)))
+
+      assert {:error,
+              %UnsupportedFilter{operator: Ash.Query.Function.StringEndsWith, field: :name}} =
+               t(Ash.Query.filter(AshArcadic.Test.Basic, string_ends_with(name, age)))
+    end
   end
 end
