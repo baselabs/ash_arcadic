@@ -60,8 +60,10 @@ _An Ash DataLayer for ArcadeDB (native OpenCypher over HTTP)._
 - **Presence-oracle residual.** `is_nil`/`not is_nil` on a `sensitive` field is allowed and
   leaves a presence oracle (the has-value cohort is enumerable); treat presence-as-classified
   with a host field policy if required.
-- **Filtering a non-stored (`skip`-ped/computed) field is unsupported.** Value comparisons on a
-  non-stored ArcadeDB property fail closed value-free (mirrors the sort rule).
+- **Filtering a non-stored (`skip`-ped/computed) field is unsupported.** Value comparisons AND
+  `is_nil`/`not is_nil` on a non-stored ArcadeDB property fail closed value-free (mirrors the sort
+  rule) — the property is never stored, so `is_nil` would match every row. (`is_nil`/`not is_nil` on
+  a STORED `sensitive` field stays allowed — the presence oracle above.)
 - **A string function over a relationship path is unsupported (upstream Ash bug).** `filter(res,
   contains(rel.field, "x"))` raises a `KeyError` inside Ash-core `scope_refs` (Ash 3.29.3),
   before AshArcadic sees it; use a flat filter or load-then-filter pending the upstream fix.
