@@ -33,6 +33,8 @@ defmodule AshArcadic.Integration.RelationshipTest do
       Arcadic.command!(admin, "MATCH (n:RelPlainPost) DETACH DELETE n")
       Arcadic.command!(admin, "MATCH (n:RelMixedAttrPost) DETACH DELETE n")
       Arcadic.command!(admin, "MATCH (n:RelMixedAttrAuthor) DETACH DELETE n")
+      Arcadic.command!(admin, "MATCH (n:FkSensitiveAuthor) DETACH DELETE n")
+      Arcadic.command!(admin, "MATCH (n:FkSensitivePost) DETACH DELETE n")
     end)
 
     :ok
@@ -704,6 +706,32 @@ defmodule AshArcadic.Integration.RelationshipTest do
 
     assert {:error, error} = result
     assert Exception.message(error) =~ "not filterable"
+  end
+
+  # CV-3 (Slice-5 residual): a sensitive destination_attribute FK is uncatchable at compile (no inverse
+  # belongs_to); the Slice-6 In-clause guard fails the LOAD closed LOUD (was a silent [] pre-Slice-6).
+  test "a relationship load over a sensitive destination-FK fails closed loud (CV-3)", %{} do
+    {:ok, a} =
+      AshArcadic.Test.FkSensitiveAuthor
+      |> Ash.Changeset.for_create(:create, %{id: "fa1", org_id: "org1", name: "Ann"},
+        tenant: "org1"
+      )
+      |> Ash.create(actor: @admin)
+
+    assert {:error, error} = Ash.load(a, :posts, tenant: "org1", actor: @admin)
+
+    assert Enum.any?(
+             List.wrap(error) ++ List.wrap(Map.get(error, :errors)),
+             &match?(%AshArcadic.Errors.UnsupportedFilter{field: :author_id}, &1)
+           )
+  end
+
+  # A non-sensitive FK load is unaffected — the guard fires only on a sensitive/non-stored FK.
+  test "a normal (non-sensitive) FK relationship load is unaffected by the guard", %{} do
+    a = author("a1", "org1", "Ann")
+    post("p1", "org1", "P1", "a1")
+    {:ok, a} = Ash.load(a, :posts, tenant: "org1", actor: @admin)
+    assert a.posts |> Enum.map(& &1.id) == ["p1"]
   end
 
   defp collect_spans(acc) do

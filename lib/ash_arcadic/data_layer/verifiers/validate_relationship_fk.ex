@@ -19,15 +19,16 @@ defmodule AshArcadic.DataLayer.Verifiers.ValidateRelationshipFk do
     resource and so never satisfy the `local` check — they are kept as defensive belt-and-suspenders,
     not the coverage mechanism).
 
-  KNOWN LIMITATION (routed follow-up): a `has_many`/`has_one` `destination_attribute` names an
-  attribute on the DESTINATION resource. It is caught only when the destination independently declares
-  a relationship using that attribute as a LOCAL join key (the idiomatic inverse `belongs_to`). A
-  `has_many`/`has_one` whose sensitive `destination_attribute` has no such inverse on the destination
-  is NOT caught — a per-resource Spark verifier cannot read a sibling resource's `sensitive` list at
-  compile without compile-ordering fragility (circular relationships would deadlock). The failure mode
-  is a SILENT-EMPTY relationship load (an encrypted-binary FK compared against plaintext PKs never
-  matches), NOT a value disclosure; and it requires a deliberate misconfiguration. The robust closure
-  is a runtime sensitive-field filter guard (a filter-ops concern), tracked for a follow-up slice.
+  KNOWN LIMITATION (routed follow-up → Slice 6): a `has_many`/`has_one` `destination_attribute` names an
+  attribute on the DESTINATION resource. It is caught here only when the destination independently
+  declares a relationship using that attribute as a LOCAL join key (the idiomatic inverse `belongs_to`).
+  A `has_many`/`has_one` whose sensitive `destination_attribute` has no such inverse is NOT caught at
+  compile (a per-resource Spark verifier cannot read a sibling resource's `sensitive` list without
+  compile-ordering fragility). Slice-6 adds a RUNTIME, LOAD-TIME guard (`AshArcadic.Query.Filter`
+  rejects a value comparison — including the relationship-load `dest.<fk> IN [pks]` — on a sensitive or
+  non-stored field), which converts the residual from a silent-`[]` load into a fail-closed loud
+  `%UnsupportedFilter{}`. That guard is load-time, not compile-time: a misconfigured resource still
+  compiles clean and fails only when the relationship is loaded.
   """
   use Spark.Dsl.Verifier
   alias Spark.Dsl.Verifier
