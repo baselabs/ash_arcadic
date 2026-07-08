@@ -170,18 +170,26 @@ defmodule AshArcadic.Query.Filter do
     end
   end
 
+  # is_nil / not is_nil is a presence check — allowed on any STORED property (including a `sensitive`
+  # one: the documented presence oracle, D9), but rejected on a NON-STORED (skip-ped) field, whose
+  # absent property would make `n.<f> IS NULL` match EVERY row (ArcadeDB reads a missing property as
+  # null) — the same silent-wrong-result footgun `filterable_field?/2` closes for value comparisons.
   defp do_translate(
-         %Ash.Query.Operator.IsNil{left: %Ash.Query.Ref{attribute: attr}, right: true},
+         %Ash.Query.Operator.IsNil{left: %Ash.Query.Ref{attribute: attr}, right: right},
          query
-       ) do
-    {:ok, query, "n.#{identifier(attr)} IS NULL"}
-  end
+       )
+       when is_boolean(right) do
+    cond do
+      not presence_checkable?(query, attr) ->
+        {:error,
+         UnsupportedFilter.exception(operator: Ash.Query.Operator.IsNil, field: attr_name(attr))}
 
-  defp do_translate(
-         %Ash.Query.Operator.IsNil{left: %Ash.Query.Ref{attribute: attr}, right: false},
-         query
-       ) do
-    {:ok, query, "n.#{identifier(attr)} IS NOT NULL"}
+      right ->
+        {:ok, query, "n.#{identifier(attr)} IS NULL"}
+
+      true ->
+        {:ok, query, "n.#{identifier(attr)} IS NOT NULL"}
+    end
   end
 
   # A string function whose non-first argument is a Ref is an attribute-to-attribute comparison in
@@ -241,7 +249,7 @@ defmodule AshArcadic.Query.Filter do
     if Cast.range_comparable?(attr_type(attr), attr_constraints(attr)) do
       binary_op(query, attr, cypher_op, value, operator)
     else
-      {:error, UnsupportedFilter.exception(operator: operator, field: attr.name)}
+      {:error, UnsupportedFilter.exception(operator: operator, field: attr_name(attr))}
     end
   end
 
@@ -293,6 +301,23 @@ defmodule AshArcadic.Query.Filter do
   end
 
   defp filterable_field?(_query, _attr), do: true
+
+  # A presence check (is_nil/not_nil) is meaningful only on a STORED ArcadeDB property. Unlike
+  # `filterable_field?/2`, a `sensitive` (but stored) field IS presence-checkable — is_nil on a
+  # sensitive field is the documented presence oracle (D9), reads no value — so this guards on
+  # `stored_field?` ALONE, not the sensitive check. Same nil-/non-resource-safe fallthrough as the
+  # value guard (an unknown resource cannot be checked → do not reject; the write path threads the
+  # real resource so the guard fires).
+  defp presence_checkable?(%AshArcadic.Query{resource: resource}, attr)
+       when is_atom(resource) and not is_nil(resource) do
+    if Ash.Resource.Info.resource?(resource) do
+      Info.stored_field?(resource, attr_name(attr))
+    else
+      true
+    end
+  end
+
+  defp presence_checkable?(_query, _attr), do: true
 
   defp attr_name(%{name: name}), do: name
   defp attr_name(name) when is_atom(name), do: name

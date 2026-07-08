@@ -148,6 +148,18 @@ defmodule AshArcadic.Query.FilterTest do
                t(Ash.Query.filter(AshArcadic.Test.Basic, not is_nil(secret)))
     end
 
+    test "is_nil / not is_nil on a NON-STORED (skip-ped) field fails closed value-free" do
+      # :computed is skip-ped → no ArcadeDB property, so `n.computed IS NULL` matches EVERY row
+      # (ArcadeDB treats a missing property as null) — the SAME silent-wrong-result footgun the
+      # value-comparison guard closes. A presence check is meaningful only on a STORED property;
+      # is_nil on a stored SENSITIVE field stays allowed (the presence oracle, spec D9, above).
+      assert {:error, %UnsupportedFilter{operator: Ash.Query.Operator.IsNil, field: :computed}} =
+               t(Ash.Query.filter(AshArcadic.Test.Basic, is_nil(computed)))
+
+      assert {:error, %UnsupportedFilter{operator: Ash.Query.Operator.IsNil, field: :computed}} =
+               t(Ash.Query.filter(AshArcadic.Test.Basic, not is_nil(computed)))
+    end
+
     test "a normal stored non-sensitive field still emits (regression)" do
       assert {:ok, _q, "n.name = $param1"} =
                t(Ash.Query.filter(AshArcadic.Test.Basic, name == "Ann"))
