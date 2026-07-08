@@ -32,6 +32,10 @@ defmodule AshArcadic.Test.RelAuthor do
 
   relationships do
     has_many :posts, AshArcadic.Test.RelPost, destination_attribute: :author_id
+
+    # has_one shares the standard separate-read IN mechanism with has_many (manual: nil); it exists
+    # to exercise the has_one rel type named in spec §8 (closeout coverage — reuses RelPost).
+    has_one :one_post, AshArcadic.Test.RelPost, destination_attribute: :author_id
   end
 
   aggregates do

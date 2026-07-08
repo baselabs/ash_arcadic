@@ -158,6 +158,20 @@ defmodule AshArcadic.Integration.RelationshipTest do
     assert a.posts == []
   end
 
+  # has_one is a spec §8 named rel type sharing the standard separate-read IN mechanism; closeout
+  # coverage (the original suite exercised belongs_to/has_many/m2m loads but never has_one).
+  test "has_one load returns a single record (not a list), tenant-scoped", %{} do
+    a = author("a1", "org1", "Ann")
+    post("p1", "org1", "P1", "a1")
+
+    {:ok, a} = Ash.load(a, :one_post, tenant: "org1", actor: @admin)
+    assert a.one_post.id == "p1"
+
+    solo = author("solo", "org1", "Solo")
+    {:ok, solo} = Ash.load(solo, :one_post, tenant: "org1", actor: @admin)
+    assert is_nil(solo.one_post)
+  end
+
   test "a belongs_to with a nil FK loads nil (no spurious read)", %{} do
     author("a1", "org1", "Ann")
     post("orphan", "org1", "Orphan", nil)
