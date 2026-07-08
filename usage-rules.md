@@ -135,9 +135,11 @@ _An Ash DataLayer for ArcadeDB (native OpenCypher over HTTP)._
 - **Filtering across a manual `Traverse` relationship is unsupported** (fail-closed, `"not
   filterable"`) — its per-hop authz cannot be preserved by the IN-rewrite.
 - **Filtering a source on a `many_to_many`-related field is unsupported.** `filter(Tag, posts.title
-  == x)` is rejected by Ash-core (`"cannot access multiple resources for a data layer that can't be
-  joined…"`) because a m2m filter crosses the join resource and AshArcadic advertises no join. Load
-  the m2m and filter in memory, or use a standalone read. **m2m loading and aggregates work.**
+  == x)` is rejected — by Ash-core (`"cannot access multiple resources for a data layer that can't be
+  joined…"`) when the endpoint has no authorizer, or earlier by the fail-closed rule above (`"not
+  filterable"`) when it does — because a m2m filter crosses the join resource and AshArcadic advertises
+  no join. Load the m2m and filter in memory, or use a standalone read. **m2m loading and aggregates
+  work.**
 - **Filter-on-aggregate is unsupported** (`filter(res, some_agg > n)`) — it fails closed value-free
   (`%UnsupportedFilter{}`); an aggregate is a computed fold value, not a stored property.
 - **Index FK properties for large relationships (performance).** A relationship load/filter resolves
