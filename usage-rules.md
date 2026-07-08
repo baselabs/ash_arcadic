@@ -50,6 +50,21 @@ _An Ash DataLayer for ArcadeDB (native OpenCypher over HTTP)._
   numeric range/order. **Model money as integer minor units** when you need range
   filtering or sorting. (`:binary` attributes are likewise unrangeable/unsortable —
   base64 is not byte-order-preserving.)
+- **Filtering a `sensitive` field is unsupported.** A value comparison (`==`/`!=`/`>`/`<`/`in`/
+  `contains`/`string_starts_with`/`string_ends_with`) on a `sensitive` (app-side-encrypted
+  binary) field fails closed value-free (`%UnsupportedFilter{}`); `is_nil`/`not is_nil`
+  (presence) are allowed.
+- **Searchable-encryption escape hatch.** A field needing deterministic/searchable-encryption
+  equality is modeled as a PLAIN `:binary` attribute (NOT `sensitive`), where equality on the
+  caller-encrypted value works; `sensitive` IS the "do not filter on this field" contract.
+- **Presence-oracle residual.** `is_nil`/`not is_nil` on a `sensitive` field is allowed and
+  leaves a presence oracle (the has-value cohort is enumerable); treat presence-as-classified
+  with a host field policy if required.
+- **Filtering a non-stored (`skip`-ped/computed) field is unsupported.** Value comparisons on a
+  non-stored ArcadeDB property fail closed value-free (mirrors the sort rule).
+- **A string function over a relationship path is unsupported (upstream Ash bug).** `filter(res,
+  contains(rel.field, "x"))` raises a `KeyError` inside Ash-core `scope_refs` (Ash 3.29.3),
+  before AshArcadic sees it; use a flat filter or load-then-filter pending the upstream fix.
 
 ## Aggregates (Slice 3, Plan 1)
 

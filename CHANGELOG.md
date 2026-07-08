@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Filter-ops hardening (Slice 6).** Value-comparison filters on a `sensitive`
+  (app-side-encrypted binary) field now fail closed value-free (`%UnsupportedFilter{}`)
+  instead of silently returning `[]` — `sensitive` is the "do not filter" contract, with
+  `is_nil`/`not is_nil` (presence) allowed as a documented oracle. Value comparisons on
+  non-stored (`skip`-ped/computed) fields likewise fail closed value-free (mirroring the
+  sort rule); a `%Ref{}` in a non-first string-function argument fails closed value-free.
+  A string function over a relationship path (e.g., `contains(rel.field, "x")`) is
+  documented as an upstream Ash limitation — Ash 3.29.3's `scope_refs` raises `KeyError`
+  before AshArcadic sees the filter; use a flat filter or load-then-filter pending the
+  upstream fix. This also closes the Slice-5 sensitive-destination-FK relationship-load
+  residual at load time.
 - **Standard (attribute-FK) relationships (Slice 5).** `belongs_to` / `has_many` /
   `has_one` / `many_to_many` are first-class for AshArcadic-backed resources — an
   attribute FK stored as a vertex property (NOT a graph edge), loaded/aggregated via
