@@ -101,4 +101,67 @@ defmodule AshArcadic.Query.FilterTest do
     # value-free (Rule 4): names the aggregate + operator, never a row/threshold value.
     refute Exception.message(err) =~ "1"
   end
+
+  describe "filterable-field guard (Slice-6)" do
+    test "a value comparison on a SENSITIVE field fails closed value-free (per operator)" do
+      # :secret is sensitive (encrypted binary) — plaintext comparison is meaningless.
+      assert {:error, %UnsupportedFilter{operator: Ash.Query.Operator.Eq, field: :secret}} =
+               t(Ash.Query.filter(AshArcadic.Test.Basic, secret == ^<<1, 2, 3>>))
+
+      assert {:error, %UnsupportedFilter{operator: Ash.Query.Operator.NotEq, field: :secret}} =
+               t(Ash.Query.filter(AshArcadic.Test.Basic, secret != ^<<1, 2, 3>>))
+
+      assert {:error, %UnsupportedFilter{field: :secret}} =
+               t(Ash.Query.filter(AshArcadic.Test.Basic, secret in [^<<1, 2, 3>>]))
+
+      # range op on the sensitive binary field — rejected (field preserved), value-free.
+      {:error, err} = t(Ash.Query.filter(AshArcadic.Test.Basic, secret > ^<<1, 2, 3>>))
+      assert %UnsupportedFilter{field: :secret} = err
+      refute Exception.message(err) =~ Base.encode64(<<1, 2, 3>>)
+    end
+
+    test "a value comparison on a NON-STORED (skip-ped) field fails closed value-free" do
+      # :computed is skip-ped → not a stored ArcadeDB property (mirrors the sort guard).
+      assert {:error, %UnsupportedFilter{operator: Ash.Query.Operator.Eq, field: :computed}} =
+               t(Ash.Query.filter(AshArcadic.Test.Basic, computed == "x"))
+    end
+
+    test "a string function on a SENSITIVE field fails closed value-free (per function)" do
+      # The string funcs route through string_op → binary_op's reject, carrying the FUNCTION module.
+      assert {:error, %UnsupportedFilter{operator: Ash.Query.Function.Contains, field: :secret}} =
+               t(Ash.Query.filter(AshArcadic.Test.Basic, contains(secret, "x")))
+
+      assert {:error,
+              %UnsupportedFilter{operator: Ash.Query.Function.StringStartsWith, field: :secret}} =
+               t(Ash.Query.filter(AshArcadic.Test.Basic, string_starts_with(secret, "x")))
+
+      assert {:error,
+              %UnsupportedFilter{operator: Ash.Query.Function.StringEndsWith, field: :secret}} =
+               t(Ash.Query.filter(AshArcadic.Test.Basic, string_ends_with(secret, "x")))
+    end
+
+    test "is_nil / not is_nil on a sensitive field are ALLOWED (presence, reads no value)" do
+      assert {:ok, _q, "n.secret IS NULL"} =
+               t(Ash.Query.filter(AshArcadic.Test.Basic, is_nil(secret)))
+
+      assert {:ok, _q, "NOT (n.secret IS NULL)"} =
+               t(Ash.Query.filter(AshArcadic.Test.Basic, not is_nil(secret)))
+    end
+
+    test "a normal stored non-sensitive field still emits (regression)" do
+      assert {:ok, _q, "n.name = $param1"} =
+               t(Ash.Query.filter(AshArcadic.Test.Basic, name == "Ann"))
+
+      assert {:ok, _q, "n.age > $param1"} =
+               t(Ash.Query.filter(AshArcadic.Test.Basic, age > 18))
+    end
+
+    test "nil / non-arcade resource → guard does not reject (cannot check), does not raise" do
+      # A resource-less query (the pre-thread changeset_where shape) must not crash.
+      f = Ash.Query.filter(AshArcadic.Test.Basic, name == "Ann").filter
+
+      assert {:ok, _q, "n.name = $param1"} =
+               Filter.translate(f, %AshArcadic.Query{resource: nil})
+    end
+  end
 end

@@ -27,6 +27,7 @@ defmodule AshArcadic.Query.Filter do
   require Ash.Query
 
   alias AshArcadic.Cast
+  alias AshArcadic.DataLayer.Info
   alias AshArcadic.Errors.UnsupportedFilter
   alias AshArcadic.Identifier
   alias AshArcadic.Query
@@ -99,14 +100,14 @@ defmodule AshArcadic.Query.Filter do
          %Ash.Query.Operator.Eq{left: %Ash.Query.Ref{attribute: attr}, right: value},
          query
        ) do
-    binary_op(query, attr, "=", value)
+    binary_op(query, attr, "=", value, Ash.Query.Operator.Eq)
   end
 
   defp do_translate(
          %Ash.Query.Operator.NotEq{left: %Ash.Query.Ref{attribute: attr}, right: value},
          query
        ) do
-    binary_op(query, attr, "<>", value)
+    binary_op(query, attr, "<>", value, Ash.Query.Operator.NotEq)
   end
 
   defp do_translate(
@@ -153,12 +154,19 @@ defmodule AshArcadic.Query.Filter do
          query
        )
        when is_list(values) do
-    if Enum.any?(values, &match?(%Ash.Query.Ref{}, &1)) do
-      {:error, UnsupportedFilter.exception(operator: Ash.Query.Operator.In, field: attr.name)}
-    else
-      field = identifier(attr)
-      {query, ref} = Query.add_param(query, Enum.map(values, &cast_value(&1, attr)))
-      {:ok, query, "n.#{field} IN #{ref}"}
+    cond do
+      not filterable_field?(query, attr) ->
+        {:error,
+         UnsupportedFilter.exception(operator: Ash.Query.Operator.In, field: attr_name(attr))}
+
+      Enum.any?(values, &match?(%Ash.Query.Ref{}, &1)) ->
+        {:error,
+         UnsupportedFilter.exception(operator: Ash.Query.Operator.In, field: attr_name(attr))}
+
+      true ->
+        field = identifier(attr)
+        {query, ref} = Query.add_param(query, Enum.map(values, &cast_value(&1, attr)))
+        {:ok, query, "n.#{field} IN #{ref}"}
     end
   end
 
@@ -180,7 +188,7 @@ defmodule AshArcadic.Query.Filter do
          %Ash.Query.Function.Contains{arguments: [%Ash.Query.Ref{attribute: attr}, value]},
          query
        ) do
-    string_op(query, attr, "CONTAINS", value)
+    string_op(query, attr, "CONTAINS", value, Ash.Query.Function.Contains)
   end
 
   defp do_translate(
@@ -189,14 +197,14 @@ defmodule AshArcadic.Query.Filter do
          },
          query
        ) do
-    string_op(query, attr, "STARTS WITH", value)
+    string_op(query, attr, "STARTS WITH", value, Ash.Query.Function.StringStartsWith)
   end
 
   defp do_translate(
          %Ash.Query.Function.StringEndsWith{arguments: [%Ash.Query.Ref{attribute: attr}, value]},
          query
        ) do
-    string_op(query, attr, "ENDS WITH", value)
+    string_op(query, attr, "ENDS WITH", value, Ash.Query.Function.StringEndsWith)
   end
 
   # Catch-all: unsupported. Surface operator/function module + field only.
@@ -204,17 +212,22 @@ defmodule AshArcadic.Query.Filter do
     reject_unsupported(expr)
   end
 
-  defp binary_op(query, attr, cypher_op, value) do
-    field = identifier(attr)
-    {query, ref} = Query.add_param(query, cast_value(value, attr))
-    {:ok, query, "n.#{field} #{cypher_op} #{ref}"}
+  defp binary_op(query, attr, cypher_op, value, operator) do
+    if filterable_field?(query, attr) do
+      field = identifier(attr)
+      {query, ref} = Query.add_param(query, cast_value(value, attr))
+      {:ok, query, "n.#{field} #{cypher_op} #{ref}"}
+    else
+      {:error, UnsupportedFilter.exception(operator: operator, field: attr_name(attr))}
+    end
   end
 
-  defp string_op(query, attr, cypher_op, value), do: binary_op(query, attr, cypher_op, value)
+  defp string_op(query, attr, cypher_op, value, operator),
+    do: binary_op(query, attr, cypher_op, value, operator)
 
   defp range_op(query, attr, cypher_op, value, operator) do
     if Cast.range_comparable?(attr_type(attr), attr_constraints(attr)) do
-      binary_op(query, attr, cypher_op, value)
+      binary_op(query, attr, cypher_op, value, operator)
     else
       {:error, UnsupportedFilter.exception(operator: operator, field: attr.name)}
     end
@@ -248,4 +261,27 @@ defmodule AshArcadic.Query.Filter do
 
   defp unsupported_shape(%mod{}), do: {mod, nil}
   defp unsupported_shape(_other), do: {:unsupported_expression, nil}
+
+  # A field is filterable when it is a STORED ArcadeDB property (mirrors the sort path's
+  # Info.stored_field?/2 guard — a skip-ped/computed field emits n.<f> against a missing property →
+  # silent []) AND not `sensitive` (app-side-encrypted binary — plaintext comparison is meaningless;
+  # see usage-rules for the searchable-field escape hatch). Gated on Ash.Resource.Info.resource?/1
+  # because Info.stored_field?/sensitive RAISE on a non-arcade module, and translate is reachable with
+  # a resource-less query (changeset_where pre-thread) or a bare test-fixture module (aggregate filters).
+  # An unknown resource cannot be checked → do NOT reject (the guard is fail-safe, not fail-closed here;
+  # the write path threads the real resource so the guard actually fires — see changeset_where).
+  defp filterable_field?(%AshArcadic.Query{resource: resource}, attr)
+       when is_atom(resource) and not is_nil(resource) do
+    if Ash.Resource.Info.resource?(resource) do
+      name = attr_name(attr)
+      Info.stored_field?(resource, name) and name not in Info.sensitive(resource)
+    else
+      true
+    end
+  end
+
+  defp filterable_field?(_query, _attr), do: true
+
+  defp attr_name(%{name: name}), do: name
+  defp attr_name(name) when is_atom(name), do: name
 end

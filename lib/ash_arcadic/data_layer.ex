@@ -1243,7 +1243,10 @@ defmodule AshArcadic.DataLayer do
         {:ok, base_where, params}
 
       filter ->
-        case Filter.translate(filter, %AshArcadic.Query{params: params}) do
+        case Filter.translate(filter, %AshArcadic.Query{
+               params: params,
+               resource: changeset.resource
+             }) do
           {:ok, %AshArcadic.Query{params: params}, ""} ->
             {:ok, base_where, params}
 

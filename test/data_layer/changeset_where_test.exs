@@ -28,4 +28,19 @@ defmodule AshArcadic.DataLayer.ChangesetWhereTest do
     cs = %Ash.Changeset{resource: AshArcadic.Test.Basic, filter: filter}
     assert {:error, _} = DL.changeset_where(cs, "n.id = $match_id", %{"match_id" => "p1"})
   end
+
+  test "a normal (stored, non-sensitive) changeset filter is unaffected by the guard (no crash)" do
+    filter = Ash.Filter.parse!(AshArcadic.Test.Basic, name: "Ann")
+    cs = %Ash.Changeset{resource: AshArcadic.Test.Basic, filter: filter}
+    {:ok, where, _params} = DL.changeset_where(cs, "n.id = $match_id", %{"match_id" => "p1"})
+    assert where == "n.id = $match_id AND n.name = $param2"
+  end
+
+  test "a changeset filter on a SENSITIVE field fails closed value-free (write-path guard)" do
+    filter = Ash.Query.filter(AshArcadic.Test.Basic, secret == ^<<1, 2, 3>>).filter
+    cs = %Ash.Changeset{resource: AshArcadic.Test.Basic, filter: filter}
+
+    assert {:error, %AshArcadic.Errors.UnsupportedFilter{field: :secret}} =
+             DL.changeset_where(cs, "n.id = $match_id", %{"match_id" => "p1"})
+  end
 end
