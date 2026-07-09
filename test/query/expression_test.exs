@@ -131,6 +131,11 @@ defmodule AshArcadic.Query.ExpressionTest do
     assert {:ok, _q, "size(n.first)"} =
              E.translate(fn_expr(Ash.Query.Function.StringLength, [ref(:first)]), q())
 
+    # D5 names "string_length/length→size" — Ash.Query.Function.Length (list-length) also maps to
+    # ArcadeDB size (polymorphic over collections/strings). Keeps advertised = translatable.
+    assert {:ok, _q, "size(n.first)"} =
+             E.translate(fn_expr(Ash.Query.Function.Length, [ref(:first)]), q())
+
     assert {:ok, _q, "trim(n.first)"} =
              E.translate(fn_expr(Ash.Query.Function.StringTrim, [ref(:first)]), q())
 

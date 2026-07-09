@@ -83,6 +83,7 @@ defmodule AshArcadic.DataLayer.CanTest do
           %Ash.Query.Function.IsNil{},
           %Ash.Query.Function.StringDowncase{},
           %Ash.Query.Function.StringLength{},
+          %Ash.Query.Function.Length{},
           %Ash.Query.Function.StringTrim{},
           %Ash.Query.Function.Round{}
         ] do

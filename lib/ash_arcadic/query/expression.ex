@@ -33,6 +33,9 @@ defmodule AshArcadic.Query.Expression do
   @unary_fns %{
     Ash.Query.Function.StringDowncase => "lower",
     Ash.Query.Function.StringLength => "size",
+    # Ash's list-length `length/1` (distinct from `string_length`) — ArcadeDB `size` is polymorphic
+    # over collections and strings (D5: "string_length/length→size").
+    Ash.Query.Function.Length => "size",
     Ash.Query.Function.StringTrim => "trim",
     Ash.Query.Function.Round => "round"
   }

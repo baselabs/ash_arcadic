@@ -186,6 +186,7 @@ defmodule AshArcadic.DataLayer do
   def can?(_, {:filter_expr, %Ash.Query.Function.IsNil{}}), do: true
   def can?(_, {:filter_expr, %Ash.Query.Function.StringDowncase{}}), do: true
   def can?(_, {:filter_expr, %Ash.Query.Function.StringLength{}}), do: true
+  def can?(_, {:filter_expr, %Ash.Query.Function.Length{}}), do: true
   def can?(_, {:filter_expr, %Ash.Query.Function.StringTrim{}}), do: true
   def can?(_, {:filter_expr, %Ash.Query.Function.Round{}}), do: true
   def can?(_, {:filter_expr, _}), do: false
