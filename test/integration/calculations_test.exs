@@ -46,6 +46,21 @@ defmodule AshArcadic.Test.CalculationsTest do
     refute msg =~ "secret_ciphertext"
   end
 
+  test "TRIPWIRE: a calc eval that RAISES is caught and redacted value-free (never escapes uncaught)" do
+    # ratio = a / b. With b == 0, Ash's Elixir eval raises ArithmeticError. Without a rescue the
+    # exception propagates UNCAUGHT past the value-free QueryFailed wrapper (Rule 4). It must come
+    # back as a clean, value-free {:error, %QueryFailed{}} instead.
+    {:ok, _} = Ash.create(P, %{id: "pz", first: "Z", last: "Z", a: 7, b: 0, secret: <<9>>})
+
+    # A clean {:error, ...} (Ash wraps the redacted QueryFailed in Ash.Error.Invalid) — NOT a raise.
+    assert {:error, %Ash.Error.Invalid{} = error} =
+             Ash.read(Ash.Query.load(P, [:ratio]) |> Ash.Query.filter(id == "pz"))
+
+    msg = Exception.message(error)
+    refute msg =~ "ArithmeticError"
+    assert msg =~ "ArcadeDB error"
+  end
+
   test "sorts by an expression calc (ORDER BY the translated expression)" do
     # total: p1=13, p2=4 → asc order [p2, p1]; desc → [p1, p2].
     {:ok, asc} = Ash.read(Ash.Query.sort(P, total: :asc))

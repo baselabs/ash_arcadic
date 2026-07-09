@@ -583,11 +583,19 @@ defmodule AshArcadic.DataLayer do
 
   # Hydrate the calc expression against the resource, then eval over the record.
   # Returns {:ok, value} | {:error, %QueryFailed{}} (value-free); :unknown → {:ok, nil} (ETS parity).
+  # Ash's runtime eval calls Elixir primitives directly (String.*, arithmetic) with no try/rescue, so
+  # a RAISE (ArithmeticError on a/0, an argument error over raw non-sensitive :binary bytes, a
+  # protocol/encoder error) would otherwise propagate UNCAUGHT past the value-free wrapper and could
+  # carry the offending value in its message (Rule 4; `project_redaction_fail_path_exception_leak`).
+  # Rescue to a value-free error — `calc_error/1`'s `redact_db_error/1` maps any non-Arcadic error to
+  # the fixed "ArcadeDB error" reason, so the raised message never reaches Ash/logs.
   defp eval_calc(record, calc, expression, resource, domain) do
     case Ash.Filter.hydrate_refs(expression, %{resource: resource, public?: false}) do
       {:ok, hydrated} -> eval_hydrated_calc(record, calc, hydrated, resource, domain)
       {:error, error} -> {:error, calc_error(error)}
     end
+  rescue
+    error -> {:error, calc_error(error)}
   end
 
   defp eval_hydrated_calc(record, calc, hydrated, resource, domain) do
