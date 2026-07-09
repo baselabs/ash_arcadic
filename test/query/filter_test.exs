@@ -219,6 +219,23 @@ defmodule AshArcadic.Query.FilterTest do
       assert cypher == "((n.first + n.last) = $param1)"
     end
 
+    test "a plain-Ref LEFT with a compound-expression RIGHT (a > b + 1) translates both operands" do
+      # Regression: the plain-Ref comparison clauses param-bound the RHS `value` verbatim, so a
+      # compound-expression RHS was bound as an UNEVALUATED %Plus{} struct → wrong Cypher /
+      # transport crash. Route the RHS expression through Expression too.
+      filter = hydrated(Ash.Query.filter(AshArcadic.Test.CalcPerson, a > b + 1))
+      {:ok, out, cypher} = Filter.translate(filter, cq())
+      assert cypher == "(n.a > (n.b + $param1))"
+      assert out.params == %{"param1" => 1}
+      refute Enum.any?(out.params, fn {_k, v} -> is_struct(v) end)
+    end
+
+    test "a plain-Ref LEFT with a concat RIGHT (first == last <> id) translates both operands" do
+      filter = hydrated(Ash.Query.filter(AshArcadic.Test.CalcPerson, first == last <> id))
+      {:ok, _out, cypher} = Filter.translate(filter, cq())
+      assert cypher == "(n.first = (n.last + n.id))"
+    end
+
     test "filter on an expression calc (full_name) expands + translates" do
       filter = hydrated(Ash.Query.filter(AshArcadic.Test.CalcPerson, full_name == "Ada Lovelace"))
       {:ok, _out, cypher} = Filter.translate(filter, cq())

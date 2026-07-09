@@ -128,6 +128,19 @@ defmodule AshArcadic.Query.Filter do
     reject_unsupported(expr)
   end
 
+  # A comparison whose RIGHT operand is itself a value-EXPRESSION (a + b, first <> last, a function) —
+  # the plain-Ref clauses below would param-bind the RHS expression STRUCT verbatim (an unevaluated
+  # %Plus{}/%Concat{} bound as a Cypher param → wrong result / transport crash). Route BOTH operands
+  # through Expression instead (mirrors the compound-LEFT clause). An expression node carries
+  # `:__predicate__?` (operators AND functions); a Ref RHS (attribute-to-attribute) is rejected above,
+  # and a literal or literal-struct (Decimal/Date) RHS lacks the key and falls to the param-bind
+  # clauses below — so only genuine value-expression RHSs are intercepted.
+  defp do_translate(%mod{left: %Ash.Query.Ref{} = ref, right: right}, query)
+       when is_map_key(@comparison_ops, mod) and is_struct(right) and
+              is_map_key(right, :__predicate__?) do
+    compound_compare(query, ref, right, Map.fetch!(@comparison_ops, mod))
+  end
+
   defp do_translate(
          %Ash.Query.Operator.Eq{left: %Ash.Query.Ref{attribute: attr}, right: value},
          query
