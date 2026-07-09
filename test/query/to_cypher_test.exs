@@ -29,6 +29,32 @@ defmodule AshArcadic.Query.ToCypherTest do
     assert params == %{"param1" => "Ann"}
   end
 
+  test "ORDER BY honors nil-placement qualifiers (native for defaults, IS-NULL prefix for opposites)" do
+    # ArcadeDB native: ASC→nulls-last, DESC→nulls-first (probe-verified), which already matches Ash's
+    # default convention (:asc≡:asc_nils_last, :desc≡:desc_nils_first). The explicit OPPOSITE
+    # qualifiers (:asc_nils_first, :desc_nils_last) are honored via a leading `(<col> IS NULL)` key.
+    q = %Query{
+      resource: AshArcadic.Test.Basic,
+      label: :Person,
+      sort: [
+        {:a, :asc},
+        {:b, :desc},
+        {:c, :asc_nils_last},
+        {:d, :desc_nils_first},
+        {:e, :asc_nils_first},
+        {:f, :desc_nils_last},
+        {:expr, "(n.x + n.y)", :asc_nils_first}
+      ]
+    }
+
+    {cypher, _} = Query.to_cypher(q)
+
+    assert cypher =~
+             "ORDER BY n.a ASC, n.b DESC, n.c ASC, n.d DESC, " <>
+               "(n.e IS NULL) DESC, n.e ASC, (n.f IS NULL) ASC, n.f DESC, " <>
+               "((n.x + n.y) IS NULL) DESC, (n.x + n.y) ASC"
+  end
+
   test "pre-built filter clauses (update/destroy scoping) AND-compose before the expression" do
     q = %Query{
       resource: AshArcadic.Test.Basic,

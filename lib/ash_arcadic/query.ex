@@ -107,20 +107,26 @@ defmodule AshArcadic.Query do
     ["ORDER BY " <> Enum.map_join(sort_clauses, ", ", &order_fragment/1)]
   end
 
-  # An expression sort fragment is already parameterized Cypher (Expression validated the
-  # identifier via its Ref guard). ArcadeDB's native nil placement applies (ASC → nulls last;
-  # probe-verified); the *_nils_first/last direction qualifiers map to the base ASC/DESC (a
-  # documented fidelity note).
-  defp order_fragment({:expr, cypher, direction}), do: "#{cypher} #{order_dir(direction)}"
+  # An expression sort fragment is already parameterized Cypher (Expression validated the identifier
+  # via its Ref guard). A field fragment is `n.<field>` (identifier-validated).
+  defp order_fragment({:expr, cypher, direction}), do: order_by_expr(cypher, direction)
 
   defp order_fragment({field, direction}) do
     field = AshArcadic.Identifier.validate!(field)
-    "n.#{field} #{order_dir(direction)}"
+    order_by_expr("n.#{field}", direction)
   end
+
+  # ArcadeDB native nil placement is ASC → nulls-LAST, DESC → nulls-FIRST (probe-verified), which
+  # already matches Ash's DEFAULT convention (:asc ≡ :asc_nils_last, :desc ≡ :desc_nils_first). The
+  # explicit OPPOSITE qualifiers (:asc_nils_first, :desc_nils_last) are honored with a leading
+  # `(<col> IS NULL)` sort key (probe-verified: `(col IS NULL) DESC` → nulls first; `… ASC` → nulls
+  # last), so all four Ash nil-placement qualifiers are faithful (spec D12).
+  defp order_by_expr(col, :asc_nils_first), do: "(#{col} IS NULL) DESC, #{col} ASC"
+  defp order_by_expr(col, :desc_nils_last), do: "(#{col} IS NULL) ASC, #{col} DESC"
+  defp order_by_expr(col, direction), do: "#{col} #{order_dir(direction)}"
 
   defp order_dir(:desc), do: "DESC"
   defp order_dir(:desc_nils_first), do: "DESC"
-  defp order_dir(:desc_nils_last), do: "DESC"
   defp order_dir(_), do: "ASC"
 
   defp build_skip(nil), do: []

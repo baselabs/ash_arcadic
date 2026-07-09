@@ -79,6 +79,23 @@ defmodule AshArcadic.Test.CalculationsTest do
     assert {:error, %Ash.Error.Invalid{}} = Ash.read(Ash.Query.sort(P, secret_calc: :asc))
   end
 
+  test "computed-expression sort honors Ash nil-placement qualifiers (D12)" do
+    # total = a + b; a row with b=nil computes null (no_nils Plus). totals: p1=13, p2=4, pnull=null.
+    {:ok, _} = Ash.create(P, %{id: "pnull", first: "N", last: "N", a: 5, secret: <<7>>})
+
+    # Default :asc ≡ nulls LAST (ArcadeDB native, matches Ash convention).
+    {:ok, asc} = Ash.read(Ash.Query.sort(P, total: :asc))
+    assert Enum.map(asc, & &1.id) == ["p2", "p1", "pnull"]
+
+    # Explicit :asc_nils_first ≡ nulls FIRST (the opposite qualifier, honored via the IS-NULL key).
+    {:ok, first} = Ash.read(Ash.Query.sort(P, total: :asc_nils_first))
+    assert Enum.map(first, & &1.id) == ["pnull", "p2", "p1"]
+
+    # Explicit :desc_nils_last ≡ nulls LAST on descending.
+    {:ok, desc_last} = Ash.read(Ash.Query.sort(P, total: :desc_nils_last))
+    assert Enum.map(desc_last, & &1.id) == ["p1", "p2", "pnull"]
+  end
+
   test "TRIPWIRE (parity): filter-on-calc uses the SAME float semantics as the loaded value" do
     # ratio = a / b. p3: 7/2 = 3.5 (Ash float). If the translator emitted ArcadeDB int division
     # (7/2 → 3), filter(ratio > 3) would EXCLUDE p3 (3 > 3 false) while the loaded ratio (3.5)
