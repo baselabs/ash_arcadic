@@ -679,11 +679,22 @@ defmodule AshArcadic.DataLayer do
     end)
   end
 
-  # Every ref in the (calc-expanded) expression must be a stored, non-sensitive property.
+  # Every ref in the (calc-expanded) expression must be a LOCAL, stored, non-sensitive property.
   defp calc_supported?(expression, resource) do
     expression
     |> Ash.Filter.list_refs(false, false, true)
     |> Enum.all?(fn
+      # A relationship-path ref (author.name) — a RELATED node's property, NOT a local n.<field>.
+      # Evaluating it in run_query's Elixir eval triggers Ash's `Ash.load!(…, authorize?: false)`
+      # fallback for the unloaded relationship (`Ash.Filter.Runtime.load_and_eval`), reading the
+      # related resource WITHOUT its row/field policies (an authorization bypass — a leaf name that
+      # collides with a source stored attr, e.g. `:id`, otherwise passes the name check below).
+      # Reject value-free, mirroring `AshArcadic.Query.Expression`'s relationship-path rejection on
+      # the filter/sort paths (load/filter/sort guards stay symmetric). Relationship/traversal calcs
+      # are a spec §9 non-goal.
+      %Ash.Query.Ref{relationship_path: [_ | _]} ->
+        false
+
       %Ash.Query.Ref{attribute: %Ash.Resource.Attribute{name: name}} ->
         Info.value_translatable_field?(resource, name)
 
