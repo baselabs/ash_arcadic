@@ -60,5 +60,18 @@ defmodule AshArcadic.DataLayer.Info do
   def stored_field?(resource, field) when is_atom(field),
     do: Map.has_key?(attribute_map(resource), field)
 
+  @doc """
+  Whether `field` may be translated into a Cypher VALUE expression — a stored property
+  (`stored_field?/2`) that is not `sensitive` (app-side-encrypted binary; a plaintext op over
+  ciphertext is meaningless). The classification predicate for Cypher value-translation.
+  `Query.Expression`'s Ref guard uses it; `Filter.filterable_field?/2` is unified onto it in the
+  filter-wiring task, eliminating the S6 divergence class
+  (`project_filter_guard_presence_predicate_coverage`). Presence (`is_nil`) uses `stored_field?/2`
+  alone — a sensitive field IS presence-checkable (the documented oracle, D9).
+  """
+  @spec value_translatable_field?(Ash.Resource.t(), atom()) :: boolean()
+  def value_translatable_field?(resource, field) when is_atom(field),
+    do: stored_field?(resource, field) and field not in sensitive(resource)
+
   defp default_label(resource), do: resource |> Module.split() |> List.last()
 end
