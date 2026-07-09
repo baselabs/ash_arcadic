@@ -32,7 +32,7 @@ defmodule AshArcadic.Query do
           limit: non_neg_integer() | nil,
           offset: non_neg_integer() | nil,
           filters: [String.t()],
-          sort: [{atom(), :asc | :desc}],
+          sort: [{atom(), :asc | :desc} | {:expr, String.t(), atom()}],
           aggregates: [Ash.Query.Aggregate.t()],
           calculations: [{Ash.Query.Calculation.t(), Ash.Expr.t()}],
           params: map(),
@@ -104,15 +104,24 @@ defmodule AshArcadic.Query do
   defp build_order_by([]), do: []
 
   defp build_order_by(sort_clauses) do
-    order =
-      Enum.map_join(sort_clauses, ", ", fn {field, direction} ->
-        field = AshArcadic.Identifier.validate!(field)
-        dir = if direction == :desc, do: "DESC", else: "ASC"
-        "n.#{field} #{dir}"
-      end)
-
-    ["ORDER BY " <> order]
+    ["ORDER BY " <> Enum.map_join(sort_clauses, ", ", &order_fragment/1)]
   end
+
+  # An expression sort fragment is already parameterized Cypher (Expression validated the
+  # identifier via its Ref guard). ArcadeDB's native nil placement applies (ASC → nulls last;
+  # probe-verified); the *_nils_first/last direction qualifiers map to the base ASC/DESC (a
+  # documented fidelity note).
+  defp order_fragment({:expr, cypher, direction}), do: "#{cypher} #{order_dir(direction)}"
+
+  defp order_fragment({field, direction}) do
+    field = AshArcadic.Identifier.validate!(field)
+    "n.#{field} #{order_dir(direction)}"
+  end
+
+  defp order_dir(:desc), do: "DESC"
+  defp order_dir(:desc_nils_first), do: "DESC"
+  defp order_dir(:desc_nils_last), do: "DESC"
+  defp order_dir(_), do: "ASC"
 
   defp build_skip(nil), do: []
   defp build_skip(offset) when is_integer(offset) and offset >= 0, do: ["SKIP #{offset}"]

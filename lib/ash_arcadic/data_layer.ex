@@ -27,6 +27,7 @@ defmodule AshArcadic.DataLayer do
   alias AshArcadic.Errors.QueryFailed
   alias AshArcadic.Errors.UnsupportedFilter
   alias AshArcadic.Errors.UpdateFailed
+  alias AshArcadic.Query.Expression
   alias AshArcadic.Query.Filter
   alias AshArcadic.Telemetry
   alias Ecto.Schema.Metadata
@@ -242,6 +243,11 @@ defmodule AshArcadic.DataLayer do
   # supported calcs compute in run_query via Elixir eval over the flat RETURN n (NOT Cypher).
   def can?(_, :expression_calculation), do: true
 
+  # Forward-compat only: in Ash 3.29.3 `:expression_calculation_sort` is never checked in the
+  # action/query pipeline — the real gate that lets a calc-sort survive hydrate_calculations is
+  # `:expression_calculation` (above). Advertised so the capability reads honestly; not the gate.
+  def can?(_, :expression_calculation_sort), do: true
+
   def can?(_, _), do: false
 
   # Slice 5 (fail-closed): true when the filter destination carries ANY authorizer. Used by
@@ -316,31 +322,49 @@ defmodule AshArcadic.DataLayer do
   end
 
   @impl true
-  # SORT SCOPING PATH — fails CLOSED. A sort field that is not a STORED attribute (a
-  # calculation/aggregate name, or a `skip`-ped attribute) is rejected value-free rather than
-  # emitted as `ORDER BY n.<field>` against a non-existent property (ArcadeDB → null → silent
-  # arbitrary order). Same guard as the aggregate `:first` sort path (Info.stored_field?/2).
+  # SORT SCOPING PATH — fails CLOSED. A field sort that is not a STORED attribute (a `skip`-ped
+  # attribute) is rejected value-free rather than emitted as `ORDER BY n.<field>` against a
+  # non-existent property (ArcadeDB → null → silent arbitrary order). An INLINED expression-calc
+  # sort (Ash passes %Ash.Query.Calculation{opts: [expr: …]}) translates via Expression into an
+  # ORDER-BY fragment, threading its params onto the query; a sensitive/non-stored ref (or an
+  # unsupported op) inside fails closed value-free. Same stored guard as the aggregate `:first`
+  # sort path (Info.stored_field?/2).
   def sort(query, sort, resource) do
-    sort
-    |> Enum.reduce_while({:ok, []}, &validate_sort_entry(&1, resource, &2))
-    |> case do
-      {:ok, clauses} -> {:ok, %{query | sort: query.sort ++ Enum.reverse(clauses)}}
-      {:error, _} = error -> error
+    Enum.reduce_while(sort, {:ok, query}, fn entry, {:ok, q} ->
+      case sort_clause(entry, resource, q) do
+        {:ok, q2, clause} -> {:cont, {:ok, %{q2 | sort: q2.sort ++ [clause]}}}
+        {:error, _} = err -> {:halt, err}
+      end
+    end)
+  end
+
+  # An inlined expression-calc sort → translate its expression to a Cypher ORDER-BY fragment
+  # (params threaded onto the query). A sensitive/non-stored ref, or an unsupported op, inside →
+  # Expression fails closed value-free. A calc without an :expr key (a module calc) → reject.
+  defp sort_clause({%Ash.Query.Calculation{opts: opts}, direction}, _resource, query) do
+    case Keyword.fetch(opts, :expr) do
+      {:ok, expr} ->
+        case Expression.translate(expr, query) do
+          {:ok, q, cypher} -> {:ok, q, {:expr, cypher, direction}}
+          {:error, _} -> {:error, sort_error("sort over an unsupported calculation expression")}
+        end
+
+      :error ->
+        {:error, sort_error("sort over an expression/calculation field is unsupported")}
     end
   end
 
-  # Validate one sort entry against the resource's stored properties, accumulating in read
-  # order. A calculation/aggregate STRUCT field (non-atom) → :expression reject; a bare-atom /
-  # %Ash.Resource.Attribute{} field that is not a stored property → value-free reject.
-  defp validate_sort_entry(entry, resource, {:ok, acc}) do
+  # A field sort entry (atom or resolved %Ash.Resource.Attribute{}) → guard on stored; any other
+  # calculation/aggregate STRUCT field → :expression reject value-free.
+  defp sort_clause(entry, resource, query) do
     case normalize_sort_entry(entry) do
       {name, direction} ->
         if Info.stored_field?(resource, name),
-          do: {:cont, {:ok, [{name, direction} | acc]}},
-          else: {:halt, {:error, sort_error("sort field #{name} is not a stored attribute")}}
+          do: {:ok, query, {name, direction}},
+          else: {:error, sort_error("sort field #{name} is not a stored attribute")}
 
       :expression ->
-        {:halt, {:error, sort_error("sort over an expression/calculation field is unsupported")}}
+        {:error, sort_error("sort over an expression/calculation field is unsupported")}
     end
   end
 
