@@ -107,4 +107,51 @@ defmodule AshArcadic.Query.ExpressionTest do
     assert out.params == %{"param1" => 5, "param2" => 3}
     assert cypher == "((n.a * $param1) + $param2)"
   end
+
+  # --- Task 2: functions, if, calc-ref expansion ---
+  defp fn_expr(mod, args), do: struct(mod, arguments: args)
+
+  test "if → CASE WHEN" do
+    expr =
+      fn_expr(Ash.Query.Function.If, [
+        %Ash.Query.Operator.GreaterThan{left: ref(:a), right: ref(:b)},
+        "hi",
+        "lo"
+      ])
+
+    assert {:ok, out, cypher} = E.translate(expr, q())
+    assert cypher == "CASE WHEN (n.a > n.b) THEN $param1 ELSE $param2 END"
+    assert out.params == %{"param1" => "hi", "param2" => "lo"}
+  end
+
+  test "string functions map to ArcadeDB (downcase→lower, length→size, trim→trim, round→round)" do
+    assert {:ok, _q, "lower(n.first)"} =
+             E.translate(fn_expr(Ash.Query.Function.StringDowncase, [ref(:first)]), q())
+
+    assert {:ok, _q, "size(n.first)"} =
+             E.translate(fn_expr(Ash.Query.Function.StringLength, [ref(:first)]), q())
+
+    assert {:ok, _q, "trim(n.first)"} =
+             E.translate(fn_expr(Ash.Query.Function.StringTrim, [ref(:first)]), q())
+
+    assert {:ok, _q, "round(n.a)"} =
+             E.translate(fn_expr(Ash.Query.Function.Round, [ref(:a)]), q())
+  end
+
+  test "is_nil in a value expression → IS NULL" do
+    assert {:ok, _q, "(n.first IS NULL)"} =
+             E.translate(fn_expr(Ash.Query.Function.IsNil, [ref(:first)]), q())
+  end
+
+  test "contains → CONTAINS (value context)" do
+    expr = fn_expr(Ash.Query.Function.Contains, [ref(:first), "Ad"])
+    assert {:ok, out, cypher} = E.translate(expr, q())
+    assert cypher == "(n.first CONTAINS $param1)"
+    assert out.params == %{"param1" => "Ad"}
+  end
+
+  test "an un-mapped function fails closed value-free (naming the function)" do
+    ago = fn_expr(Ash.Query.Function.Ago, [1, :day])
+    assert {:error, %UnsupportedFilter{operator: Ash.Query.Function.Ago}} = E.translate(ago, q())
+  end
 end

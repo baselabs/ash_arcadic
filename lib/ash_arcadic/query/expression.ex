@@ -30,6 +30,17 @@ defmodule AshArcadic.Query.Expression do
     Ash.Query.Operator.GreaterThanOrEqual => ">=",
     Ash.Query.Operator.LessThanOrEqual => "<="
   }
+  @unary_fns %{
+    Ash.Query.Function.StringDowncase => "lower",
+    Ash.Query.Function.StringLength => "size",
+    Ash.Query.Function.StringTrim => "trim",
+    Ash.Query.Function.Round => "round"
+  }
+  @match_fns %{
+    Ash.Query.Function.Contains => "CONTAINS",
+    Ash.Query.Function.StringStartsWith => "STARTS WITH",
+    Ash.Query.Function.StringEndsWith => "ENDS WITH"
+  }
 
   @spec translate(term(), Query.t()) :: {:ok, Query.t(), String.t()} | {:error, term()}
 
@@ -88,14 +99,70 @@ defmodule AshArcadic.Query.Expression do
     with {:ok, q, c} <- translate(e, query), do: {:ok, q, "NOT (#{c})"}
   end
 
+  # An expression calculation Ref — expand to its expression and recurse (D9). The recursion
+  # re-classifies every node post-expansion: a nested aggregate Ref hits the aggregate clause
+  # (reject), a nested module (non-expression) calc Ref hits this clause's `else` (reject) — C6.
+  def translate(
+        %Ash.Query.Ref{attribute: %Ash.Query.Calculation{} = calc},
+        %Query{resource: r} = query
+      ) do
+    if Ash.Resource.Calculation.has_expression?(calc.module) do
+      case Ash.Filter.hydrate_refs(
+             Ash.Resource.Calculation.expression(calc.module, calc.opts, calc.context),
+             %{resource: r, public?: false}
+           ) do
+        {:ok, hydrated} -> translate(hydrated, query)
+        {:error, _} -> {:error, unsupported(Ash.Query.Calculation, calc.name)}
+      end
+    else
+      {:error, unsupported(Ash.Query.Calculation, calc.name)}
+    end
+  end
+
+  # if(cond, then, else) → CASE WHEN … THEN … ELSE … END.
+  def translate(%Ash.Query.Function.If{arguments: [cond, then_v, else_v]}, query) do
+    with {:ok, q1, cc} <- translate(cond, query),
+         {:ok, q2, tc} <- translate(then_v, q1),
+         {:ok, q3, ec} <- translate(else_v, q2) do
+      {:ok, q3, "CASE WHEN #{cc} THEN #{tc} ELSE #{ec} END"}
+    end
+  end
+
+  # A two-arg `if` (no else) → CASE WHEN … THEN … END (Cypher yields null for the unmatched arm,
+  # matching Ash's nil-else).
+  def translate(%Ash.Query.Function.If{arguments: [cond, then_v]}, query) do
+    with {:ok, q1, cc} <- translate(cond, query),
+         {:ok, q2, tc} <- translate(then_v, q1) do
+      {:ok, q2, "CASE WHEN #{cc} THEN #{tc} END"}
+    end
+  end
+
+  # is_nil(x) → (x IS NULL).
+  def translate(%Ash.Query.Function.IsNil{arguments: [inner]}, query) do
+    with {:ok, q, c} <- translate(inner, query), do: {:ok, q, "(#{c} IS NULL)"}
+  end
+
+  # Single-argument string/math functions with a 1:1 ArcadeDB mapping.
+  def translate(%mod{arguments: [inner]}, query) when is_map_key(@unary_fns, mod) do
+    with {:ok, q, c} <- translate(inner, query),
+         do: {:ok, q, "#{Map.fetch!(@unary_fns, mod)}(#{c})"}
+  end
+
+  # Two-argument string-match functions (value context) → CONTAINS / STARTS WITH / ENDS WITH.
+  def translate(%mod{arguments: [subject, pattern]}, query) when is_map_key(@match_fns, mod) do
+    with {:ok, q1, sc} <- translate(subject, query),
+         {:ok, q2, pc} <- translate(pattern, q1) do
+      {:ok, q2, "(#{sc} #{Map.fetch!(@match_fns, mod)} #{pc})"}
+    end
+  end
+
   # A bare literal → bound $param (never interpolated).
   def translate(value, query) when not is_struct(value) do
     {q, ref} = Query.add_param(query, value)
     {:ok, q, ref}
   end
 
-  # Anything else (an un-mapped operator/function, a non-expression calc Ref — added in Task 2)
-  # → unsupported value-free.
+  # Anything else (an un-mapped operator/function) → unsupported value-free.
   def translate(other, _query), do: {:error, unsupported(shape(other), nil)}
 
   defp binary(query, l, r, op) do
