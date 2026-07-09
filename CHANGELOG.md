@@ -15,11 +15,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   **filter-expansion** (`filter(res, a + b > 5)`) push down to Cypher via the new
   `AshArcadic.Query.Expression` translator (WHERE / ORDER BY). Supported: arithmetic
   (`+ - * /`, division forced float to match Ash), concat (`<>`), comparison, boolean,
-  `if`/`cond` (→ `CASE`), `is_nil`, `string_downcase`/`string_length`/`string_trim`/`round`,
-  and `contains`/`string_starts_with`/`string_ends_with`. A `sensitive` or non-stored field
+  `if`/`cond` (→ `CASE`), `is_nil`,
+  `string_downcase`/`string_length`/`length`/`string_trim`/`round` (`round/1` only), and
+  `contains`/`string_starts_with`/`string_ends_with`; a comparison may carry a compound value
+  expression on **either** side (`a + b > 5`, `a > b + 1`). A `sensitive` or non-stored field
   in a calc expression **fails closed value-free on all paths** (the data layer holds only
-  ciphertext — use a module calc for a derived sensitive value); un-mapped operators/functions
-  (date/time, `fragment`, `type`) likewise fail closed value-free. Advertises the value-operator
+  ciphertext — use a module calc for a derived sensitive value); a **relationship-path** calc
+  (`expr(author.name)`) fails closed value-free on all paths, including load (never routed
+  through Ash's `authorize?: false` relationship-load fallback); un-mapped operators/functions
+  (date/time, `fragment`, `type`) likewise fail closed value-free. All four Ash sort
+  nil-placement qualifiers are honored, and a raising calc eval is caught + redacted value-free.
+  Parity boundary: pushed filter/sort matches the loaded value except at non-natural
+  declared-type coercions, `round/1` of negative half-integers, and division by zero (use a
+  module calc there). Advertises the value-operator
   `can?({:filter_expr, …})` set plus `:expression_calculation` / `:expression_calculation_sort`.
   Module calculations and standalone `Ash.calculate` are unchanged.
 - **Filter-ops hardening (Slice 6).** Value-comparison filters on a `sensitive`

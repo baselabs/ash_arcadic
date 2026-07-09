@@ -82,10 +82,12 @@ _An Ash DataLayer for ArcadeDB (native OpenCypher over HTTP)._
   expression set is identical across all three paths.
 - **Supported operators/functions:** arithmetic `+` `-` `*` `/`, concat `<>`, comparison
   (`==` `!=` `>` `<` `>=` `<=`), boolean `and`/`or`/`not`, `if`/`cond` (→ Cypher `CASE`),
-  `is_nil`, `string_downcase` / `string_length` / `string_trim` / `round`, and
-  `contains` / `string_starts_with` / `string_ends_with`. Anything else (date/time
-  functions like `ago`/`now`, `fragment`, `type` coercions, relationship-path calcs)
-  fails closed value-free (`%UnsupportedFilter{}` naming the operator/field).
+  `is_nil`, `string_downcase` / `string_length` / `length` / `string_trim` / `round`
+  (single-argument `round/1` only — `round(x, precision)` fails closed), and `contains` /
+  `string_starts_with` / `string_ends_with`. A comparison may carry a compound value
+  expression on **either** side (`a + b > 5`, `a > b + 1`, `first <> last == "…"`). Anything
+  else (date/time functions like `ago`/`now`, `fragment`, `type` coercions, relationship-path
+  calcs) fails closed value-free (`%UnsupportedFilter{}` naming the operator/field).
 - **Division is float, matching Ash.** `a / b` emits `toFloat(a) / b` so integer operands
   divide like Ash (`7 / 2 == 3.5`), NOT ArcadeDB's integer truncation (`7 / 2 → 3`) — the
   filtered set matches the loaded value.
@@ -95,13 +97,29 @@ _An Ash DataLayer for ArcadeDB (native OpenCypher over HTTP)._
   layer) — evaluating a calc over it is both wrong and a redaction-leak surface. For a
   derived value over a sensitive field, use a **module calculation** (computed above the
   data layer, post-decrypt).
+- **Relationship-path calcs fail closed on ALL paths.** A calc referencing a related node
+  (`expr(author.name)`) is rejected value-free on load, filter, AND sort — the load path
+  never routes it through Ash's `authorize?: false` relationship-load fallback, so it cannot
+  read a related resource around its row/field policies. Relationship calculations are a
+  future (traversal-calc) concern.
 - **Field-policy interaction.** A calc referencing a field-policy-protected (non-`sensitive`)
   field in a filter/sort inherits AshArcadic's flat-field-filter behavior — the data layer
   has no actor at translate time, the same documented class as the `exists`-oracle (an
   upstream Ash concern, not data-layer-fixable).
-- **Sort nil-placement fidelity.** `*_nils_first` / `*_nils_last` sort qualifiers map to the
-  base `ASC`/`DESC`; ArcadeDB's native nil placement applies (ASC → nulls last), so explicit
-  nil-ordering is not honored per-direction.
+- **Sort nil-placement is faithful.** All four Ash qualifiers are honored: `:asc`/`:desc`
+  use ArcadeDB's native placement (ASC → nulls last, DESC → nulls first, matching Ash's
+  default convention); the explicit opposites `:asc_nils_first` / `:desc_nils_last` are
+  honored with a leading `(<col> IS NULL)` sort key.
+- **Load/filter parity boundary.** Pushed filter/sort computation runs in ArcadeDB and matches
+  the Elixir-loaded value on the common paths, but three edges diverge because Cypher cannot
+  reproduce Elixir's exact semantics: (1) a calc whose **declared type coerces** its
+  expression in a value-changing way (a non-natural type, e.g. `:string` over an integer
+  expression) — the load casts, the pushed filter/sort does not (a `type`-coercion non-goal;
+  use the natural declared type or a module calc); (2) `round/1` at exact **negative
+  half-integers** — Ash rounds half away from zero (`-2.5 → -3`), ArcadeDB half toward `+∞`
+  (`-2.5 → -2`); (3) **division by zero** — loading raises, the pushed filter yields ArcadeDB
+  `Infinity` (row included). For guaranteed parity on these edges, compute via a module
+  calculation.
 
 ## Aggregates (Slice 3, Plan 1)
 
