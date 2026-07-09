@@ -76,7 +76,12 @@ defmodule AshArcadic.Test.CalculationsTest do
   end
 
   test "TRIPWIRE: sorting by a calc over a sensitive field fails closed value-free" do
-    assert {:error, %Ash.Error.Invalid{}} = Ash.read(Ash.Query.sort(P, secret_calc: :asc))
+    assert {:error, %Ash.Error.Invalid{} = error} = Ash.read(Ash.Query.sort(P, secret_calc: :asc))
+    # value-free: the sort-path rejection carries the structural reason only, never the ciphertext
+    # value (the rejection fires at translate, which sees only the field Ref, never a row value).
+    msg = Exception.message(error)
+    refute msg =~ "\\xFF"
+    refute msg =~ "\\x00"
   end
 
   test "computed-expression sort honors Ash nil-placement qualifiers (D12)" do

@@ -236,17 +236,27 @@ defmodule AshArcadic.Query.FilterTest do
       assert cypher == "(n.first = (n.last + n.id))"
     end
 
-    test "filter on an expression calc (full_name) expands + translates" do
+    test "filter on an expression calc (full_name) expands + translates (exact, params-only)" do
       filter = hydrated(Ash.Query.filter(AshArcadic.Test.CalcPerson, full_name == "Ada Lovelace"))
-      {:ok, _out, cypher} = Filter.translate(filter, cq())
-      assert cypher =~ "n.first"
-      assert cypher =~ "n.last"
+      {:ok, out, cypher} = Filter.translate(filter, cq())
+      # full_name = first <> " " <> last → the " " and the RHS literal both ride bound params.
+      assert cypher == "((n.first + ($param1 + n.last)) = $param2)"
+      assert out.params == %{"param1" => " ", "param2" => "Ada Lovelace"}
     end
 
     test "TRIPWIRE: filter on a calc over a sensitive field fails closed value-free" do
       filter = hydrated(Ash.Query.filter(AshArcadic.Test.CalcPerson, secret_calc == "x"))
 
       assert {:error, %UnsupportedFilter{}} = Filter.translate(filter, cq())
+    end
+
+    test "TRIPWIRE: filter on a MODULE (non-expression) calc fails closed value-free" do
+      # greeting is a module calc ({CalcGreeting, []}) — not Cypher-expressible. Must reject, never
+      # emit n.greeting (a non-existent property → silent {:ok, []} wrong result — Finding A).
+      filter = hydrated(Ash.Query.filter(AshArcadic.Test.CalcPerson, greeting == "Hi Ada"))
+
+      assert {:error, %UnsupportedFilter{operator: _, field: :greeting}} =
+               Filter.translate(filter, cq())
     end
   end
 end

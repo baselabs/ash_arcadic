@@ -63,13 +63,43 @@ defmodule AshArcadic.Query.ExpressionTest do
   end
 
   test "TRIPWIRE: a sensitive-field Ref fails closed value-free — in EVERY node position" do
+    cond = %Ash.Query.Operator.GreaterThan{left: ref(:a), right: ref(:b)}
+
     for expr <- [
           ref(:secret),
           %Ash.Query.Operator.Basic.Concat{left: ref(:first), right: ref(:secret)},
-          %Ash.Query.BooleanExpression{op: :and, left: ref(:secret), right: ref(:a)}
+          %Ash.Query.BooleanExpression{op: :and, left: ref(:secret), right: ref(:a)},
+          # comparison operand
+          %Ash.Query.Operator.GreaterThan{left: ref(:secret), right: 1},
+          # a CASE (if) THEN branch and ELSE branch
+          %Ash.Query.Function.If{arguments: [cond, ref(:secret), "x"]},
+          %Ash.Query.Function.If{arguments: [cond, "x", ref(:secret)]},
+          # a single-argument function argument (lower(secret))
+          %Ash.Query.Function.StringDowncase{arguments: [ref(:secret)]},
+          # a two-argument string-match function argument (contains(secret, "x"))
+          %Ash.Query.Function.Contains{arguments: [ref(:secret), "x"]}
         ] do
       assert {:error, %UnsupportedFilter{}} = E.translate(expr, q())
     end
+  end
+
+  test "TRIPWIRE: a non-stored (skip) Ref fails closed in a CASE branch and a function argument" do
+    cond = %Ash.Query.Operator.GreaterThan{left: ref(:a), right: ref(:b)}
+
+    for expr <- [
+          %Ash.Query.Function.If{arguments: [cond, ref(:computed), "x"]},
+          %Ash.Query.Function.StringDowncase{arguments: [ref(:computed)]}
+        ] do
+      assert {:error, %UnsupportedFilter{}} = E.translate(expr, q())
+    end
+  end
+
+  test "TRIPWIRE: a nested aggregate Ref inside arithmetic (count_agg + 1) fails closed value-free" do
+    # The C6 recursive re-classification: an aggregate Ref embedded in an arithmetic operand still
+    # hits the aggregate reject clause on recursion — never emits n.<agg_name> (silent wrong result).
+    agg_ref = %Ash.Query.Ref{attribute: %Ash.Query.Aggregate{name: :cnt, kind: :count}}
+    expr = %Ash.Query.Operator.Basic.Plus{left: agg_ref, right: 1}
+    assert {:error, %UnsupportedFilter{}} = E.translate(expr, q())
   end
 
   test "TRIPWIRE: a non-stored (skip) Ref and a :decimal/:binary Ref fail closed value-free" do
