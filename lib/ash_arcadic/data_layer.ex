@@ -236,6 +236,12 @@ defmodule AshArcadic.DataLayer do
     is_nil(Map.get(rel, :manual)) and not destination_has_authorizer?(Map.get(rel, :destination))
   end
 
+  # Slice 7: expression calculations. Advertising this routes EVERY has_expression? calc through
+  # add_calculations/3 (regardless of per-operator {:filter_expr} capability) — that callback is the
+  # ref-classification fail-closed gate (sensitive/non-stored → reject BEFORE the query runs), and
+  # supported calcs compute in run_query via Elixir eval over the flat RETURN n (NOT Cypher).
+  def can?(_, :expression_calculation), do: true
+
   def can?(_, _), do: false
 
   # Slice 5 (fail-closed): true when the filter destination carries ANY authorizer. Used by
@@ -370,7 +376,8 @@ defmodule AshArcadic.DataLayer do
          in_transaction?: AshArcadic.Transaction.in_transaction?(),
          traversal_aggregate?: query.aggregates != [],
          aggregate_kinds: Enum.map(query.aggregates, & &1.kind),
-         aggregate_count: length(query.aggregates)
+         aggregate_count: length(query.aggregates),
+         calculation_count: length(query.calculations)
        }}
     end)
   end
@@ -383,7 +390,7 @@ defmodule AshArcadic.DataLayer do
         case Arcadic.query(conn, cypher, params) do
           {:ok, rows} ->
             records = decode_records(resource, rows)
-            attach_traversal_aggregates(records, aggs, resource)
+            attach_computed(records, aggs, query.calculations, resource)
 
           {:error, error} ->
             {:error,
@@ -512,6 +519,80 @@ defmodule AshArcadic.DataLayer do
     QueryFailed.exception(query: "ArcadeDB traversal aggregate", reason: redact_db_error(error))
   end
 
+  # Chain the two post-decode computed-field attachers: traversal aggregates, then calculations.
+  # Short-circuits value-free on the first {:error, _}.
+  defp attach_computed(records, aggs, calcs, resource) do
+    with {:ok, records} <- attach_traversal_aggregates(records, aggs, resource) do
+      attach_calculations(records, calcs, resource)
+    end
+  end
+
+  # Compute each stashed expression calc in Elixir over the just-decoded records (flat RETURN n),
+  # mirroring ETS do_add_calculations (ets.ex:695-760). add_calculations already fail-closed-gated the
+  # refs, so eval only runs over stored, non-sensitive fields. Attach per Ash's re-read contract.
+  defp attach_calculations(records, [], _resource), do: {:ok, records}
+
+  defp attach_calculations(records, calcs, resource) do
+    domain = Ash.Resource.Info.domain(resource)
+
+    records
+    |> Enum.reduce_while({:ok, []}, fn record, {:ok, acc} ->
+      case compute_calcs(record, calcs, resource, domain) do
+        {:ok, record} -> {:cont, {:ok, [record | acc]}}
+        {:error, _} = err -> {:halt, err}
+      end
+    end)
+    |> case do
+      {:ok, rev} -> {:ok, Enum.reverse(rev)}
+      {:error, _} = err -> err
+    end
+  end
+
+  defp compute_calcs(record, calcs, resource, domain) do
+    Enum.reduce_while(calcs, {:ok, record}, fn {calc, expression}, {:ok, record} ->
+      case eval_calc(record, calc, expression, resource, domain) do
+        {:ok, value} -> {:cont, {:ok, put_calc(record, calc, value)}}
+        {:error, _} = err -> {:halt, err}
+      end
+    end)
+  end
+
+  # Hydrate the calc expression against the resource, then eval over the record.
+  # Returns {:ok, value} | {:error, %QueryFailed{}} (value-free); :unknown → {:ok, nil} (ETS parity).
+  defp eval_calc(record, calc, expression, resource, domain) do
+    case Ash.Filter.hydrate_refs(expression, %{resource: resource, public?: false}) do
+      {:ok, hydrated} -> eval_hydrated_calc(record, calc, hydrated, resource, domain)
+      {:error, error} -> {:error, calc_error(error)}
+    end
+  end
+
+  defp eval_hydrated_calc(record, calc, hydrated, resource, domain) do
+    ctx = calc.context || %{}
+
+    case Ash.Expr.eval_hydrated(hydrated,
+           record: record,
+           resource: resource,
+           domain: domain,
+           actor: Map.get(ctx, :actor),
+           tenant: Map.get(ctx, :tenant)
+         ) do
+      {:ok, value} -> {:ok, value}
+      :unknown -> {:ok, nil}
+      {:error, error} -> {:error, calc_error(error)}
+    end
+  end
+
+  # Attach per Ash's re-read contract (attach_fields): .load → direct field; else → record.calculations[name].
+  defp put_calc(record, %Ash.Query.Calculation{load: nil, name: name}, value),
+    do: Map.update!(record, :calculations, &Map.put(&1, name, value))
+
+  defp put_calc(record, %Ash.Query.Calculation{load: load}, value),
+    do: Map.put(record, load, value)
+
+  # Value-free (Rule 4): redact any transport/eval error the value might ride.
+  defp calc_error(error),
+    do: QueryFailed.exception(query: "ArcadeDB calculation", reason: redact_db_error(error))
+
   # Rows are flat vertex maps (probe: RETURN n → %{"@rid" => .., "@cat" => "v", <props>}).
   # Decode STRICTLY by attribute_map; @rid/@cat/@type and undeclared keys are ignored by
   # Cast.row_to_attrs/3.
@@ -551,6 +632,44 @@ defmodule AshArcadic.DataLayer do
   # just-read parent records (add_aggregate receives NO records — Ash contract, ETS pattern).
   def add_aggregate(%AshArcadic.Query{aggregates: aggs} = query, aggregate, _resource),
     do: {:ok, %{query | aggregates: [aggregate | aggs]}}
+
+  @impl true
+  # Validate + stash each expression calculation. FAIL CLOSED value-free (before the query runs) on a
+  # calc whose expression references a NON-STORED or `sensitive` field: the data layer only ever holds
+  # the STORED value, and a `sensitive` field is app-side-encrypted ciphertext (AshCloak decrypts above
+  # the data layer) — evaluating over it is wrong AND a redaction-leak surface. Operators are already
+  # bounded by can?({:filter_expr, _}) at hydration; this adds the ref-classification bound. Supported
+  # calcs compute in run_query (Elixir eval, mirroring ETS do_add_calculations; NOT Cypher).
+  def add_calculations(%AshArcadic.Query{} = query, calcs, resource) do
+    Enum.reduce_while(calcs, {:ok, query}, fn {calc, expression}, {:ok, q} ->
+      if calc_supported?(expression, resource) do
+        {:cont, {:ok, %{q | calculations: q.calculations ++ [{calc, expression}]}}}
+      else
+        {:halt,
+         {:error,
+          QueryFailed.exception(
+            query: "ArcadeDB calculation",
+            reason: "calculation references a non-stored or sensitive field"
+          )}}
+      end
+    end)
+  end
+
+  # Every ref in the (calc-expanded) expression must be a stored, non-sensitive property.
+  defp calc_supported?(expression, resource) do
+    expression
+    |> Ash.Filter.list_refs(false, false, true)
+    |> Enum.all?(fn
+      %Ash.Query.Ref{attribute: %Ash.Resource.Attribute{name: name}} ->
+        Info.value_translatable_field?(resource, name)
+
+      %Ash.Query.Ref{attribute: name} when is_atom(name) ->
+        Info.value_translatable_field?(resource, name)
+
+      _ ->
+        false
+    end)
+  end
 
   # Conn resolved SOLELY via read_conn/2 — a :context blank tenant fails closed
   # :tenant_required (never the base database → no unscoped cross-tenant aggregate).

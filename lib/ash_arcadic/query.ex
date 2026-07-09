@@ -17,6 +17,7 @@ defmodule AshArcadic.Query do
     filters: [],
     sort: [],
     aggregates: [],
+    calculations: [],
     params: %{},
     internal?: false
   ]
@@ -33,6 +34,7 @@ defmodule AshArcadic.Query do
           filters: [String.t()],
           sort: [{atom(), :asc | :desc}],
           aggregates: [Ash.Query.Aggregate.t()],
+          calculations: [{Ash.Query.Calculation.t(), Ash.Expr.t()}],
           params: map(),
           internal?: boolean()
         }

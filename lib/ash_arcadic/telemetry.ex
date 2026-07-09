@@ -10,7 +10,7 @@ defmodule AshArcadic.Telemetry do
   @allowed_meta_keys ~w(resource multitenancy tenant? internal? stale? in_transaction?
                         properties? direction row_count batch_size group_count
                         destination_count depth result kinds aggregate_count
-                        traversal_aggregate? aggregate_kinds)a
+                        calculation_count traversal_aggregate? aggregate_kinds)a
 
   @spec allowed_meta_keys() :: [atom()]
   def allowed_meta_keys, do: @allowed_meta_keys
