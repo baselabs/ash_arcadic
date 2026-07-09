@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Expression calculations (Slice 7).** Ash expression calculations are first-class:
+  they **load** (computed in Elixir over the flat `RETURN n`, so sensitive fields stay
+  app-decrypted), and **filter-on-calc**, **sort-on-calc**, and raw-attribute
+  **filter-expansion** (`filter(res, a + b > 5)`) push down to Cypher via the new
+  `AshArcadic.Query.Expression` translator (WHERE / ORDER BY). Supported: arithmetic
+  (`+ - * /`, division forced float to match Ash), concat (`<>`), comparison, boolean,
+  `if`/`cond` (→ `CASE`), `is_nil`, `string_downcase`/`string_length`/`string_trim`/`round`,
+  and `contains`/`string_starts_with`/`string_ends_with`. A `sensitive` or non-stored field
+  in a calc expression **fails closed value-free on all paths** (the data layer holds only
+  ciphertext — use a module calc for a derived sensitive value); un-mapped operators/functions
+  (date/time, `fragment`, `type`) likewise fail closed value-free. Advertises the value-operator
+  `can?({:filter_expr, …})` set plus `:expression_calculation` / `:expression_calculation_sort`.
+  Module calculations and standalone `Ash.calculate` are unchanged.
 - **Filter-ops hardening (Slice 6).** Value-comparison filters on a `sensitive`
   (app-side-encrypted binary) field now fail closed value-free (`%UnsupportedFilter{}`)
   instead of silently returning `[]` — `sensitive` is the "do not filter" contract, with

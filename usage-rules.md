@@ -68,6 +68,41 @@ _An Ash DataLayer for ArcadeDB (native OpenCypher over HTTP)._
   contains(rel.field, "x"))` raises a `KeyError` inside Ash-core `scope_refs` (Ash 3.29.3),
   before AshArcadic sees it; use a flat filter or load-then-filter pending the upstream fix.
 
+## Calculations (Slice 7)
+
+- **Expression calculations are first-class — load, filter-on, and sort-on.** A
+  `calculate :full_name, :string, expr(first <> " " <> last)` loads, `filter(res,
+  full_name == "…")` and `sort(res, full_name: :asc)` push down, and raw compound
+  attribute expressions in a filter (`filter(res, a + b > 5)`) are expanded and pushed
+  down. Module calculations and standalone `Ash.calculate/2` are unchanged.
+- **Two compute paths, one supported set.** LOADED calcs compute in **Elixir** (Ash's
+  evaluator over the flat `RETURN n`, so sensitive fields stay app-decrypted upstream);
+  filter-on-calc, sort-on-calc, and raw filter-expansion translate to **Cypher** via the
+  `AshArcadic.Query.Expression` value translator (WHERE / ORDER BY only). The supported
+  expression set is identical across all three paths.
+- **Supported operators/functions:** arithmetic `+` `-` `*` `/`, concat `<>`, comparison
+  (`==` `!=` `>` `<` `>=` `<=`), boolean `and`/`or`/`not`, `if`/`cond` (→ Cypher `CASE`),
+  `is_nil`, `string_downcase` / `string_length` / `string_trim` / `round`, and
+  `contains` / `string_starts_with` / `string_ends_with`. Anything else (date/time
+  functions like `ago`/`now`, `fragment`, `type` coercions, relationship-path calcs)
+  fails closed value-free (`%UnsupportedFilter{}` naming the operator/field).
+- **Division is float, matching Ash.** `a / b` emits `toFloat(a) / b` so integer operands
+  divide like Ash (`7 / 2 == 3.5`), NOT ArcadeDB's integer truncation (`7 / 2 → 3`) — the
+  filtered set matches the loaded value.
+- **A `sensitive` or non-stored field in a calc expression fails closed value-free on ALL
+  paths** (load, filter, sort). The data layer only ever holds the STORED value, and a
+  `sensitive` field is app-side-encrypted ciphertext (AshCloak decrypts above the data
+  layer) — evaluating a calc over it is both wrong and a redaction-leak surface. For a
+  derived value over a sensitive field, use a **module calculation** (computed above the
+  data layer, post-decrypt).
+- **Field-policy interaction.** A calc referencing a field-policy-protected (non-`sensitive`)
+  field in a filter/sort inherits AshArcadic's flat-field-filter behavior — the data layer
+  has no actor at translate time, the same documented class as the `exists`-oracle (an
+  upstream Ash concern, not data-layer-fixable).
+- **Sort nil-placement fidelity.** `*_nils_first` / `*_nils_last` sort qualifiers map to the
+  base `ASC`/`DESC`; ArcadeDB's native nil placement applies (ASC → nulls last), so explicit
+  nil-ordering is not honored per-direction.
+
 ## Aggregates (Slice 3, Plan 1)
 
 - **Supported kinds:** `Ash.count / sum / avg / min / max / first / list / exists?` and
