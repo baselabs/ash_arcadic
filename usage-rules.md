@@ -117,9 +117,9 @@ _An Ash DataLayer for ArcadeDB (native OpenCypher over HTTP)._
   expression) — the load casts, the pushed filter/sort does not (a `type`-coercion non-goal;
   use the natural declared type or a module calc); (2) `round/1` at exact **negative
   half-integers** — Ash rounds half away from zero (`-2.5 → -3`), ArcadeDB half toward `+∞`
-  (`-2.5 → -2`); (3) **division by zero** — loading raises, the pushed filter yields ArcadeDB
-  `Infinity` (row included). For guaranteed parity on these edges, compute via a module
-  calculation.
+  (`-2.5 → -2`); (3) **division by zero** — loading returns a value-free error (the calc eval is
+  rescued), while the pushed filter yields ArcadeDB `Infinity` (row included). For guaranteed
+  parity on these edges, compute via a module calculation.
 
 ## Aggregates (Slice 3, Plan 1)
 
