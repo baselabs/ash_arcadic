@@ -154,4 +154,19 @@ defmodule AshArcadic.Query.ExpressionTest do
     ago = fn_expr(Ash.Query.Function.Ago, [1, :day])
     assert {:error, %UnsupportedFilter{operator: Ash.Query.Function.Ago}} = E.translate(ago, q())
   end
+
+  # Ash wraps EVERY expression-calculation body (and an explicit type/3 cast) in a Type coercion to
+  # the declared type — Ash.Resource.Calculation.expression/3 hands the calc-Ref clause a Type-topped
+  # tree. Unwrap and translate the inner (ArcadeDB is dynamically typed; the one type-sensitive op,
+  # Div→toFloat, is handled at its own clause). Without this, filter-on-expression-calc rejects.
+  test "type(expr, T, constraints) unwraps to its inner expression (drops the cast)" do
+    concat = %Ash.Query.Operator.Basic.Concat{left: ref(:first), right: ref(:last)}
+    typed = fn_expr(Ash.Query.Function.Type, [concat, Ash.Type.String, []])
+    assert {:ok, _q, "(n.first + n.last)"} = E.translate(typed, q())
+  end
+
+  test "TRIPWIRE: a Type cast over a sensitive Ref still fails closed value-free (inner guard re-applies)" do
+    typed = fn_expr(Ash.Query.Function.Type, [ref(:secret), Ash.Type.String, []])
+    assert {:error, %UnsupportedFilter{}} = E.translate(typed, q())
+  end
 end

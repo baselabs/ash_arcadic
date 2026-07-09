@@ -192,4 +192,44 @@ defmodule AshArcadic.Query.FilterTest do
                t(Ash.Query.filter(AshArcadic.Test.Basic, string_ends_with(name, age)))
     end
   end
+
+  describe "Slice-7: filter on expression calcs + raw compound filter-expansion" do
+    defp cq, do: %Query{resource: AshArcadic.Test.CalcPerson, params: %{}}
+    defp hydrated(%Ash.Query{filter: filter}), do: filter
+
+    test "a raw compound-left comparison (a + b > 5) translates via Expression, params-only" do
+      filter = hydrated(Ash.Query.filter(AshArcadic.Test.CalcPerson, a + b > 5))
+      {:ok, out, cypher} = Filter.translate(filter, cq())
+      assert cypher == "((n.a + n.b) > $param1)"
+      assert out.params == %{"param1" => 5}
+    end
+
+    test "compound-left with a literal in the left operand threads distinct params (no collision)" do
+      filter = hydrated(Ash.Query.filter(AshArcadic.Test.CalcPerson, a + 1 > 5))
+      {:ok, out, cypher} = Filter.translate(filter, cq())
+      assert cypher == "((n.a + $param1) > $param2)"
+      assert out.params == %{"param1" => 1, "param2" => 5}
+    end
+
+    test "a raw concat comparison translates" do
+      filter =
+        hydrated(Ash.Query.filter(AshArcadic.Test.CalcPerson, first <> last == "AdaLovelace"))
+
+      {:ok, _out, cypher} = Filter.translate(filter, cq())
+      assert cypher == "((n.first + n.last) = $param1)"
+    end
+
+    test "filter on an expression calc (full_name) expands + translates" do
+      filter = hydrated(Ash.Query.filter(AshArcadic.Test.CalcPerson, full_name == "Ada Lovelace"))
+      {:ok, _out, cypher} = Filter.translate(filter, cq())
+      assert cypher =~ "n.first"
+      assert cypher =~ "n.last"
+    end
+
+    test "TRIPWIRE: filter on a calc over a sensitive field fails closed value-free" do
+      filter = hydrated(Ash.Query.filter(AshArcadic.Test.CalcPerson, secret_calc == "x"))
+
+      assert {:error, %UnsupportedFilter{}} = Filter.translate(filter, cq())
+    end
+  end
 end

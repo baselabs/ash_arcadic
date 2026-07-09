@@ -14,11 +14,14 @@ defmodule AshArcadic.Query.Filter do
   ## Supported
   eq · not_eq · gt · lt · gte · lte · in · is_nil · and · or · not ·
   contains · string_starts_with · string_ends_with · literal `true`/`false`
-  (Ash lowers a no-match `exists(rel, …)` to a bare boolean)
+  (Ash lowers a no-match `exists(rel, …)` to a bare boolean) · a filter ON an
+  EXPRESSION calculation Ref (expanded to Cypher via `AshArcadic.Query.Expression`) ·
+  a raw compound value-expression comparison (`a + b > 5`, `first <> last == "x"`)
 
   ## Not supported (→ UnsupportedFilter)
-  like · ilike · attribute-to-attribute comparisons · a filter ON an aggregate or
-  calculation Ref (a COMPUTED value, not a stored property — Finding A)
+  like · ilike · attribute-to-attribute comparisons · a filter ON an AGGREGATE Ref
+  or a MODULE (non-expression) calculation Ref (a COMPUTED value not Cypher-expressible
+  — Finding A)
 
   ArcadeDB `CONTAINS`/`STARTS WITH`/`ENDS WITH` are case-SENSITIVE; a `:ci_string`
   attribute's case-insensitive semantics are not preserved (usage-rules).
@@ -31,6 +34,16 @@ defmodule AshArcadic.Query.Filter do
   alias AshArcadic.Errors.UnsupportedFilter
   alias AshArcadic.Identifier
   alias AshArcadic.Query
+  alias AshArcadic.Query.Expression
+
+  @comparison_ops %{
+    Ash.Query.Operator.Eq => "=",
+    Ash.Query.Operator.NotEq => "<>",
+    Ash.Query.Operator.GreaterThan => ">",
+    Ash.Query.Operator.LessThan => "<",
+    Ash.Query.Operator.GreaterThanOrEqual => ">=",
+    Ash.Query.Operator.LessThanOrEqual => "<="
+  }
 
   @doc "Translate an Ash filter expression into a Cypher WHERE fragment + params."
   @spec translate(term(), Query.t()) :: {:ok, Query.t(), String.t()} | {:error, term()}
@@ -66,16 +79,35 @@ defmodule AshArcadic.Query.Filter do
   defp do_translate(true, query), do: {:ok, query, "true"}
   defp do_translate(false, query), do: {:ok, query, "false"}
 
-  # Finding A: an aggregate/calculation Ref is a COMPUTED value, not a stored ArcadeDB property —
-  # emitting `n.<name> > $p` silently matches nothing ({:ok, []}, a wrong result). Reject structurally,
-  # BEFORE the operator clauses, mirroring the Ref-to-Ref guard's shape + unsupported_shape/1 derivation.
-  # The first clause covers operator forms (`post_count > 1` carries `left:`); the second covers function
-  # forms (`contains(some_calc, …)` carries `arguments:`). Value-free (names the aggregate + operator).
-  defp do_translate(%_op{left: %Ash.Query.Ref{attribute: %agg_mod{}}} = expr, _query)
-       when agg_mod in [Ash.Query.Aggregate, Ash.Query.Calculation] do
+  # Finding A (relaxed, Slice 7): an EXPRESSION calc Ref on the left of a comparison → expand and
+  # translate via Expression (which re-classifies the expansion: a nested aggregate/module-calc Ref
+  # rejects). A MODULE calc Ref → reject value-free (not Cypher-expressible).
+  defp do_translate(
+         %mod{
+           left: %Ash.Query.Ref{attribute: %Ash.Query.Calculation{module: cm}} = ref,
+           right: right
+         } =
+           expr,
+         query
+       )
+       when is_map_key(@comparison_ops, mod) do
+    if Ash.Resource.Calculation.has_expression?(cm) do
+      compound_compare(query, ref, right, Map.fetch!(@comparison_ops, mod))
+    else
+      # Reject the ORIGINAL expr (a variable-module `%mod{}` cannot be RE-constructed — Elixir requires
+      # a compile-time struct name); unsupported_shape/1 derives {operator, calc-name} value-free.
+      reject_unsupported(expr)
+    end
+  end
+
+  # An aggregate Ref on the left → reject value-free (computed, not a stored property — Finding A).
+  defp do_translate(%_op{left: %Ash.Query.Ref{attribute: %Ash.Query.Aggregate{}}} = expr, _query) do
     reject_unsupported(expr)
   end
 
+  # Function form (`contains(some_calc, …)` carries `arguments:`) with an aggregate/calc Ref first arg
+  # is a COMPUTED value, not a stored ArcadeDB property — reject structurally BEFORE the function
+  # clauses, mirroring the Ref-to-Ref guard's shape + unsupported_shape/1 derivation. Value-free.
   defp do_translate(%_op{arguments: [%Ash.Query.Ref{attribute: %agg_mod{}} | _]} = expr, _query)
        when agg_mod in [Ash.Query.Aggregate, Ash.Query.Calculation] do
     reject_unsupported(expr)
@@ -227,9 +259,26 @@ defmodule AshArcadic.Query.Filter do
     string_op(query, attr, "ENDS WITH", value, Ash.Query.Function.StringEndsWith)
   end
 
+  # A raw compound-left comparison (a + b > 5, first <> last == "x", a calc-expanded expression) →
+  # translate both operands via Expression, emit (<left>) OP (<right>). Placed AFTER the plain-Ref
+  # fast paths and the Ref-to-Ref guard, so only NON-plain-Ref (value-expression) lefts reach here.
+  defp do_translate(%mod{left: left, right: right}, query)
+       when is_map_key(@comparison_ops, mod) do
+    compound_compare(query, left, right, Map.fetch!(@comparison_ops, mod))
+  end
+
   # Catch-all: unsupported. Surface operator/function module + field only.
   defp do_translate(expr, _query) do
     reject_unsupported(expr)
+  end
+
+  # Both operands through Expression (which handles Ref → guarded n.field, calc-Ref → expand,
+  # value-expression → recurse, literal → bound $param). An unsupported node fails closed value-free.
+  defp compound_compare(query, left, right, cypher_op) do
+    with {:ok, query, lc} <- Expression.translate(left, query),
+         {:ok, query, rc} <- Expression.translate(right, query) do
+      {:ok, query, "(#{lc} #{cypher_op} #{rc})"}
+    end
   end
 
   defp binary_op(query, attr, cypher_op, value, operator) do
@@ -293,8 +342,7 @@ defmodule AshArcadic.Query.Filter do
   defp filterable_field?(%AshArcadic.Query{resource: resource}, attr)
        when is_atom(resource) and not is_nil(resource) do
     if Ash.Resource.Info.resource?(resource) do
-      name = attr_name(attr)
-      Info.stored_field?(resource, name) and name not in Info.sensitive(resource)
+      Info.value_translatable_field?(resource, attr_name(attr))
     else
       true
     end

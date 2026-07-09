@@ -59,7 +59,7 @@ defmodule AshArcadic.DataLayer.CanTest do
     refute DL.can?(AshArcadic.Test.Basic, {:sort, :decimal})
   end
 
-  test "filter_expr: supported operators + string-match + boolean/not true; unknown false" do
+  test "filter_expr: supported operators + string-match + boolean/not + calc value-ops true; unknown false" do
     for s <- [
           %Ash.Query.Operator.Eq{},
           %Ash.Query.Operator.NotEq{},
@@ -73,13 +73,25 @@ defmodule AshArcadic.DataLayer.CanTest do
           %Ash.Query.Function.StringStartsWith{},
           %Ash.Query.Function.StringEndsWith{},
           %Ash.Query.BooleanExpression{op: :and},
-          %Ash.Query.Not{}
+          %Ash.Query.Not{},
+          %Ash.Query.Operator.Basic.Plus{},
+          %Ash.Query.Operator.Basic.Minus{},
+          %Ash.Query.Operator.Basic.Times{},
+          %Ash.Query.Operator.Basic.Div{},
+          %Ash.Query.Operator.Basic.Concat{},
+          %Ash.Query.Function.If{},
+          %Ash.Query.Function.IsNil{},
+          %Ash.Query.Function.StringDowncase{},
+          %Ash.Query.Function.StringLength{},
+          %Ash.Query.Function.StringTrim{},
+          %Ash.Query.Function.Round{}
         ] do
       assert DL.can?(AshArcadic.Test.Basic, {:filter_expr, s}),
              "expected can?({:filter_expr, #{inspect(s.__struct__)}})"
     end
 
-    refute DL.can?(AshArcadic.Test.Basic, {:filter_expr, %Ash.Query.Function.If{}})
+    # A date/time function stays unsupported (non-goal — ISO8601 storage; §9).
+    refute DL.can?(AshArcadic.Test.Basic, {:filter_expr, %Ash.Query.Function.Ago{}})
   end
 
   test "filter_relationship: true for STANDARD rels (any type), false for MANUAL Traverse rels (V1 fail-closed)" do

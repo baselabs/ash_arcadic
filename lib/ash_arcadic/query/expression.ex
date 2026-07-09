@@ -142,6 +142,15 @@ defmodule AshArcadic.Query.Expression do
     with {:ok, q, c} <- translate(inner, query), do: {:ok, q, "(#{c} IS NULL)"}
   end
 
+  # type(expr, T, constraints) — Ash wraps EVERY expression calculation's body (and an explicit
+  # `type/3` cast) in a Type coercion to the declared type; `Ash.Resource.Calculation.expression/3`
+  # therefore hands the calc-Ref clause a Type-topped tree, not the bare expression. ArcadeDB is
+  # dynamically typed and the inner translation already yields the correct runtime scalar (Div forces
+  # toFloat; +/-/* stay numeric; concat stays string), so translate the inner expression and DROP the
+  # cast. Value-free on failure — the inner recurse re-applies every Ref/aggregate/sensitive guard.
+  def translate(%Ash.Query.Function.Type{arguments: [inner | _]}, query),
+    do: translate(inner, query)
+
   # Single-argument string/math functions with a 1:1 ArcadeDB mapping.
   def translate(%mod{arguments: [inner]}, query) when is_map_key(@unary_fns, mod) do
     with {:ok, q, c} <- translate(inner, query),

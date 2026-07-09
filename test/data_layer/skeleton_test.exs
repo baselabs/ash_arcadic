@@ -53,6 +53,16 @@ defmodule AshArcadic.DataLayer.SkeletonTest do
     refute AshArcadic.DataLayer.can?(AshArcadic.Test.Basic, {:query_aggregate, :custom})
     refute AshArcadic.DataLayer.can?(AshArcadic.Test.Basic, {:lateral_join, []})
 
+    assert AshArcadic.DataLayer.can?(
+             AshArcadic.Test.Basic,
+             {:filter_expr, %Ash.Query.Operator.Basic.Plus{}}
+           )
+
+    assert AshArcadic.DataLayer.can?(
+             AshArcadic.Test.Basic,
+             {:filter_expr, %Ash.Query.Operator.Basic.Concat{}}
+           )
+
     # Slice 5: standard (attribute-FK) relationships — filter_relationship enabled for standard
     # rels (has_many/has_one manual: nil; belongs_to/m2m have no :manual key); manual Traverse rels
     # stay false (fail-closed reject, V1).

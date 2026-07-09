@@ -171,6 +171,22 @@ defmodule AshArcadic.DataLayer do
   def can?(_, {:filter_expr, %Ash.Query.Function.StringEndsWith{}}), do: true
   def can?(_, {:filter_expr, %Ash.Query.BooleanExpression{}}), do: true
   def can?(_, {:filter_expr, %Ash.Query.Not{}}), do: true
+
+  # Slice 7: value-expression operators/functions the Query.Expression translator emits — advertised
+  # so a comparison over an arithmetic/concat/if/calc-expanded expression HYDRATES (else Ash refuses
+  # the predicate upstream and it never reaches Filter.translate). Contains/StringStartsWith/
+  # StringEndsWith are already advertised above.
+  def can?(_, {:filter_expr, %Ash.Query.Operator.Basic.Plus{}}), do: true
+  def can?(_, {:filter_expr, %Ash.Query.Operator.Basic.Minus{}}), do: true
+  def can?(_, {:filter_expr, %Ash.Query.Operator.Basic.Times{}}), do: true
+  def can?(_, {:filter_expr, %Ash.Query.Operator.Basic.Div{}}), do: true
+  def can?(_, {:filter_expr, %Ash.Query.Operator.Basic.Concat{}}), do: true
+  def can?(_, {:filter_expr, %Ash.Query.Function.If{}}), do: true
+  def can?(_, {:filter_expr, %Ash.Query.Function.IsNil{}}), do: true
+  def can?(_, {:filter_expr, %Ash.Query.Function.StringDowncase{}}), do: true
+  def can?(_, {:filter_expr, %Ash.Query.Function.StringLength{}}), do: true
+  def can?(_, {:filter_expr, %Ash.Query.Function.StringTrim{}}), do: true
+  def can?(_, {:filter_expr, %Ash.Query.Function.Round{}}), do: true
   def can?(_, {:filter_expr, _}), do: false
   # Query aggregates (Slice 3) — Ash.count/sum/aggregate route to run_aggregate_query/3,
   # gated per kind here. {:aggregate,_} (inline field loading) and {:aggregate_relationship,_}
