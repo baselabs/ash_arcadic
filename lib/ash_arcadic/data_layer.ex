@@ -560,9 +560,18 @@ defmodule AshArcadic.DataLayer do
   defp attach_calculations(records, calcs, resource) do
     domain = Ash.Resource.Info.domain(resource)
 
+    # Hydrate each calc's expression ONCE up front — hydration is loop-invariant (depends only on
+    # expression + resource, not the record), so hoisting it out of the per-record loop turns an
+    # O(records × calcs) hydration into O(calcs).
+    with {:ok, hydrated_calcs} <- hydrate_calcs(calcs, resource) do
+      reduce_records(records, hydrated_calcs, resource, domain)
+    end
+  end
+
+  defp reduce_records(records, hydrated_calcs, resource, domain) do
     records
     |> Enum.reduce_while({:ok, []}, fn record, {:ok, acc} ->
-      case compute_calcs(record, calcs, resource, domain) do
+      case compute_calcs(record, hydrated_calcs, resource, domain) do
         {:ok, record} -> {:cont, {:ok, [record | acc]}}
         {:error, _} = err -> {:halt, err}
       end
@@ -573,16 +582,35 @@ defmodule AshArcadic.DataLayer do
     end
   end
 
-  defp compute_calcs(record, calcs, resource, domain) do
-    Enum.reduce_while(calcs, {:ok, record}, fn {calc, expression}, {:ok, record} ->
-      case eval_calc(record, calc, expression, resource, domain) do
+  # Hydrate every calc expression once against the resource. Fail closed value-free on a hydration
+  # error or raise (Rule 4). `Ash.Filter.hydrate_refs/2` is a compile-time-ish resolution, but rescue
+  # anyway so no exception escapes the value-free wrapper.
+  defp hydrate_calcs(calcs, resource) do
+    calcs
+    |> Enum.reduce_while({:ok, []}, fn {calc, expression}, {:ok, acc} ->
+      case Ash.Filter.hydrate_refs(expression, %{resource: resource, public?: false}) do
+        {:ok, hydrated} -> {:cont, {:ok, [{calc, hydrated} | acc]}}
+        {:error, error} -> {:halt, {:error, calc_error(error)}}
+      end
+    end)
+    |> case do
+      {:ok, rev} -> {:ok, Enum.reverse(rev)}
+      {:error, _} = err -> err
+    end
+  rescue
+    error -> {:error, calc_error(error)}
+  end
+
+  defp compute_calcs(record, hydrated_calcs, resource, domain) do
+    Enum.reduce_while(hydrated_calcs, {:ok, record}, fn {calc, hydrated}, {:ok, record} ->
+      case eval_hydrated_calc(record, calc, hydrated, resource, domain) do
         {:ok, value} -> {:cont, {:ok, put_calc(record, calc, value)}}
         {:error, _} = err -> {:halt, err}
       end
     end)
   end
 
-  # Hydrate the calc expression against the resource, then eval over the record.
+  # Eval a pre-hydrated calc over one record.
   # Returns {:ok, value} | {:error, %QueryFailed{}} (value-free); :unknown → {:ok, nil} (ETS parity).
   # Ash's runtime eval calls Elixir primitives directly (String.*, arithmetic) with no try/rescue, so
   # a RAISE (ArithmeticError on a/0, an argument error over raw non-sensitive :binary bytes, a
@@ -590,15 +618,6 @@ defmodule AshArcadic.DataLayer do
   # carry the offending value in its message (Rule 4; `project_redaction_fail_path_exception_leak`).
   # Rescue to a value-free error — `calc_error/1`'s `redact_db_error/1` maps any non-Arcadic error to
   # the fixed "ArcadeDB error" reason, so the raised message never reaches Ash/logs.
-  defp eval_calc(record, calc, expression, resource, domain) do
-    case Ash.Filter.hydrate_refs(expression, %{resource: resource, public?: false}) do
-      {:ok, hydrated} -> eval_hydrated_calc(record, calc, hydrated, resource, domain)
-      {:error, error} -> {:error, calc_error(error)}
-    end
-  rescue
-    error -> {:error, calc_error(error)}
-  end
-
   defp eval_hydrated_calc(record, calc, hydrated, resource, domain) do
     ctx = calc.context || %{}
 
@@ -613,6 +632,8 @@ defmodule AshArcadic.DataLayer do
       :unknown -> {:ok, nil}
       {:error, error} -> {:error, calc_error(error)}
     end
+  rescue
+    error -> {:error, calc_error(error)}
   end
 
   # Attach per Ash's re-read contract (attach_fields): .load → direct field; else → record.calculations[name].
