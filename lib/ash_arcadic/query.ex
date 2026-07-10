@@ -16,6 +16,8 @@ defmodule AshArcadic.Query do
     :offset,
     filters: [],
     sort: [],
+    distinct: [],
+    distinct_sort: [],
     aggregates: [],
     calculations: [],
     params: %{},
@@ -33,6 +35,8 @@ defmodule AshArcadic.Query do
           offset: non_neg_integer() | nil,
           filters: [String.t()],
           sort: [{atom(), :asc | :desc} | {:expr, String.t(), atom()}],
+          distinct: [{atom() | struct(), atom()}],
+          distinct_sort: [{atom() | struct(), atom()}],
           aggregates: [Ash.Query.Aggregate.t()],
           calculations: [{Ash.Query.Calculation.t(), Ash.Expr.t()}],
           params: map(),
@@ -62,14 +66,44 @@ defmodule AshArcadic.Query do
     {where_parts, query} = build_where(query)
 
     parts =
-      ["MATCH (n:#{label})"] ++
-        build_where_clause(where_parts) ++
-        ["RETURN n"] ++
-        build_order_by(query.sort) ++
-        build_skip(query.offset) ++
-        build_limit(query.limit)
+      if query.distinct == [] do
+        ["MATCH (n:#{label})"] ++
+          build_where_clause(where_parts) ++
+          ["RETURN n"] ++
+          build_order_by(query.sort) ++
+          build_skip(query.offset) ++
+          build_limit(query.limit)
+      else
+        build_distinct_parts(query, label, where_parts)
+      end
 
     {Enum.join(parts, " "), query.params}
+  end
+
+  # DISTINCT-ON a field subset keeping whole vertices (Ash `distinct` is always DISTINCT-ON, never
+  # DISTINCT-*): group by the distinct fields, keep one representative vertex per group. The inner
+  # `WITH n ORDER BY <distinct_sort ‖ distinct>` picks WHICH vertex survives `collect(n)[0]`; the outer
+  # `ORDER BY/SKIP/LIMIT` order the deduped result (collect does NOT preserve the pre-WITH order, so the
+  # outer sort/paging MUST come after the collect). Probe-confirmed shape (scratchpad/probe_combinations2).
+  defp build_distinct_parts(query, label, where_parts) do
+    with_keys =
+      query.distinct
+      |> Enum.with_index()
+      |> Enum.map(fn {{field, _dir}, i} ->
+        "n.#{AshArcadic.Identifier.validate!(field)} AS __d#{i}"
+      end)
+
+    rep_order = if query.distinct_sort == [], do: query.distinct, else: query.distinct_sort
+
+    ["MATCH (n:#{label})"] ++
+      build_where_clause(where_parts) ++
+      ["WITH n"] ++
+      build_order_by(rep_order) ++
+      ["WITH " <> Enum.join(with_keys ++ ["collect(n)[0] AS n"], ", ")] ++
+      ["RETURN n"] ++
+      build_order_by(query.sort) ++
+      build_skip(query.offset) ++
+      build_limit(query.limit)
   end
 
   defp next_param_key(params, n) do

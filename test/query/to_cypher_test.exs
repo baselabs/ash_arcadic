@@ -83,4 +83,57 @@ defmodule AshArcadic.Query.ToCypherTest do
     err = assert_raise AshArcadic.Errors.UnsupportedFilter, fn -> Query.to_cypher(q) end
     refute Exception.message(err) =~ "1.00"
   end
+
+  test "distinct on a subset renders the DISTINCT-ON collect-group form, outer ORDER BY after the collect" do
+    q = %Query{
+      resource: AshArcadic.Test.Basic,
+      label: :Person,
+      distinct: [{:name, :asc}],
+      sort: [{:age, :desc}],
+      limit: 10
+    }
+
+    {cypher, params} = Query.to_cypher(q)
+
+    assert cypher ==
+             "MATCH (n:Person) WITH n ORDER BY n.name ASC " <>
+               "WITH n.name AS __d0, collect(n)[0] AS n " <>
+               "RETURN n ORDER BY n.age DESC LIMIT 10"
+
+    assert params == %{}
+  end
+
+  test "distinct honors distinct_sort for representative selection over the distinct-field order" do
+    q = %Query{
+      resource: AshArcadic.Test.Basic,
+      label: :Person,
+      distinct: [{:name, :asc}, {:age, :asc}],
+      distinct_sort: [{:age, :desc}]
+    }
+
+    {cypher, _params} = Query.to_cypher(q)
+
+    assert cypher ==
+             "MATCH (n:Person) WITH n ORDER BY n.age DESC " <>
+               "WITH n.name AS __d0, n.age AS __d1, collect(n)[0] AS n RETURN n"
+  end
+
+  test "distinct composes with a WHERE clause (filter renders before the WITH)" do
+    filter = Ash.Filter.parse!(AshArcadic.Test.Basic, name: "Ann")
+
+    q = %Query{
+      resource: AshArcadic.Test.Basic,
+      label: :Person,
+      expression: filter,
+      distinct: [{:name, :asc}]
+    }
+
+    {cypher, params} = Query.to_cypher(q)
+
+    assert cypher ==
+             "MATCH (n:Person) WHERE n.name = $param1 WITH n ORDER BY n.name ASC " <>
+               "WITH n.name AS __d0, collect(n)[0] AS n RETURN n"
+
+    assert params == %{"param1" => "Ann"}
+  end
 end
