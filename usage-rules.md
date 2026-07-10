@@ -68,6 +68,30 @@ _An Ash DataLayer for ArcadeDB (native OpenCypher over HTTP)._
   contains(rel.field, "x"))` raises a `KeyError` inside Ash-core `scope_refs` (Ash 3.29.3),
   before AshArcadic sees it; use a flat filter or load-then-filter pending the upstream fix.
 
+## Distinct (Slice 8, Plan 1)
+
+- **`distinct`/`distinct_sort` push down to native Cypher.** `Ash.Query.distinct(res, [:field, ...])`
+  compiles to a DISTINCT-ON-subset render (`WITH n.<f> AS __d0, ..., collect(n)[0] AS n RETURN n`) —
+  one whole vertex per distinct group, over stored, non-`sensitive` fields. Outer `sort`/`limit`/
+  `offset` apply **after** the dedup.
+- **Representative-row selection is via `distinct_sort`, else distinct-field order.**
+  `Ash.Query.distinct_sort(res, [...])` orders each group before `collect(...)[0]` picks the
+  representative; with no `distinct_sort`, the distinct fields' own order is used.
+- **Dedup is per-tenant** under both multitenancy strategies (`:attribute` scoped by the
+  discriminator in the shared database; `:context` physically isolated per-tenant database).
+- **Fails closed value-free (`QueryFailed`, naming only the field)** on: a non-stored
+  (`skip`-ped/computed) distinct field; a `sensitive` distinct field (random-IV ciphertext
+  never dedups equal plaintext); a calculation or relationship-path distinct entry; and any
+  sort direction outside Ash's six qualifiers
+  (`:asc`/`:desc`/`:asc_nils_first`/`:asc_nils_last`/`:desc_nils_first`/`:desc_nils_last`) —
+  `distinct_sort` reaches the data layer with no upstream validation, so the data layer rejects
+  it itself. A `:binary`/`:decimal` field in the distinct list is not rejected by this data
+  layer's guard (dedup is equality), but Ash core rejects it upstream (`UnsortableField`)
+  before it reaches the data layer.
+- **`distinct_sort` additionally rejects `:binary`/`:decimal` storage** (base64/lexicographic order
+  ≠ value order, so the "first" row after ordering would be the wrong representative) — the same
+  `can?({:sort, storage})` decision the record sort path already makes.
+
 ## Calculations (Slice 7)
 
 - **Expression calculations are first-class — load, filter-on, and sort-on.** A
