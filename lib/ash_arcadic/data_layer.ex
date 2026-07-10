@@ -20,6 +20,7 @@ defmodule AshArcadic.DataLayer do
   """
 
   alias Ash.Actions.Helpers.Bulk, as: BulkHelpers
+  alias Ash.Actions.Sort
   alias Ash.Error.Changes.StaleRecord
   alias AshArcadic.Cast
   alias AshArcadic.DataLayer.Info
@@ -27,6 +28,7 @@ defmodule AshArcadic.DataLayer do
   alias AshArcadic.Errors.QueryFailed
   alias AshArcadic.Errors.UnsupportedFilter
   alias AshArcadic.Errors.UpdateFailed
+  alias AshArcadic.Query.Combination
   alias AshArcadic.Query.Expression
   alias AshArcadic.Query.Filter
   alias AshArcadic.Telemetry
@@ -566,6 +568,41 @@ defmodule AshArcadic.DataLayer do
     end)
   end
 
+  # Aggregates/calculations OVER a combination are not supported this slice — fail closed value-free
+  # rather than silently drop them. Ash runs add_aggregates/add_calculations on the combined
+  # data_layer_query (deps/ash read.ex:1781-1789), so a combination read that loads a relationship
+  # aggregate or a calculation reaches here with both set; the plain combination clause below returns
+  # decode_records WITHOUT attach_computed, which would silently omit the loaded aggregate/calc.
+  defp do_run_query(%AshArcadic.Query{combination_of: [_ | _], aggregates: [_ | _]}, _resource) do
+    {:error,
+     QueryFailed.exception(
+       query: "ArcadeDB combination query",
+       reason: "aggregates over a combination are not supported"
+     )}
+  end
+
+  defp do_run_query(%AshArcadic.Query{combination_of: [_ | _], calculations: [_ | _]}, _resource) do
+    {:error,
+     QueryFailed.exception(
+       query: "ArcadeDB combination query",
+       reason: "calculations over a combination are not supported"
+     )}
+  end
+
+  defp do_run_query(%AshArcadic.Query{combination_of: [_ | _]} = query, resource) do
+    case read_conn(query, resource) do
+      {:ok, conn} ->
+        run_combination(conn, query, resource)
+
+      {:error, :tenant_required} ->
+        {:error,
+         QueryFailed.exception(
+           query: "ArcadeDB read query",
+           reason: "multitenancy tenant required for :context read"
+         )}
+    end
+  end
+
   defp do_run_query(%AshArcadic.Query{aggregates: aggs} = query, resource) do
     case read_conn(query, resource) do
       {:ok, conn} ->
@@ -592,6 +629,154 @@ defmodule AshArcadic.DataLayer do
            reason: "multitenancy tenant required for :context read"
          )}
     end
+  end
+
+  # Native (all union-family) → one CALL{UNION} statement via to_cypher. In-memory (any intersect/except)
+  # → run each branch, PK-fold, apply outer modifiers in Elixir. combination_unsupported/2 fails closed
+  # value-free on shapes Ash can construct but this slice cannot render, so nothing is silently dropped.
+  defp run_combination(conn, query, resource) do
+    native? = Combination.native?(query.combination_of)
+
+    case combination_unsupported(query, native?) do
+      nil ->
+        if native?,
+          do: run_native_combination(conn, query, resource),
+          else: run_inmemory_combination(conn, query, resource)
+
+      reason ->
+        {:error, QueryFailed.exception(query: "ArcadeDB combination query", reason: reason)}
+    end
+  end
+
+  # Fail closed value-free on combination shapes this slice does not support (Ash CAN construct them —
+  # combination_queries applies per-branch limit/offset/sort/calculations, deps/ash query.ex:4607-4621 —
+  # and the whole-vertex `MATCH (n) RETURN n` render would SILENTLY drop them). Per-branch calculations and
+  # per-branch paging are rejected on BOTH paths (the render ignores them / native-vs-in-memory diverge). An
+  # expr-calc outer sort and a lazy outer :expression are rejected ONLY on the in-memory path — the native
+  # render handles both (order_fragment / build_where), but the in-memory path passes query.sort to
+  # Ash.Actions.Sort.runtime_sort (which FunctionClauseErrors on a {:expr,_,_} 3-tuple, value-leaking the
+  # record list, sort.ex:117,123) and never consults query.expression. All reasons are fixed literals.
+  defp combination_unsupported(query, native?) do
+    cond do
+      Enum.any?(query.combination_of, fn {_type, branch} -> branch.calculations != [] end) ->
+        "calculations on a combination branch are not supported"
+
+      Enum.any?(query.combination_of, fn {_type, branch} ->
+        branch.limit != nil or branch.offset != nil
+      end) ->
+        "per-branch limit/offset on a combination is not supported"
+
+      not native? and Enum.any?(query.sort, &match?({:expr, _, _}, &1)) ->
+        "expression-calculation sort on an intersect/except combination is not supported"
+
+      not native? and not is_nil(query.expression) ->
+        "a lazy filter expression on an intersect/except combination is not supported"
+
+      true ->
+        nil
+    end
+  end
+
+  defp run_native_combination(conn, query, resource) do
+    {cypher, params} = AshArcadic.Query.to_cypher(query)
+
+    case Arcadic.query(conn, cypher, params) do
+      {:ok, rows} ->
+        {:ok, decode_records(resource, rows)}
+
+      {:error, error} ->
+        {:error,
+         QueryFailed.exception(
+           query: "ArcadeDB combination query",
+           reason: redact_db_error(error)
+         )}
+    end
+  end
+
+  defp run_inmemory_combination(conn, query, resource) do
+    pk = Ash.Resource.Info.primary_key(resource)
+    domain = Ash.Resource.Info.domain(resource)
+
+    case reduce_branch_results(query.combination_of, conn, query, resource) do
+      {:ok, branch_results} ->
+        records = Combination.combine(branch_results, pk)
+        {:ok, apply_outer_modifiers(records, query, domain)}
+
+      {:error, _} = err ->
+        err
+    end
+  end
+
+  defp reduce_branch_results(combinations, conn, query, resource) do
+    combinations
+    |> Enum.reduce_while({:ok, []}, fn {type, branch}, {:ok, acc} ->
+      case run_branch(conn, branch, query, resource) do
+        {:ok, records} -> {:cont, {:ok, [{type, records} | acc]}}
+        {:error, _} = err -> {:halt, err}
+      end
+    end)
+    |> case do
+      {:ok, rev} -> {:ok, Enum.reverse(rev)}
+      {:error, _} = err -> err
+    end
+  end
+
+  # Push the OUTER filter into the branch so the combined set is outer-filtered. The set-algebra identity
+  # (A op B) ∩ F == (A∩F) op (B∩F) for op ∈ {union, union_all, intersect, except} holds for the SUPPORTED
+  # shape only — non-paged, same-resource, deterministic stored-field filters; per-branch-paged branches
+  # (where the identity fails) are rejected upstream by combination_unsupported/2. Re-key the branch's own
+  # $params so they never collide with the outer filter's $param<n> in this branch's single map.
+  defp run_branch(conn, branch, query, resource) do
+    {rk_filters, rk_params} = Combination.rekey_branch(branch.filters, branch.params, 0)
+
+    branch2 = %{
+      branch
+      | filters: rk_filters ++ query.filters,
+        params: Map.merge(rk_params, query.params)
+    }
+
+    {cypher, params} = AshArcadic.Query.to_cypher(branch2)
+
+    case Arcadic.query(conn, cypher, params) do
+      {:ok, rows} ->
+        {:ok, decode_records(resource, rows)}
+
+      {:error, error} ->
+        {:error,
+         QueryFailed.exception(
+           query: "ArcadeDB combination query",
+           reason: redact_db_error(error)
+         )}
+    end
+  end
+
+  # Outer sort/distinct via Ash's runtime helpers (ETS pattern, ets.ex:448-478 — note the module is
+  # Ash.Actions.Sort; Ash.Sort delegates only runtime_sort, NOT runtime_distinct), then offset/limit.
+  defp apply_outer_modifiers(records, query, domain) do
+    records
+    |> distinct_and_sort(query, domain)
+    |> apply_offset_limit(query.offset, query.limit)
+  end
+
+  defp distinct_and_sort(records, %{distinct: []} = query, domain),
+    do: Sort.runtime_sort(records, query.sort, domain: domain, rekey?: false)
+
+  defp distinct_and_sort(records, %{distinct_sort: []} = query, domain) do
+    records
+    |> Sort.runtime_sort(query.sort, domain: domain, rekey?: false)
+    |> Sort.runtime_distinct(query.distinct, domain: domain, rekey?: false)
+  end
+
+  defp distinct_and_sort(records, query, domain) do
+    records
+    |> Sort.runtime_sort(query.distinct_sort, domain: domain, rekey?: false)
+    |> Sort.runtime_distinct(query.distinct, domain: domain, rekey?: false)
+    |> Sort.runtime_sort(query.sort, domain: domain, rekey?: false)
+  end
+
+  defp apply_offset_limit(records, offset, limit) do
+    records = if offset, do: Enum.drop(records, offset), else: records
+    if limit, do: Enum.take(records, limit), else: records
   end
 
   # No stashed aggregates → records unchanged (Slice-1/2/3 parity).
