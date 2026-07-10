@@ -74,4 +74,8 @@ defmodule AshArcadic.TelemetryTest do
 
     assert AshArcadic.Telemetry.validate!(meta) == meta
   end
+
+  test "distinct? is on the value-free allowlist (read span metadata)" do
+    assert :distinct? in AshArcadic.Telemetry.allowed_meta_keys()
+  end
 end
