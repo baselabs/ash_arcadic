@@ -344,8 +344,12 @@ defmodule AshArcadic.DataLayer do
   # The exact qualifier set the render handles faithfully (Query.order_by_expr/order_dir clauses,
   # all six pinned by the D12 ORDER-BY test) — identical to Ash's parse_sort allowlist
   # (deps/ash sort.ex:161-168). Anything else falls into order_dir's `_ → ASC` catch-all → a
-  # silently wrong order, so both the sort and distinct entry guards clamp directions to this
-  # set. Matters most for distinct_sort: Ash.Query.distinct_sort/3 appends RAW entries (no
+  # silently wrong order, so the sort and distinct FIELD-ENTRY guards clamp directions to this
+  # set (the {name, direction} branch below; distinct/3 likewise). The expr-calc sort branch does
+  # NOT clamp — a bogus direction on a %Ash.Query.Calculation{} entry rides order_dir's ASC
+  # coercion; that render-catch-all path is not callback-reachable (parse_sort gates every entry's
+  # direction upstream) and is the pre-existing shared-helper behavior routed to Plan 2 (closeout
+  # N13). Matters most for distinct_sort: Ash.Query.distinct_sort/3 appends RAW entries (no
   # Sort.process → no upstream InvalidSortOrder, unlike sort/distinct — live-probed), so the
   # clamp is the only line of defense there; on sort/distinct it is defense-in-depth.
   @sort_directions [
