@@ -895,6 +895,69 @@ defmodule AshArcadic.DataLayer do
     end)
   end
 
+  @impl true
+  # Ash routes a combination_of query here (gated by can?(:combine) + can?({:combine, type})). For
+  # :context, fail closed unless every branch resolved to the SAME non-nil tenant database (physical
+  # isolation — a filter cannot scope :context). For :attribute, the tenant predicate is ALREADY in the
+  # combined query.filters (handle_multitenancy runs on the outer combination query →
+  # maybe_filter) and is applied by to_cypher / run_branch — the same posture as the flat
+  # :attribute read path, so NO per-branch injection here. run_query dispatches native vs in-memory. The
+  # combined query's outer filter/sort/distinct/limit/offset are applied by data_layer_query AFTER this
+  # returns.
+  def combination_of(combinations, resource, _domain) do
+    case combination_database(combinations, resource) do
+      {:ok, database} ->
+        {:ok,
+         %AshArcadic.Query{
+           resource: resource,
+           client: Info.client(resource),
+           label: Info.label(resource),
+           database: database,
+           combination_of: combinations
+         }}
+
+      {:error, reason} ->
+        {:error, QueryFailed.exception(query: "ArcadeDB combination", reason: reason)}
+    end
+  end
+
+  # :context — every branch must resolve to the SAME non-nil tenant database (set_tenant fired per
+  # branch in combination_queries); a blank tenant (nil database) or branches spanning databases fail
+  # closed value-free. Non-:context — carry the per-resource DSL default database (Info.database, nil →
+  # client-conn default), mirroring the flat read path (query_database/1); :attribute tenant scoping
+  # still rides query.filters, not the database.
+  defp combination_database(combinations, resource) do
+    if strategy(resource) == :context do
+      combinations
+      |> Enum.reduce_while({:ok, :unset}, &merge_branch_database/2)
+      |> case do
+        {:ok, :unset} -> {:ok, nil}
+        other -> other
+      end
+    else
+      {:ok, Info.database(resource)}
+    end
+  end
+
+  # reduce_while over the :context branches, folding each branch database into the running one. A blank
+  # (nil/"") database is a branch whose set_tenant never resolved a tenant → fail closed; a database that
+  # differs from the running one → branches span databases → fail closed. :unset seeds the first branch.
+  defp merge_branch_database({_type, branch}, {:ok, db}) do
+    case {branch.database, db} do
+      {blank, _} when blank in [nil, ""] ->
+        {:halt, {:error, "multitenancy tenant required for :context combination"}}
+
+      {d, :unset} ->
+        {:cont, {:ok, d}}
+
+      {d, d} ->
+        {:cont, {:ok, d}}
+
+      {_d, _other} ->
+        {:halt, {:error, "combination branches span multiple tenant databases"}}
+    end
+  end
+
   # Conn resolved SOLELY via read_conn/2 — a :context blank tenant fails closed
   # :tenant_required (never the base database → no unscoped cross-tenant aggregate).
   # :attribute carries Ash's injected tenant filter in query.filters. One statement per
