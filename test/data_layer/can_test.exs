@@ -119,6 +119,17 @@ defmodule AshArcadic.DataLayer.CanTest do
     refute DL.can?(AshArcadic.Test.Basic, {:lateral_join, []})
   end
 
+  test "combinations advertised: :combine + every {:combine, type} incl :base; unknown type false" do
+    assert DL.can?(AshArcadic.Test.Basic, :combine)
+
+    for type <- [:base, :union, :union_all, :intersect, :except] do
+      assert DL.can?(AshArcadic.Test.Basic, {:combine, type}),
+             "expected can?({:combine, #{type}})"
+    end
+
+    refute DL.can?(AshArcadic.Test.Basic, {:combine, :bogus})
+  end
+
   test "filter_relationship fails closed on a policy-bearing destination (Slice-5 amendment)" do
     refute DL.can?(
              AshArcadic.Test.RelPost,

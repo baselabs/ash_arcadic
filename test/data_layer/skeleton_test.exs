@@ -42,6 +42,11 @@ defmodule AshArcadic.DataLayer.SkeletonTest do
     assert AshArcadic.DataLayer.can?(AshArcadic.Test.Basic, :traverse)
     assert AshArcadic.DataLayer.can?(AshArcadic.Test.Basic, :distinct)
     assert AshArcadic.DataLayer.can?(AshArcadic.Test.Basic, :distinct_sort)
+    assert AshArcadic.DataLayer.can?(AshArcadic.Test.Basic, :combine)
+    assert AshArcadic.DataLayer.can?(AshArcadic.Test.Basic, {:combine, :base})
+    assert AshArcadic.DataLayer.can?(AshArcadic.Test.Basic, {:combine, :union})
+    assert AshArcadic.DataLayer.can?(AshArcadic.Test.Basic, {:combine, :intersect})
+    refute AshArcadic.DataLayer.can?(AshArcadic.Test.Basic, {:combine, :bogus})
     assert AshArcadic.DataLayer.can?(AshArcadic.Test.Basic, {:query_aggregate, :count})
     assert AshArcadic.DataLayer.can?(AshArcadic.Test.Basic, {:query_aggregate, :sum})
     # Slice 4: relationship aggregates enabled; flat/unrelated inline aggregates REFUSED

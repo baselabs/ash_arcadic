@@ -154,6 +154,12 @@ defmodule AshArcadic.DataLayer do
   def can?(_, :changeset_filter), do: true
   def can?(_, :distinct), do: true
   def can?(_, :distinct_sort), do: true
+  def can?(_, :combine), do: true
+
+  def can?(_, {:combine, type}) when type in [:base, :union, :union_all, :intersect, :except],
+    do: true
+
+  def can?(_, {:combine, _}), do: false
   # Ash asks {:sort, Ash.Type.storage_type(type)}. Binary is base64 (not
   # byte-order-preserving); :decimal is an exact string (lexicographic) — sorting
   # either returns a silently wrong order, so reject → Ash.Error.Query.UnsortableField.
@@ -563,7 +569,10 @@ defmodule AshArcadic.DataLayer do
          aggregate_kinds: Enum.map(query.aggregates, & &1.kind),
          aggregate_count: length(query.aggregates),
          calculation_count: length(query.calculations),
-         distinct?: query.distinct != []
+         distinct?: query.distinct != [],
+         combination?: query.combination_of != [],
+         combination_types: Enum.map(query.combination_of, &elem(&1, 0)),
+         combination_strategy: combination_strategy(query.combination_of)
        }}
     end)
   end
@@ -2058,6 +2067,11 @@ defmodule AshArcadic.DataLayer do
   defp conn_error_reason(:transaction_begin_failed), do: "could not begin ArcadeDB transaction"
 
   defp strategy(resource), do: Ash.Resource.Info.multitenancy_strategy(resource)
+
+  defp combination_strategy([]), do: nil
+
+  defp combination_strategy(combos),
+    do: if(Combination.native?(combos), do: :native, else: :in_memory)
 
   @doc false
   # Maps an arcadic error to a value-free structural reason. We interpolate `reason`
