@@ -96,27 +96,48 @@ defmodule AshArcadic.Query.ToCypherTest do
 
     {cypher, params} = Query.to_cypher(q)
 
+    # With no distinct_sort, the representative order falls back to the QUERY SORT
+    # (Ash contract, deps/ash query.ex:4285: "If none is set, any sort applied to the
+    # query will be used") — never the distinct fields (a within-group no-op).
     assert cypher ==
-             "MATCH (n:Person) WITH n ORDER BY n.name ASC " <>
+             "MATCH (n:Person) WITH n ORDER BY n.age DESC " <>
                "WITH n.name AS __d0, collect(n)[0] AS n " <>
                "RETURN n ORDER BY n.age DESC SKIP 5 LIMIT 10"
 
     assert params == %{}
   end
 
-  test "distinct honors distinct_sort for representative selection over the distinct-field order" do
+  test "distinct honors distinct_sort for representative selection, taking priority over the query sort" do
     q = %Query{
       resource: AshArcadic.Test.Basic,
       label: :Person,
       distinct: [{:name, :asc}, {:age, :asc}],
-      distinct_sort: [{:age, :desc}]
+      distinct_sort: [{:age, :desc}],
+      sort: [{:name, :asc}]
     }
 
     {cypher, _params} = Query.to_cypher(q)
 
     assert cypher ==
              "MATCH (n:Person) WITH n ORDER BY n.age DESC " <>
-               "WITH n.name AS __d0, n.age AS __d1, collect(n)[0] AS n RETURN n"
+               "WITH n.name AS __d0, n.age AS __d1, collect(n)[0] AS n " <>
+               "RETURN n ORDER BY n.name ASC"
+  end
+
+  test "distinct with neither distinct_sort nor query sort elides the representative ORDER BY stage" do
+    # No order can select a representative (Ash promises none absent a sort) — the render
+    # drops the interposed `WITH n ORDER BY` entirely (the bare collect-group is the
+    # probe-confirmed spec §2 shape) instead of paying a no-op DB-side sort.
+    q = %Query{
+      resource: AshArcadic.Test.Basic,
+      label: :Person,
+      distinct: [{:name, :asc}]
+    }
+
+    {cypher, params} = Query.to_cypher(q)
+
+    assert cypher == "MATCH (n:Person) WITH n.name AS __d0, collect(n)[0] AS n RETURN n"
+    assert params == %{}
   end
 
   test "a struct distinct entry reaching the render raises a value-free ArgumentError (backstop)" do
@@ -147,7 +168,7 @@ defmodule AshArcadic.Query.ToCypherTest do
     {cypher, params} = Query.to_cypher(q)
 
     assert cypher ==
-             "MATCH (n:Person) WHERE n.name = $param1 WITH n ORDER BY n.name ASC " <>
+             "MATCH (n:Person) WHERE n.name = $param1 " <>
                "WITH n.name AS __d0, collect(n)[0] AS n RETURN n"
 
     assert params == %{"param1" => "Ann"}

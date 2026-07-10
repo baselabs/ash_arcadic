@@ -35,8 +35,8 @@ defmodule AshArcadic.Query do
           offset: non_neg_integer() | nil,
           filters: [String.t()],
           sort: [{atom(), :asc | :desc} | {:expr, String.t(), atom()}],
-          distinct: [{atom() | struct(), atom()}],
-          distinct_sort: [{atom() | struct(), atom()}],
+          distinct: [{atom(), atom()}],
+          distinct_sort: [{atom(), atom()}],
           aggregates: [Ash.Query.Aggregate.t()],
           calculations: [{Ash.Query.Calculation.t(), Ash.Expr.t()}],
           params: map(),
@@ -82,10 +82,31 @@ defmodule AshArcadic.Query do
 
   # DISTINCT-ON a field subset keeping whole vertices (Ash `distinct` is always DISTINCT-ON, never
   # DISTINCT-*): group by the distinct fields, keep one representative vertex per group. The inner
-  # `WITH n ORDER BY <distinct_sort ‖ distinct>` picks WHICH vertex survives `collect(n)[0]`; the outer
-  # `ORDER BY/SKIP/LIMIT` order the deduped result (collect does NOT preserve the pre-WITH order, so the
-  # outer sort/paging MUST come after the collect). Probe-confirmed shape.
+  # `WITH n ORDER BY <distinct_sort ‖ sort>` picks WHICH vertex survives `collect(n)[0]` — the
+  # fallback is the QUERY SORT per the Ash contract ("If none is set, any sort applied to the query
+  # will be used", deps/ash query.ex:4285; the ETS reference sorts then dedups), NEVER the distinct
+  # fields themselves (a within-group no-op → an engine-arbitrary representative). With neither, the
+  # stage is elided (Ash promises no particular representative; the bare collect-group is the
+  # probe-confirmed spec §2 shape). The outer `ORDER BY/SKIP/LIMIT` order the deduped result
+  # (collect does NOT preserve the pre-WITH order, so the outer sort/paging MUST come after it).
   defp build_distinct_parts(query, label, where_parts) do
+    ["MATCH (n:#{label})"] ++
+      build_where_clause(where_parts) ++
+      distinct_stage_parts(query) ++
+      ["RETURN n"] ++
+      build_order_by(query.sort) ++
+      build_skip(query.offset) ++
+      build_limit(query.limit)
+  end
+
+  @doc false
+  # The collect-group pipeline stages, shared with `AshArcadic.Aggregate` (an aggregate over a
+  # distinct query must fold the DEDUPED representatives — ETS-reference parity): the optional
+  # representative-order stage (`WITH n ORDER BY <distinct_sort ‖ sort>`, elided when both are
+  # empty) followed by the DISTINCT-ON collect stage. Distinct fields are identifier-revalidated
+  # here (Rule 1); the `__dN` aliases are compile-generated, never caller data.
+  @spec distinct_stage_parts(t()) :: [String.t()]
+  def distinct_stage_parts(%__MODULE__{} = query) do
     with_keys =
       query.distinct
       |> Enum.with_index()
@@ -93,17 +114,10 @@ defmodule AshArcadic.Query do
         "n.#{AshArcadic.Identifier.validate!(field)} AS __d#{i}"
       end)
 
-    rep_order = if query.distinct_sort == [], do: query.distinct, else: query.distinct_sort
+    rep_order = if query.distinct_sort == [], do: query.sort, else: query.distinct_sort
+    rep_stage = if rep_order == [], do: [], else: ["WITH n"] ++ build_order_by(rep_order)
 
-    ["MATCH (n:#{label})"] ++
-      build_where_clause(where_parts) ++
-      ["WITH n"] ++
-      build_order_by(rep_order) ++
-      ["WITH " <> Enum.join(with_keys ++ ["collect(n)[0] AS n"], ", ")] ++
-      ["RETURN n"] ++
-      build_order_by(query.sort) ++
-      build_skip(query.offset) ++
-      build_limit(query.limit)
+    rep_stage ++ ["WITH " <> Enum.join(with_keys ++ ["collect(n)[0] AS n"], ", ")]
   end
 
   defp next_param_key(params, n) do
