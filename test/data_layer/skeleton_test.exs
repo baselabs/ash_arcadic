@@ -40,6 +40,8 @@ defmodule AshArcadic.DataLayer.SkeletonTest do
     assert AshArcadic.DataLayer.can?(AshArcadic.Test.Basic, :read)
     assert AshArcadic.DataLayer.can?(AshArcadic.Test.Basic, :transact)
     assert AshArcadic.DataLayer.can?(AshArcadic.Test.Basic, :traverse)
+    assert AshArcadic.DataLayer.can?(AshArcadic.Test.Basic, :distinct)
+    assert AshArcadic.DataLayer.can?(AshArcadic.Test.Basic, :distinct_sort)
     assert AshArcadic.DataLayer.can?(AshArcadic.Test.Basic, {:query_aggregate, :count})
     assert AshArcadic.DataLayer.can?(AshArcadic.Test.Basic, {:query_aggregate, :sum})
     # Slice 4: relationship aggregates enabled; flat/unrelated inline aggregates REFUSED

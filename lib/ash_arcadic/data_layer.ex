@@ -150,6 +150,8 @@ defmodule AshArcadic.DataLayer do
   def can?(_, :multitenancy), do: true
   def can?(_, :composite_primary_key), do: true
   def can?(_, :changeset_filter), do: true
+  def can?(_, :distinct), do: true
+  def can?(_, :distinct_sort), do: true
   # Ash asks {:sort, Ash.Type.storage_type(type)}. Binary is base64 (not
   # byte-order-preserving); :decimal is an exact string (lexicographic) — sorting
   # either returns a silently wrong order, so reject → Ash.Error.Query.UnsortableField.
@@ -532,7 +534,8 @@ defmodule AshArcadic.DataLayer do
          traversal_aggregate?: query.aggregates != [],
          aggregate_kinds: Enum.map(query.aggregates, & &1.kind),
          aggregate_count: length(query.aggregates),
-         calculation_count: length(query.calculations)
+         calculation_count: length(query.calculations),
+         distinct?: query.distinct != []
        }}
     end)
   end

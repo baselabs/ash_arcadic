@@ -18,7 +18,9 @@ defmodule AshArcadic.DataLayer.CanTest do
           :nested_expressions,
           :multitenancy,
           :composite_primary_key,
-          :changeset_filter
+          :changeset_filter,
+          :distinct,
+          :distinct_sort
         ] do
       assert DL.can?(AshArcadic.Test.Basic, feature), "expected can?(#{feature})"
     end
