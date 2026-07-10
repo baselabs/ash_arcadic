@@ -42,6 +42,18 @@ defmodule AshArcadic.DataLayer.QueryBuildingTest do
              DL.sort(q, [{:not_a_real_attribute, :desc}], AshArcadic.Test.Basic)
   end
 
+  test "sort rejects an unknown direction qualifier value-free (sibling parity with the distinct clamp)" do
+    # The Ash API path is upstream-gated (Sort.process raises InvalidSortOrder); this pins the
+    # DIRECT data-layer ingress so a bogus direction is never silently coerced to ASC by the
+    # render's order_dir catch-all (closeout enhancement: after guarding one branch, check siblings).
+    q = %Query{resource: AshArcadic.Test.Basic}
+
+    assert {:error, %AshArcadic.Errors.QueryFailed{} = err} =
+             DL.sort(q, [{:name, :bogus}], AshArcadic.Test.Basic)
+
+    refute Exception.message(err) =~ "bogus"
+  end
+
   test "filter translates and appends a pre-built clause + params" do
     filter = Ash.Query.filter(AshArcadic.Test.Basic, name == "Ann").filter
     {:ok, q} = DL.filter(%Query{resource: AshArcadic.Test.Basic}, filter, AshArcadic.Test.Basic)

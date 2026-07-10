@@ -89,6 +89,31 @@ defmodule AshArcadic.DataLayer.DistinctGuardTest do
              DL.distinct(q(), [{:name, :bogus}], AshArcadic.Test.Basic)
   end
 
+  test "a relationship-path %Ash.Query.Ref{} entry fails closed value-free (rel-path distinct is a non-goal)" do
+    # Through the Ash API a rel-path entry arrives wrapped in %Ash.Query.Calculation{}
+    # (Sort.process); this pins the same :expression catch-all for the DIRECT ingress shape.
+    ref_entry = {struct(Ash.Query.Ref, attribute: :name, relationship_path: [:author]), :asc}
+
+    assert {:error, %QueryFailed{} = err} = DL.distinct(q(), [ref_entry], AshArcadic.Test.Basic)
+    refute Exception.message(err) =~ "author"
+  end
+
+  test "hand-crafted %Attribute{} entries with NON-ATOM names fail closed value-free (no raw crash)" do
+    # Ash.Query.distinct_sort/3 appends RAW caller entries; without the is_atom guard these
+    # shapes escape as FunctionClauseError / Protocol.UndefinedError carrying the caller's own
+    # term (closeout security note) — they must die in the static :expression reject instead.
+    for {name, dir} <- [{"x y", :asc}, {%{}, :bogus}, {"strname", :bogus}] do
+      entry = {struct(Ash.Resource.Attribute, name: name), dir}
+
+      assert {:error, %QueryFailed{} = err} =
+               DL.distinct_sort(q(), [entry], AshArcadic.Test.Basic)
+
+      msg = Exception.message(err)
+      refute msg =~ "x y"
+      refute msg =~ "strname"
+    end
+  end
+
   test "distinct_sort on a :binary field fails closed (base64 order != byte order)" do
     assert {:error, %QueryFailed{}} =
              DL.distinct_sort(q(), [{:secret, :asc}], AshArcadic.Test.Basic)

@@ -341,6 +341,22 @@ defmodule AshArcadic.DataLayer do
     end)
   end
 
+  # The exact qualifier set the render handles faithfully (Query.order_by_expr/order_dir clauses,
+  # all six pinned by the D12 ORDER-BY test) — identical to Ash's parse_sort allowlist
+  # (deps/ash sort.ex:161-168). Anything else falls into order_dir's `_ → ASC` catch-all → a
+  # silently wrong order, so both the sort and distinct entry guards clamp directions to this
+  # set. Matters most for distinct_sort: Ash.Query.distinct_sort/3 appends RAW entries (no
+  # Sort.process → no upstream InvalidSortOrder, unlike sort/distinct — live-probed), so the
+  # clamp is the only line of defense there; on sort/distinct it is defense-in-depth.
+  @sort_directions [
+    :asc,
+    :asc_nils_first,
+    :asc_nils_last,
+    :desc,
+    :desc_nils_first,
+    :desc_nils_last
+  ]
+
   # An inlined expression-calc sort → translate its expression to a Cypher ORDER-BY fragment
   # (params threaded onto the query). A sensitive/non-stored ref, or an unsupported op, inside →
   # Expression fails closed value-free. A calc without an :expr key (a module calc) → reject.
@@ -362,42 +378,41 @@ defmodule AshArcadic.DataLayer do
   defp sort_clause(entry, resource, query) do
     case normalize_sort_entry(entry) do
       {name, direction} ->
-        if Info.stored_field?(resource, name),
-          do: {:ok, query, {name, direction}},
-          else: {:error, sort_error("sort field #{name} is not a stored attribute")}
+        cond do
+          not Info.stored_field?(resource, name) ->
+            {:error, sort_error("sort field #{name} is not a stored attribute")}
+
+          direction not in @sort_directions ->
+            {:error, sort_error("sort direction for field #{name} is not a supported sort order")}
+
+          true ->
+            {:ok, query, {name, direction}}
+        end
 
       :expression ->
-        {:error, sort_error("sort over an expression/calculation field is unsupported")}
+        {:error,
+         sort_error(
+           "sort over an expression, calculation, or non-atom field entry is unsupported"
+         )}
     end
   end
 
   # {name, direction} for a stored-attribute sort entry (atom or the resolved
   # %Ash.Resource.Attribute{} form Ash passes); :expression for a calculation/aggregate
   # STRUCT field (non-atom) — not a Cypher-expressible property, rejected value-free.
-  defp normalize_sort_entry({%Ash.Resource.Attribute{name: name}, direction}),
-    do: {name, direction}
+  # The is_atom guard also catches a hand-crafted %Attribute{} carrying a non-atom name
+  # (distinct_sort's RAW ingress): without it the term escapes into stored_field?'s
+  # is_atom clause / the direction reject's interpolation as an UNCONTROLLED crash
+  # carrying the caller's term (closeout security note) — route it to the static reject.
+  defp normalize_sort_entry({%Ash.Resource.Attribute{name: name}, direction})
+       when is_atom(name),
+       do: {name, direction}
 
   defp normalize_sort_entry({name, direction}) when is_atom(name), do: {name, direction}
   defp normalize_sort_entry(_entry), do: :expression
 
   # Value-free: `reason` names only the field atom / a static string — never a value (Rule 4).
   defp sort_error(reason), do: QueryFailed.exception(query: "ArcadeDB sort", reason: reason)
-
-  # The exact qualifier set the render handles faithfully (Query.order_by_expr/order_dir clauses,
-  # all six pinned by the D12 ORDER-BY test) — identical to Ash's parse_sort allowlist
-  # (deps/ash sort.ex:161-168). Anything else falls into order_dir's `_ → ASC` catch-all → a
-  # silently wrong representative row, so the entry guard clamps directions to this set. Matters
-  # most for distinct_sort: Ash.Query.distinct_sort/3 appends RAW entries (no Sort.process → no
-  # upstream InvalidSortOrder, unlike sort/distinct — live-probed), so the clamp is the only line
-  # of defense there; on distinct it is defense-in-depth.
-  @sort_directions [
-    :asc,
-    :asc_nils_first,
-    :asc_nils_last,
-    :desc,
-    :desc_nils_first,
-    :desc_nils_last
-  ]
 
   @impl true
   # DISTINCT scoping path — fails CLOSED. Through the Ash API, Ash.Query.distinct/2 gates on the bare
@@ -427,6 +442,10 @@ defmodule AshArcadic.DataLayer do
   # entries — no upstream type_sortable?/field-existence gate), so this guard is the SOLE
   # storage/class defense on the distinct_sort path. Reuses the can?({:sort, storage}) sortability
   # decision so distinct_sort and sort stay identical on storage; stashes NORMALIZED ({name, dir}).
+  # `sensitive` is closed here TRANSITIVELY (no reject_sensitive clause): ValidateSensitive R2
+  # forces sensitive ⇒ :binary-storage-or-skipped, so a sensitive entry always dies in the
+  # non-stored or unsortable-storage clause — if R2 ever admitted a sortable sensitive storage,
+  # add reject_sensitive: true here (a ciphertext ORDER BY is a byte-order oracle).
   def distinct_sort(%AshArcadic.Query{} = query, distinct_sort, resource) do
     case validate_distinct(distinct_sort, resource,
            reject_sensitive: false,
@@ -470,7 +489,10 @@ defmodule AshArcadic.DataLayer do
       {:ok, {name, dir}}
     else
       :expression ->
-        {:error, distinct_error("distinct over an expression/calculation field is unsupported")}
+        {:error,
+         distinct_error(
+           "distinct over an expression, calculation, or non-atom field entry is unsupported"
+         )}
 
       {:error, _} = err ->
         err
