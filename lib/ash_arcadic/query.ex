@@ -5,6 +5,8 @@ defmodule AshArcadic.Query do
   resource's `arcade` DSL; `database` is overridden per-tenant by `set_tenant/3`
   for `:context` resources (Plan 2).
   """
+  alias AshArcadic.Query.Combination
+
   defstruct [
     :resource,
     :client,
@@ -63,6 +65,12 @@ defmodule AshArcadic.Query do
   (defense-in-depth — they feed the statement body; values ride `params`).
   """
   @spec to_cypher(t()) :: {String.t(), map()}
+  def to_cypher(%__MODULE__{combination_of: [_ | _]} = query) do
+    label = AshArcadic.Identifier.validate!(query.label)
+    {parts, params} = build_combination_parts(query, label)
+    {Enum.join(parts, " "), params}
+  end
+
   def to_cypher(%__MODULE__{} = query) do
     label = AshArcadic.Identifier.validate!(query.label)
     {where_parts, query} = build_where(query)
@@ -80,6 +88,97 @@ defmodule AshArcadic.Query do
       end
 
     {Enum.join(parts, " "), query.params}
+  end
+
+  # Native UNION/UNION ALL render (probe-confirmed, scratchpad/probe_combinations3.exs): each branch's
+  # WHERE (its filters plus any translated `:expression`, via build_where — FAIL CLOSED on an
+  # untranslatable expression, symmetric with the flat head) is re-keyed into a disjoint `b<i>_` namespace,
+  # joined by the per-branch UNION[ ALL] operator inside a CALL{}, then the OUTER filter (also via
+  # build_where; its params stay $param<n> — disjoint from the re-keyed branches), the optional outer
+  # distinct-collect, and trailing outer ORDER BY/SKIP/LIMIT.
+  defp build_combination_parts(query, label) do
+    {where_parts, query} = build_where(query)
+
+    {branch_bodies, branch_params} =
+      query.combination_of
+      |> Enum.with_index()
+      |> Enum.map_reduce(%{}, fn {{_type, branch}, i}, acc ->
+        {branch_where_parts, branch} = build_where(branch)
+        {rk_filters, rk_params} = Combination.rekey_branch(branch_where_parts, branch.params, i)
+        {branch_body(label, rk_filters, branch), Map.merge(acc, rk_params)}
+      end)
+
+    params = Map.merge(branch_params, query.params)
+
+    parts =
+      ["CALL { #{join_branches(query.combination_of, branch_bodies)} }", "WITH n"] ++
+        build_where_clause(where_parts) ++
+        combination_distinct_collect(query) ++
+        ["RETURN n"] ++
+        build_order_by(query.sort) ++
+        build_skip(query.offset) ++
+        build_limit(query.limit)
+
+    {parts, params}
+  end
+
+  # A single branch body: MATCH (n:L) WHERE <re-keyed filters> RETURN n [branch paging]. A branch with
+  # its OWN sort/limit/offset is wrapped in an inner CALL{} so its ORDER BY/LIMIT bind before the UNION
+  # (bare per-branch ORDER BY/LIMIT is not legal directly under a UNION — probe-confirmed CALL{} form).
+  defp branch_body(label, rk_filters, branch) do
+    inner =
+      ["MATCH (n:#{label})"] ++
+        build_where_clause(rk_filters) ++
+        ["RETURN n"] ++
+        build_order_by(branch.sort) ++
+        build_skip(branch.offset) ++
+        build_limit(branch.limit)
+
+    inner = Enum.join(inner, " ")
+
+    if branch.sort != [] or branch.limit != nil or branch.offset != nil,
+      do: "CALL { #{inner} } RETURN n",
+      else: inner
+  end
+
+  # Joins branch bodies with each branch's UNION operator; the first (:base) branch has none. native?
+  # guarantees only :base/:union/:union_all reach here.
+  defp join_branches(combination_of, bodies) do
+    [{_base, first} | rest] = Enum.zip(Enum.map(combination_of, &elem(&1, 0)), bodies)
+
+    Enum.reduce(rest, first, fn {type, body}, acc ->
+      acc <> " " <> union_op(type) <> " " <> body
+    end)
+  end
+
+  defp union_op(:union), do: "UNION"
+  defp union_op(:union_all), do: "UNION ALL"
+
+  # FAIL LOUD, value-free (the type tag is a combination-type label, not record data): a mid-chain
+  # `:base` (union-family per native?/1, so it reaches the native render) or a mis-routed
+  # `:intersect`/`:except` has no native UNION operator. Symmetric with the in-memory sibling's
+  # `Combination.apply_op(:base, …)` ArgumentError — a clear message, not a bare FunctionClauseError.
+  defp union_op(type) do
+    raise ArgumentError,
+          "combination_of: #{inspect(type)} is not a native union operator (native render is union-family only)"
+  end
+
+  # Outer distinct over the union → the DISTINCT-ON-subset collect-group (same idiom as
+  # build_distinct_parts/3, Plan 1), applied to the union output `n`. Empty when no outer distinct.
+  defp combination_distinct_collect(%{distinct: []}), do: []
+
+  # NOTE: outer-distinct-over-a-native-combination keeps an arbitrary representative per group — it does
+  # NOT honor distinct_sort (the union output has no stable pre-collect order to select by). Consistent
+  # with the probe and spec §7.2; acceptable for whole-vertex DISTINCT-ON. Documented in usage-rules (T7).
+  defp combination_distinct_collect(%{distinct: distinct}) do
+    with_keys =
+      distinct
+      |> Enum.with_index()
+      |> Enum.map(fn {{field, _dir}, i} ->
+        "n.#{AshArcadic.Identifier.validate!(field)} AS __d#{i}"
+      end)
+
+    ["WITH " <> Enum.join(with_keys ++ ["collect(n)[0] AS n"], ", ")]
   end
 
   # DISTINCT-ON a field subset keeping whole vertices (Ash `distinct` is always DISTINCT-ON, never

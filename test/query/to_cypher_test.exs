@@ -173,4 +173,118 @@ defmodule AshArcadic.Query.ToCypherTest do
 
     assert params == %{"param1" => "Ann"}
   end
+
+  test "native combination renders CALL{UNION} with re-keyed branch params + outer WHERE/ORDER/LIMIT" do
+    b0 = %Query{
+      resource: AshArcadic.Test.Basic,
+      label: :Person,
+      filters: ["n.name = $param1"],
+      params: %{"param1" => "Ada"}
+    }
+
+    b1 = %Query{
+      resource: AshArcadic.Test.Basic,
+      label: :Person,
+      filters: ["n.age = $param1"],
+      params: %{"param1" => 30}
+    }
+
+    q = %Query{
+      resource: AshArcadic.Test.Basic,
+      label: :Person,
+      combination_of: [{:base, b0}, {:union, b1}],
+      filters: ["n.org = $param1"],
+      params: %{"param1" => "acme"},
+      sort: [{:name, :desc}],
+      limit: 5
+    }
+
+    {cypher, params} = Query.to_cypher(q)
+
+    assert cypher ==
+             "CALL { MATCH (n:Person) WHERE n.name = $b0_param1 RETURN n " <>
+               "UNION MATCH (n:Person) WHERE n.age = $b1_param1 RETURN n } " <>
+               "WITH n WHERE n.org = $param1 RETURN n ORDER BY n.name DESC LIMIT 5"
+
+    assert params == %{"b0_param1" => "Ada", "b1_param1" => 30, "param1" => "acme"}
+  end
+
+  test "native combination with :union_all uses UNION ALL; outer distinct adds the collect-group" do
+    b0 = %Query{resource: AshArcadic.Test.Basic, label: :Person, filters: [], params: %{}}
+    b1 = %Query{resource: AshArcadic.Test.Basic, label: :Person, filters: [], params: %{}}
+
+    q = %Query{
+      resource: AshArcadic.Test.Basic,
+      label: :Person,
+      combination_of: [{:base, b0}, {:union_all, b1}],
+      distinct: [{:name, :asc}]
+    }
+
+    {cypher, _} = Query.to_cypher(q)
+
+    assert cypher ==
+             "CALL { MATCH (n:Person) RETURN n UNION ALL MATCH (n:Person) RETURN n } " <>
+               "WITH n WITH n.name AS __d0, collect(n)[0] AS n RETURN n"
+  end
+
+  test "a branch carrying its own paging is wrapped in an inner CALL{}" do
+    b0 = %Query{
+      resource: AshArcadic.Test.Basic,
+      label: :Person,
+      filters: [],
+      params: %{},
+      sort: [{:age, :asc}],
+      limit: 1
+    }
+
+    b1 = %Query{resource: AshArcadic.Test.Basic, label: :Person, filters: [], params: %{}}
+
+    q = %Query{
+      resource: AshArcadic.Test.Basic,
+      label: :Person,
+      combination_of: [{:base, b0}, {:union, b1}]
+    }
+
+    {cypher, _} = Query.to_cypher(q)
+
+    assert cypher ==
+             "CALL { CALL { MATCH (n:Person) RETURN n ORDER BY n.age ASC LIMIT 1 } RETURN n " <>
+               "UNION MATCH (n:Person) RETURN n } WITH n RETURN n"
+  end
+
+  test "native 3-branch chain joins each branch's operator left-to-right (UNION then UNION ALL)" do
+    b0 = %Query{resource: AshArcadic.Test.Basic, label: :Person, filters: [], params: %{}}
+    b1 = %Query{resource: AshArcadic.Test.Basic, label: :Person, filters: [], params: %{}}
+    b2 = %Query{resource: AshArcadic.Test.Basic, label: :Person, filters: [], params: %{}}
+
+    q = %Query{
+      resource: AshArcadic.Test.Basic,
+      label: :Person,
+      combination_of: [{:base, b0}, {:union, b1}, {:union_all, b2}]
+    }
+
+    {cypher, _} = Query.to_cypher(q)
+
+    assert cypher ==
+             "CALL { MATCH (n:Person) RETURN n UNION MATCH (n:Person) RETURN n " <>
+               "UNION ALL MATCH (n:Person) RETURN n } WITH n RETURN n"
+  end
+
+  test "native combination with multi-field outer distinct comma-joins the with-keys" do
+    b0 = %Query{resource: AshArcadic.Test.Basic, label: :Person, filters: [], params: %{}}
+    b1 = %Query{resource: AshArcadic.Test.Basic, label: :Person, filters: [], params: %{}}
+
+    q = %Query{
+      resource: AshArcadic.Test.Basic,
+      label: :Person,
+      combination_of: [{:base, b0}, {:union, b1}],
+      distinct: [{:name, :asc}, {:age, :desc}]
+    }
+
+    {cypher, _} = Query.to_cypher(q)
+
+    assert cypher ==
+             "CALL { MATCH (n:Person) RETURN n UNION MATCH (n:Person) RETURN n } " <>
+               "WITH n WITH n.name AS __d0, n.age AS __d1, collect(n)[0] AS n RETURN n"
+  end
 end
