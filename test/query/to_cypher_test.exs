@@ -90,6 +90,7 @@ defmodule AshArcadic.Query.ToCypherTest do
       label: :Person,
       distinct: [{:name, :asc}],
       sort: [{:age, :desc}],
+      offset: 5,
       limit: 10
     }
 
@@ -98,7 +99,7 @@ defmodule AshArcadic.Query.ToCypherTest do
     assert cypher ==
              "MATCH (n:Person) WITH n ORDER BY n.name ASC " <>
                "WITH n.name AS __d0, collect(n)[0] AS n " <>
-               "RETURN n ORDER BY n.age DESC LIMIT 10"
+               "RETURN n ORDER BY n.age DESC SKIP 5 LIMIT 10"
 
     assert params == %{}
   end
@@ -116,6 +117,21 @@ defmodule AshArcadic.Query.ToCypherTest do
     assert cypher ==
              "MATCH (n:Person) WITH n ORDER BY n.age DESC " <>
                "WITH n.name AS __d0, n.age AS __d1, collect(n)[0] AS n RETURN n"
+  end
+
+  test "a struct distinct entry reaching the render raises a value-free ArgumentError (backstop)" do
+    # The data-layer distinct/3 guard rejects calc/struct entries BEFORE the render; this pins the
+    # render's own defense-in-depth: Identifier.validate!'s catch-all raises value-free.
+    q = %Query{
+      resource: AshArcadic.Test.Basic,
+      label: :Person,
+      distinct: [{struct(Ash.Query.Calculation, name: :fullname), :asc}]
+    }
+
+    err = assert_raise ArgumentError, fn -> Query.to_cypher(q) end
+    assert err.message =~ "invalid ArcadeDB identifier"
+    refute err.message =~ "fullname"
+    refute err.message =~ "Calculation"
   end
 
   test "distinct composes with a WHERE clause (filter renders before the WITH)" do

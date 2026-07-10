@@ -84,7 +84,7 @@ defmodule AshArcadic.Query do
   # DISTINCT-*): group by the distinct fields, keep one representative vertex per group. The inner
   # `WITH n ORDER BY <distinct_sort ‖ distinct>` picks WHICH vertex survives `collect(n)[0]`; the outer
   # `ORDER BY/SKIP/LIMIT` order the deduped result (collect does NOT preserve the pre-WITH order, so the
-  # outer sort/paging MUST come after the collect). Probe-confirmed shape (scratchpad/probe_combinations2).
+  # outer sort/paging MUST come after the collect). Probe-confirmed shape.
   defp build_distinct_parts(query, label, where_parts) do
     with_keys =
       query.distinct

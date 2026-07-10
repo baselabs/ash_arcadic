@@ -381,6 +381,136 @@ defmodule AshArcadic.DataLayer do
   # Value-free: `reason` names only the field atom / a static string — never a value (Rule 4).
   defp sort_error(reason), do: QueryFailed.exception(query: "ArcadeDB sort", reason: reason)
 
+  # The exact qualifier set the render handles faithfully (Query.order_by_expr/order_dir clauses,
+  # all six pinned by the D12 ORDER-BY test) — identical to Ash's parse_sort allowlist
+  # (deps/ash sort.ex:161-168). Anything else falls into order_dir's `_ → ASC` catch-all → a
+  # silently wrong representative row, so the entry guard clamps directions to this set. Matters
+  # most for distinct_sort: Ash.Query.distinct_sort/3 appends RAW entries (no Sort.process → no
+  # upstream InvalidSortOrder, unlike sort/distinct — live-probed), so the clamp is the only line
+  # of defense there; on distinct it is defense-in-depth.
+  @sort_directions [
+    :asc,
+    :asc_nils_first,
+    :asc_nils_last,
+    :desc,
+    :desc_nils_first,
+    :desc_nils_last
+  ]
+
+  @impl true
+  # DISTINCT scoping path — fails CLOSED. Through the Ash API, Ash.Query.distinct/2 gates on the bare
+  # can?(:distinct) atom AND runs Sort.process, whose type_sortable? check already rejects
+  # :binary/:decimal storage upstream via can?({:sort, storage}) (deps/ash sort.ex:255/449;
+  # live-probed: UnsortableField for :secret/:amount) — but it ACCEPTS a `skip`-ped attribute
+  # (live-probed) and turns calc names into %Calculation{} structs. So this guard is the SOLE defense
+  # for the NON-STORED class (n.<f> is null → wrong grouping) and the calc/rel STRUCT class (not
+  # renderable as n.<f>, symmetric with sort_clause's :expression reject and calc_supported?/2). The
+  # `sensitive` reject (AshCloak random-IV ciphertext never dedups equal plaintext → a correctness
+  # bug, not just a leak) is defense-in-depth: sensitive ⇒ binary-storage-or-skipped (verifier), both
+  # rejected en route, so it fires only on a direct data-layer call. A :binary/:decimal distinct
+  # FIELD is accepted HERE (dedup is equality, byte order irrelevant) — unreachable via the Ash API.
+  # Accepted entries are stashed NORMALIZED ({name, dir}) so the render never sees a struct field.
+  def distinct(%AshArcadic.Query{} = query, distinct, resource) do
+    case validate_distinct(distinct, resource, reject_sensitive: true, reject_unsortable: false) do
+      {:ok, normalized} -> {:ok, %{query | distinct: normalized}}
+      {:error, _} = err -> err
+    end
+  end
+
+  @impl true
+  # DISTINCT-SORT scoping path — picks WHICH representative row survives per distinct group. Same
+  # entry-shape guard PLUS the :binary/:decimal reject the record-read sort path applies (base64 order
+  # != byte order; lexicographic decimal != numeric → a silently wrong representative). Unlike
+  # distinct/sort, Ash.Query.distinct_sort/3 does NOT run Sort.process (query.ex:4293 appends raw
+  # entries — no upstream type_sortable?/field-existence gate), so this guard is the SOLE
+  # storage/class defense on the distinct_sort path. Reuses the can?({:sort, storage}) sortability
+  # decision so distinct_sort and sort stay identical on storage; stashes NORMALIZED ({name, dir}).
+  def distinct_sort(%AshArcadic.Query{} = query, distinct_sort, resource) do
+    case validate_distinct(distinct_sort, resource,
+           reject_sensitive: false,
+           reject_unsortable: true
+         ) do
+      {:ok, normalized} -> {:ok, %{query | distinct_sort: normalized}}
+      {:error, _} = err -> err
+    end
+  end
+
+  # Entry-shape + classification guard shared by distinct/3 and distinct_sort/3. Returns
+  # {:ok, normalized}: each accepted entry is normalize_sort_entry's {name, dir} — the
+  # %Ash.Resource.Attribute{} form is normalized INTO the stash (mirroring sort/3's stash) so the
+  # render's Identifier.validate! never sees a struct; any calc/aggregate STRUCT field maps to
+  # :expression (value-free reject).
+  defp validate_distinct(entries, resource, opts) do
+    reject_sensitive? = Keyword.fetch!(opts, :reject_sensitive)
+    reject_unsortable? = Keyword.fetch!(opts, :reject_unsortable)
+
+    entries
+    |> Enum.reduce_while({:ok, []}, fn entry, {:ok, acc} ->
+      case validate_distinct_entry(entry, resource, reject_sensitive?, reject_unsortable?) do
+        {:ok, normalized} -> {:cont, {:ok, [normalized | acc]}}
+        {:error, _} = err -> {:halt, err}
+      end
+    end)
+    |> case do
+      {:ok, acc} -> {:ok, Enum.reverse(acc)}
+      {:error, _} = err -> err
+    end
+  end
+
+  # Classifies ONE entry fail-closed: unknown direction / non-stored / (optionally) sensitive /
+  # (optionally) unsortable-storage / calc-or-aggregate STRUCT (:expression) — all rejected
+  # value-free (the direction reject names only the FIELD; the direction itself is an arbitrary
+  # caller term). Accepts with the NORMALIZED {name, dir} form.
+  defp validate_distinct_entry(entry, resource, reject_sensitive?, reject_unsortable?) do
+    with {name, dir} <- normalize_sort_entry(entry),
+         :ok <- validate_direction(name, dir),
+         :ok <- validate_distinct_field(name, resource, reject_sensitive?, reject_unsortable?) do
+      {:ok, {name, dir}}
+    else
+      :expression ->
+        {:error, distinct_error("distinct over an expression/calculation field is unsupported")}
+
+      {:error, _} = err ->
+        err
+    end
+  end
+
+  defp validate_direction(name, dir) do
+    if dir in @sort_directions do
+      :ok
+    else
+      {:error,
+       distinct_error("distinct direction for field #{name} is not a supported sort order")}
+    end
+  end
+
+  defp validate_distinct_field(name, resource, reject_sensitive?, reject_unsortable?) do
+    cond do
+      not Info.stored_field?(resource, name) ->
+        {:error, distinct_error("distinct field #{name} is not a stored attribute")}
+
+      reject_sensitive? and name in Info.sensitive(resource) ->
+        {:error, distinct_error("distinct over sensitive field #{name} is unsupported")}
+
+      reject_unsortable? and not sortable_storage?(resource, name) ->
+        {:error, distinct_error("distinct sort field #{name} has an unsortable storage type")}
+
+      true ->
+        :ok
+    end
+  end
+
+  # Reuses the record-read sort's storage-sortability decision (can?({:sort, storage})): :binary and
+  # :decimal are false (base64/lexicographic order is not the value order), everything else true.
+  defp sortable_storage?(resource, name) do
+    {type, constraints} = Map.fetch!(Info.attribute_types(resource), name)
+    can?(resource, {:sort, Ash.Type.storage_type(type, constraints)})
+  end
+
+  # Value-free (Rule 4): names only the field atom / a static string — never a value.
+  defp distinct_error(reason),
+    do: QueryFailed.exception(query: "ArcadeDB distinct", reason: reason)
+
   @impl true
   def limit(query, limit, _resource), do: {:ok, %{query | limit: limit}}
 
