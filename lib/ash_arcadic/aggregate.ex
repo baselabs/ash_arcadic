@@ -113,6 +113,11 @@ defmodule AshArcadic.Aggregate do
   can't express distinct per-agg filters, so each aggregate is its own statement). The
   RETURN uses synthetic alias `agg0`; value-reading kinds carry a `count(n.<field>) AS
   agg0_card` companion (§6.1). `:first` prepends `WITH n ORDER BY <agg sort>`.
+
+  A DISTINCT base query interposes the read render's collect-group pipeline (plus outer
+  sort/paging when present) before the fold, and moves the aggregate's own filter to a
+  post-dedup `WITH n WHERE` stage — the aggregate folds exactly the representatives the
+  read would return (ETS-reference parity; a pre-dedup fold returns wrong counts/sums).
   """
   @spec build_statement(Query.t(), Ash.Query.Aggregate.t(), %{atom() => {Ash.Type.t(), keyword()}}) ::
           {:ok, String.t(), map()} | {:error, term()}
@@ -121,14 +126,39 @@ defmodule AshArcadic.Aggregate do
          :ok <- guard_sort(agg),
          {:ok, query, agg_clause} <- translate_agg_filter(base, agg) do
       label = Identifier.validate!(base.label)
-      where = build_where(base.filters ++ agg_clause)
       order = order_prefix(agg)
       {expr, companion} = return_expr(agg, "agg0")
       expr = append_first_companion(expr, companion, agg)
-      cypher = "MATCH (n:#{label})" <> order <> where <> " RETURN #{expr}"
+
+      cypher =
+        if base.distinct == [] do
+          where = build_where(base.filters ++ agg_clause)
+          "MATCH (n:#{label})" <> order <> where <> " RETURN #{expr}"
+        else
+          # An aggregate over a DISTINCT query folds the deduped representatives, never the
+          # raw rows (ETS-reference parity: run_query output is what gets aggregated —
+          # closeout F2; Ash routes Ash.count/page-count here WITH the distinct intact,
+          # deps/ash aggregate.ex:114 / read.ex:3684). Stage order mirrors the read render:
+          # base filters (tenant predicate included) scope PRE-dedup; the collect-group
+          # pipeline dedups; outer sort/paging bound the representatives when present; the
+          # aggregate's OWN filter then applies to the survivors; :first's order re-sorts them.
+          "MATCH (n:#{label})" <>
+            build_where(base.filters) <>
+            " " <>
+            Enum.join(Query.distinct_stage_parts(base) ++ Query.paging_stage_parts(base), " ") <>
+            agg_filter_stage(agg_clause) <>
+            order <>
+            " RETURN #{expr}"
+        end
+
       {:ok, cypher, query.params}
     end
   end
+
+  # The aggregate's OWN filter as a post-dedup stage (`WITH n WHERE …`) — on the distinct
+  # path it filters representatives, exactly as the ETS reference filters run_query output.
+  defp agg_filter_stage([]), do: ""
+  defp agg_filter_stage(parts), do: " WITH n WHERE " <> Enum.join(parts, " AND ")
 
   @doc """
   Decodes the single result row for one aggregate to its Ash value (§6.3). When the

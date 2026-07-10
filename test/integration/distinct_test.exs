@@ -76,6 +76,9 @@ defmodule AshArcadic.Integration.DistinctTest do
 
   test "distinct composes with a WHERE filter (applied BEFORE the collect-group), still per-tenant" do
     seed_attr("org1", [{"a1", "Ada", 1}, {"a2", "Ada", 9}, {"a3", "Bo", 5}])
+    # Cross-tenant tripwire: org2's Ada(100) also passes amount>6 — any leak into the
+    # org1 read yields amounts [100, 9] or a 100 representative → red.
+    seed_attr("org2", [{"b1", "Ada", 100}])
 
     rows =
       AttributeDoc
@@ -88,5 +91,97 @@ defmodule AshArcadic.Integration.DistinctTest do
     # AFTER an arbitrary dedup could keep Ada(1) → [] → red.
     assert Enum.map(rows, & &1.name) == ["Ada"]
     assert Enum.map(rows, & &1.amount) == [9]
+  end
+
+  test "with no distinct_sort, the representative falls back to the QUERY sort (Ash contract)" do
+    # Seed order puts the amount:1 Ada FIRST — an insertion-order representative (the
+    # pre-fix `‖ distinct` render) returns {"Ada", 1} here (closeout smoke lens repro);
+    # the Ash contract (deps/ash query.ex:4285) requires the query sort to select it.
+    seed_attr("org1", [{"a1", "Ada", 1}, {"a2", "Ada", 9}, {"a3", "Bo", 5}])
+
+    rows =
+      AttributeDoc
+      |> Ash.Query.distinct([:name])
+      |> Ash.Query.sort(amount: :desc)
+      |> Ash.read!(tenant: "org1", authorize?: false)
+
+    assert Enum.map(rows, &{&1.name, &1.amount}) == [{"Ada", 9}, {"Bo", 5}]
+  end
+
+  test "rows whose distinct field is NULL form one group and survive as one representative" do
+    # ArcadeDB groups null keys like any other value (closeout probe): 2 null-amount rows
+    # collapse to ONE representative; they never silently vanish from the result.
+    seed_attr("org1", [{"a1", "Ada", nil}, {"a2", "Bo", nil}, {"a3", "Cy", 7}])
+
+    rows =
+      AttributeDoc
+      |> Ash.Query.distinct([:amount])
+      |> Ash.read!(tenant: "org1", authorize?: false)
+
+    assert length(rows) == 2
+    assert Enum.count(rows, &is_nil(&1.amount)) == 1
+    assert Enum.count(rows, &(&1.amount == 7)) == 1
+  end
+
+  test "distinct_sort honors nil-placement qualifiers inside the representative ORDER BY" do
+    # :asc_nils_first renders the `(n.amount IS NULL) DESC` prefix key INSIDE the inner
+    # `WITH n ORDER BY` (the D12 probe covered the final RETURN's ORDER BY; this pins the
+    # WITH-stage composition live): the null-amount Ada must win representative selection.
+    seed_attr("org1", [{"a1", "Ada", 9}, {"a2", "Ada", nil}])
+
+    rows =
+      AttributeDoc
+      |> Ash.Query.distinct([:name])
+      |> Ash.Query.distinct_sort([{:amount, :asc_nils_first}])
+      |> Ash.read!(tenant: "org1", authorize?: false)
+
+    assert [%{name: "Ada", amount: nil}] = rows
+  end
+
+  test "an expression outer ORDER BY composes after the collect-group re-binding of n (raw probe)",
+       %{admin: admin} do
+    # The record-read sort path can emit `{:expr, cypher, dir}` fragments; this pins that an
+    # expression key referencing the re-bound `n` parses and orders AFTER the collect stage.
+    seed_attr("org1", [{"a1", "Ada", 1}, {"a2", "Ada", 9}, {"a3", "Bo", 5}])
+
+    rows =
+      Arcadic.query!(
+        admin,
+        "MATCH (n:AttributeDoc) WHERE n.org_id = $t WITH n ORDER BY n.amount DESC " <>
+          "WITH n.name AS __d0, collect(n)[0] AS n RETURN n ORDER BY (n.amount + 1) ASC",
+        %{"t" => "org1"}
+      )
+
+    # Rows decode as flat vertex maps (RETURN n → %{"@rid" => …, <props>}).
+    assert Enum.map(rows, &{&1["name"], &1["amount"]}) == [{"Bo", 5}, {"Ada", 9}]
+  end
+
+  test "Ash.count and page count over a distinct query count the DEDUPED representatives" do
+    seed_attr("org1", [{"a1", "Ada", 1}, {"a2", "Ada", 9}, {"a3", "Bo", 5}])
+
+    assert AttributeDoc
+           |> Ash.Query.distinct([:name])
+           |> Ash.count!(tenant: "org1", authorize?: false) == 2
+
+    page =
+      AttributeDoc
+      |> Ash.Query.distinct([:name])
+      |> Ash.read!(tenant: "org1", authorize?: false, page: [limit: 10, count: true])
+
+    assert length(page.results) == 2
+    assert page.count == 2
+  end
+
+  test "value aggregates over a distinct query fold the representatives, not the raw rows" do
+    seed_attr("org1", [{"a1", "Ada", 1}, {"a2", "Ada", 9}, {"a3", "Bo", 5}])
+
+    q =
+      AttributeDoc
+      |> Ash.Query.distinct([:name])
+      |> Ash.Query.distinct_sort(amount: :desc)
+
+    # Representatives are {Ada,9} and {Bo,5}: sum = 14. The pre-dedup fold would return 15
+    # (and count 3) — the aggregate must run over the collect-group pipeline, not raw rows.
+    assert Ash.sum!(q, :amount, tenant: "org1", authorize?: false) == 14
   end
 end

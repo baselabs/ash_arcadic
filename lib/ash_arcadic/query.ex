@@ -120,6 +120,19 @@ defmodule AshArcadic.Query do
     rep_stage ++ ["WITH " <> Enum.join(with_keys ++ ["collect(n)[0] AS n"], ", ")]
   end
 
+  @doc false
+  # Outer sort/paging as a WITH stage (the aggregate-over-distinct path): the deduped
+  # representatives are sorted/bounded exactly as the read would return them (ETS-reference
+  # parity) before the aggregate folds them. Empty when the query carries no limit/offset —
+  # an unbounded fold needs no interposed stage.
+  @spec paging_stage_parts(t()) :: [String.t()]
+  def paging_stage_parts(%__MODULE__{limit: nil, offset: nil}), do: []
+
+  def paging_stage_parts(%__MODULE__{} = query) do
+    ["WITH n"] ++
+      build_order_by(query.sort) ++ build_skip(query.offset) ++ build_limit(query.limit)
+  end
+
   defp next_param_key(params, n) do
     key = "param#{n}"
     if Map.has_key?(params, key), do: next_param_key(params, n + 1), else: key

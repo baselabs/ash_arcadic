@@ -195,6 +195,61 @@ defmodule AshArcadic.AggregateTest do
                Aggregate.build_statement(base_query(), agg(:sum, field: :price), @types)
     end
 
+    test "count over a distinct query folds the DEDUPED representatives (collect-group pipeline)" do
+      # Closeout F2: Ash routes Ash.count / page `count: true` here WITH the distinct intact
+      # (deps/ash aggregate.ex:114; read.ex:3684 unsets :distinct_sort but keeps :distinct) —
+      # the statement must dedup before counting, never fold the raw rows.
+      q = struct(base_query(["n.t = $param1"], %{"param1" => "org1"}), distinct: [{:name, :asc}])
+
+      assert {:ok, cypher, _} = Aggregate.build_statement(q, agg(:count), @types)
+
+      assert cypher ==
+               "MATCH (n:Person) WHERE n.t = $param1 " <>
+                 "WITH n.name AS __d0, collect(n)[0] AS n RETURN count(n) AS agg0"
+    end
+
+    test "distinct + distinct_sort: representative selection precedes the fold; agg filter applies to representatives" do
+      q =
+        struct(base_query(["n.t = $param1"], %{"param1" => "org1"}),
+          distinct: [{:name, :asc}],
+          distinct_sort: [{:amount, :desc}]
+        )
+
+      agg_query = %Ash.Query{filter: Ash.Filter.parse!(AshArcadic.Test.Basic, age: 5)}
+
+      assert {:ok, cypher, params} =
+               Aggregate.build_statement(q, agg(:count, query: agg_query), @types)
+
+      # ETS-reference parity: base filters scope PRE-dedup (tenant predicate included); the
+      # aggregate's OWN filter applies to the surviving representatives (post-dedup).
+      assert cypher ==
+               "MATCH (n:Person) WHERE n.t = $param1 " <>
+                 "WITH n ORDER BY n.amount DESC WITH n.name AS __d0, collect(n)[0] AS n " <>
+                 "WITH n WHERE n.age = $param2 RETURN count(n) AS agg0"
+
+      assert params["param2"] == 5
+    end
+
+    test "distinct + outer sort/limit bound the representatives before the fold" do
+      q =
+        struct(base_query(),
+          distinct: [{:name, :asc}],
+          sort: [{:amount, :asc}],
+          limit: 10
+        )
+
+      assert {:ok, cypher, _} =
+               Aggregate.build_statement(q, agg(:sum, field: :amount), @types)
+
+      # The query sort doubles as the representative fallback (distinct_sort ‖ sort) and as
+      # the paging order; limit bounds the deduped set exactly as the read would return it.
+      assert cypher ==
+               "MATCH (n:Person) " <>
+                 "WITH n ORDER BY n.amount ASC WITH n.name AS __d0, collect(n)[0] AS n " <>
+                 "WITH n ORDER BY n.amount ASC LIMIT 10 " <>
+                 "RETURN sum(n.amount) AS agg0, count(n.amount) AS agg0_card"
+    end
+
     test "include_nil?: true propagates the value-free rejection (no cypher built)" do
       assert {:error, {:include_nil_unsupported, :list}} =
                Aggregate.build_statement(
