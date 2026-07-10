@@ -136,9 +136,13 @@ defmodule AshArcadic.Query do
 
     inner = Enum.join(inner, " ")
 
-    if branch.sort != [] or branch.limit != nil or branch.offset != nil,
-      do: "CALL { #{inner} } RETURN n",
-      else: inner
+    # A branch with MEANINGFUL paging (sort, a limit, or a POSITIVE offset) is wrapped; offset: 0 is
+    # Ash's spurious default (a no-op) and must not force the wrap — an unwrapped plain branch renders
+    # `MATCH … RETURN n`, matching the render for a branch carrying no paging at all.
+    if branch.sort != [] or branch.limit != nil or
+         (is_integer(branch.offset) and branch.offset > 0),
+       do: "CALL { #{inner} } RETURN n",
+       else: inner
   end
 
   # Joins branch bodies with each branch's UNION operator; the first (:base) branch has none. native?
@@ -292,7 +296,12 @@ defmodule AshArcadic.Query do
   defp order_dir(_), do: "ASC"
 
   defp build_skip(nil), do: []
-  defp build_skip(offset) when is_integer(offset) and offset >= 0, do: ["SKIP #{offset}"]
+
+  # SKIP 0 is a no-op. Ash sets offset: 0 on combination branches (and on paginated reads) by default,
+  # so render nothing for 0 — a spurious default offset must never force a clause, nor (for a branch)
+  # trip the combination per-branch-paging shape guard, nor bind a bare SKIP under a UNION.
+  defp build_skip(0), do: []
+  defp build_skip(offset) when is_integer(offset) and offset > 0, do: ["SKIP #{offset}"]
 
   defp build_skip(offset) do
     raise ArgumentError, "invalid offset: #{inspect(offset)} (expected a non-negative integer)"

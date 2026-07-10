@@ -667,12 +667,10 @@ defmodule AshArcadic.DataLayer do
   # record list, sort.ex:117,123) and never consults query.expression. All reasons are fixed literals.
   defp combination_unsupported(query, native?) do
     cond do
-      Enum.any?(query.combination_of, fn {_type, branch} -> branch.calculations != [] end) ->
+      Enum.any?(query.combination_of, &branch_has_calculations?/1) ->
         "calculations on a combination branch are not supported"
 
-      Enum.any?(query.combination_of, fn {_type, branch} ->
-        branch.limit != nil or branch.offset != nil
-      end) ->
+      Enum.any?(query.combination_of, &branch_paged?/1) ->
         "per-branch limit/offset on a combination is not supported"
 
       not native? and Enum.any?(query.sort, &match?({:expr, _, _}, &1)) ->
@@ -685,6 +683,14 @@ defmodule AshArcadic.DataLayer do
         nil
     end
   end
+
+  defp branch_has_calculations?({_type, branch}), do: branch.calculations != []
+
+  # A POSITIVE offset or any limit is MEANINGFUL per-branch paging. offset: 0 is Ash's spurious per-branch
+  # default (combination_queries always sets it, deps/ash query.ex:4608) and is a no-op — treating it as
+  # paging would fail-close EVERY combination read.
+  defp branch_paged?({_type, branch}),
+    do: branch.limit != nil or (is_integer(branch.offset) and branch.offset > 0)
 
   defp run_native_combination(conn, query, resource) do
     {cypher, params} = AshArcadic.Query.to_cypher(query)

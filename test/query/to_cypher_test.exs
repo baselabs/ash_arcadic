@@ -287,4 +287,40 @@ defmodule AshArcadic.Query.ToCypherTest do
              "CALL { MATCH (n:Person) RETURN n UNION MATCH (n:Person) RETURN n } " <>
                "WITH n WITH n.name AS __d0, n.age AS __d1, collect(n)[0] AS n RETURN n"
   end
+
+  test "branch/outer offset: 0 (Ash's spurious default) renders plainly — no inner CALL-wrap, no SKIP 0" do
+    # Ash's combination_queries always seeds offset: 0 on each branch (deps/ash query.ex); 0 is a no-op,
+    # so a plain offset-0 branch must render exactly like a branch carrying no paging (no CALL{} wrap),
+    # and an outer offset of 0 must add no trailing SKIP. (Regression: offset: 0 once tripped the
+    # per-branch-paging shape guard AND wrapped every branch — every combination read failed closed.)
+    b0 = %Query{
+      resource: AshArcadic.Test.Basic,
+      label: :Person,
+      filters: [],
+      params: %{},
+      offset: 0
+    }
+
+    b1 = %Query{
+      resource: AshArcadic.Test.Basic,
+      label: :Person,
+      filters: [],
+      params: %{},
+      offset: 0
+    }
+
+    q = %Query{
+      resource: AshArcadic.Test.Basic,
+      label: :Person,
+      combination_of: [{:base, b0}, {:union, b1}],
+      offset: 0
+    }
+
+    {cypher, _} = Query.to_cypher(q)
+
+    assert cypher ==
+             "CALL { MATCH (n:Person) RETURN n UNION MATCH (n:Person) RETURN n } WITH n RETURN n"
+
+    refute cypher =~ "SKIP"
+  end
 end
