@@ -12,12 +12,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Distinct (Slice 8, Plan 1).** `distinct`/`distinct_sort` support
   (`can?(:distinct)` / `can?(:distinct_sort)`): native Cypher DISTINCT-ON-subset
   (`WITH n.<f> AS __d0, collect(n)[0] AS n`), representative row chosen by `distinct_sort`
-  (or the distinct fields' order); outer sort/paging apply after the dedup. Fails closed
-  value-free on a non-stored, `sensitive`, calculation, or relationship-path distinct field,
-  and on any sort direction outside Ash's six qualifiers (`distinct_sort` reaches the data
-  layer with no upstream validation); `distinct_sort` additionally rejects `:binary`/`:decimal`
-  (unsortable storage), symmetric with the record sort path. Dedup is per-tenant under both
-  multitenancy strategies. Read-span telemetry gains a `distinct?` tag.
+  (falling back to the query's `sort`, Ash's documented contract; with neither, the
+  representative is engine-arbitrary and the order stage is elided); outer sort/paging apply
+  after the dedup. Aggregates over a distinct query (`Ash.count`, page `count: true`,
+  `sum`/`min`/…) fold the deduped representatives, never the raw rows. Fails closed
+  value-free on a non-stored, `sensitive`, calculation, relationship-path, or non-atom
+  distinct entry, and on any sort direction outside Ash's six qualifiers (`distinct_sort`
+  reaches the data layer with no upstream validation; the same direction clamp now also
+  guards the direct data-layer `sort/3` ingress); `distinct_sort` additionally rejects
+  `:binary`/`:decimal` (unsortable storage), symmetric with the record sort path. Dedup is
+  per-tenant under both multitenancy strategies. Read-span telemetry gains a `distinct?` tag.
 - **Expression calculations (Slice 7).** Ash expression calculations are first-class:
   they **load** (computed in Elixir over the flat `RETURN n`, so sensitive fields stay
   app-decrypted), and **filter-on-calc**, **sort-on-calc**, and raw-attribute

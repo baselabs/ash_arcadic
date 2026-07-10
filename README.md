@@ -9,7 +9,9 @@ enforced **Ash-natively**. It executes through the
 [`arcadic`](https://github.com/baselabs/arcadic) client (the transport — the
 "`postgrex` of ArcadeDB").
 
-> **Status: scaffold.** No data-layer implementation yet. Working rules are in
+> **Status: in development, unpublished.** The core data layer is implemented (CRUD +
+> upserts, filters, sort, distinct, aggregates, calculations, relationships/traversal —
+> all with fail-closed multitenancy); not yet on Hex. Working rules are in
 > [`AGENTS.md`](AGENTS.md) — read it first. A fuller project charter (architecture,
 > scope, and the open Stage-0 decision — ArcadeDB's physical multitenancy
 > primitive) is kept as a local, **unpublished** working doc at `docs/CHARTER.md`.

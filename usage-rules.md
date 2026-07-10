@@ -73,10 +73,19 @@ _An Ash DataLayer for ArcadeDB (native OpenCypher over HTTP)._
 - **`distinct`/`distinct_sort` push down to native Cypher.** `Ash.Query.distinct(res, [:field, ...])`
   compiles to a DISTINCT-ON-subset render (`WITH n.<f> AS __d0, ..., collect(n)[0] AS n RETURN n`) —
   one whole vertex per distinct group, over stored, non-`sensitive` fields. Outer `sort`/`limit`/
-  `offset` apply **after** the dedup.
-- **Representative-row selection is via `distinct_sort`, else distinct-field order.**
+  `offset` apply **after** the dedup. `limit` bounds the returned rows, not the DB-side dedup
+  working set (the collect-group materializes every group's full vertex list before `[0]`) —
+  filter narrowly on large labels.
+- **Representative-row selection is via `distinct_sort`, else the query's `sort`.**
   `Ash.Query.distinct_sort(res, [...])` orders each group before `collect(...)[0]` picks the
-  representative; with no `distinct_sort`, the distinct fields' own order is used.
+  representative; with no `distinct_sort`, the query's `sort` selects it (Ash's documented
+  fallback — "if none is set, any sort applied to the query will be used"). With neither, the
+  representative is engine-arbitrary and the result rows carry no defined order (Ash promises
+  none absent a sort; sibling data layers like ETS happen to return distinct-key order — rely
+  on neither).
+- **Aggregates over a distinct query fold the deduped representatives.** `Ash.count`, a
+  `page: [count: true]` read, and value aggregates (`sum`/`min`/…) over a query carrying
+  `distinct` dedup **before** folding — never the raw rows.
 - **Dedup is per-tenant** under both multitenancy strategies (`:attribute` scoped by the
   discriminator in the shared database; `:context` physically isolated per-tenant database).
 - **Fails closed value-free (`QueryFailed`, naming only the field)** on: a non-stored
