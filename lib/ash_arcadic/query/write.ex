@@ -78,16 +78,29 @@ defmodule AshArcadic.Query.Write do
     end
   end
 
-  # One atomic → `{:ok, "n.<field> = <cypher>", q}` | value-free `{:error, _}`. A discriminator
-  # target is rejected value-free (a tenant-hop). Otherwise HYDRATE the expr (idempotent — resolves
-  # an un-hydrated %Ash.Query.Call{} from atomic_set-on-create / test inputs AND passes an
-  # already-hydrated %Plus{} through, probe_hydrate_idempotent.exs), then translate the RHS (which
-  # applies every sensitive/non-stored/ref guard against the threaded resource). `field` is
-  # identifier-validated (only the NAME is interpolated).
+  # One atomic → `{:ok, "n.<field> = <cypher>", q}` | value-free `{:error, _}`. Two LHS-TARGET guards
+  # fire before any RHS work (spec §7.1): a discriminator target is rejected value-free (a tenant-hop),
+  # and a `sensitive`/non-stored target is rejected value-free — an atomic SET binds the RHS RAW (no
+  # `Cast.serialize_value`/app-side encryption), so `n.<sensitive> = <expr>` would store PLAINTEXT into
+  # an encrypted-binary field, and a non-stored target has no column to set. `Expression.translate`
+  # guards RHS *refs* only, never the LHS target — so the target itself is guarded HERE via the Slice-7
+  # `Info.value_translatable_field?/2` predicate (`stored AND not sensitive`; the discriminator IS
+  # translatable, hence its own separate clause above). Then HYDRATE the expr (idempotent — resolves an
+  # un-hydrated %Ash.Query.Call{} from atomic_set-on-create / test inputs AND passes an already-hydrated
+  # %Plus{} through, probe_hydrate_idempotent.exs) and translate the RHS. `field` is identifier-validated
+  # (only the NAME is interpolated).
   defp translate_atomic(field, _expr, _q, disc) when field == disc,
     do: {:error, discriminator_error(field)}
 
   defp translate_atomic(field, expr, q, _disc) do
+    if Info.value_translatable_field?(q.resource, field) do
+      translate_atomic_rhs(field, expr, q)
+    else
+      {:error, target_error(field)}
+    end
+  end
+
+  defp translate_atomic_rhs(field, expr, q) do
     with {:ok, hydrated} <- Ash.Filter.hydrate_refs(expr, %{resource: q.resource, public?: false}),
          {:ok, q, rhs} <- Expression.translate(hydrated, q) do
       name = field |> to_string() |> Identifier.validate!()
@@ -146,4 +159,8 @@ defmodule AshArcadic.Query.Write do
   # Value-free: the discriminator FIELD name is structural (a schema attribute name), never a value.
   defp discriminator_error(field),
     do: UnsupportedFilter.exception(operator: :set_discriminator, field: field)
+
+  # Value-free: a `sensitive`/non-stored atomic SET target (spec §7.1). The field NAME is structural.
+  defp target_error(field),
+    do: UnsupportedFilter.exception(operator: :set_target, field: field)
 end

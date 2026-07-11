@@ -5,6 +5,7 @@ defmodule AshArcadic.Query.WriteTest do
 
   alias AshArcadic.Errors.UnsupportedFilter
   alias AshArcadic.Query.Write
+  alias AshArcadic.Test.CalcPerson
   alias AshArcadic.Test.CalcTenantPerson, as: TenantP
   alias AshArcadic.Test.CrudPerson
 
@@ -76,6 +77,16 @@ defmodule AshArcadic.Query.WriteTest do
       )
 
     assert {:error, %UnsupportedFilter{field: :amount}} = Write.build_set(CrudPerson, cs, %{})
+  end
+
+  test "atomic SET targeting a SENSITIVE field fails closed value-free (spec §7.1 — no plaintext to encrypted-binary)" do
+    # :secret is CalcPerson's sensitive :binary attribute. An atomic SET with a BENIGN literal RHS
+    # (1 + 1) would emit `n.secret = 2` — raw plaintext into an app-side-encrypted field — because
+    # Expression only guards RHS *refs*, not the LHS target. The reject must come from build_set's
+    # OWN LHS guard (Info.value_translatable_field?/2, the Slice-7 predicate). The SAME predicate is
+    # false for a non-stored (`skip`) target, so this one guard covers both spec-§7.1 target classes.
+    cs = atomic_cs(CalcPerson, %{id: "p1", secret: <<1>>}, %{}, secret: Ash.Expr.expr(1 + 1))
+    assert {:error, %UnsupportedFilter{field: :secret}} = Write.build_set(CalcPerson, cs, %{})
   end
 
   test "seed params are preserved and atomic params never collide with them" do
