@@ -2436,7 +2436,7 @@ defmodule AshArcadic.DataLayer do
   # An empty group writes nothing.
   defp do_update_many(_resource, [], _opts), do: {:ok, []}
 
-  defp do_update_many(resource, [rep | _] = entries, opts) do
+  defp do_update_many(resource, [rep | _] = entries, _opts) do
     pk = Ash.Resource.Info.primary_key(resource)
     types = Info.attribute_types(resource)
 
@@ -2463,17 +2463,24 @@ defmodule AshArcadic.DataLayer do
          reason: "cannot set the multitenancy discriminator"
        )}
     else
-      run_update_many(resource, rep, rows, pk, opts)
+      run_update_many(resource, rep, rows, pk)
     end
   end
 
-  defp run_update_many(resource, rep, rows, pk, opts) do
-    tenant = Map.get(opts, :tenant)
+  defp run_update_many(resource, rep, rows, pk) do
+    # The ToTenant-NORMALIZED tenant, NOT the raw `opts.tenant` (data_layer_opts carries opts[:tenant]
+    # verbatim — deps/ash update_many.ex). Ash stores the `:attribute` discriminator as
+    # parse_attribute(changeset.to_tenant) (create.ex) and resolves the `:context` write database from
+    # changeset.to_tenant, so update_many MUST scope by the SAME normalized value the single-row and
+    # bulk-upsert paths use (both key off changeset.to_tenant) — else a custom Ash.ToTenant maps
+    # opts.tenant to a discriminator/database that never matches the stored rows. Byte-identical to
+    # opts.tenant for a plain String/Integer/Atom tenant (their default ToTenant is identity).
+    tenant = rep.to_tenant
 
     # write_conn_for_tenant/2 is the CANONICAL resource+tenant → write-conn resolver (the single-row
-    # write_conn/2 is a thin changeset adapter over it). update_many reuses it — no third parallel
-    # resolver — with the same :context blank→:tenant_required / present→tenant-db / non-:context→base
-    # behavior.
+    # write_conn/2 is a thin changeset adapter over it, also keyed on changeset.to_tenant). update_many
+    # reuses it — no third parallel resolver — with the same :context blank→:tenant_required /
+    # present→tenant-db / non-:context→base behavior.
     with {:ok, atomic_frags, atomic_params} <-
            Write.atomic_fragments(resource, rep.atomics, %{}),
          {:ok, conn} <- write_conn_for_tenant(resource, tenant) do
