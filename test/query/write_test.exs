@@ -68,9 +68,11 @@ defmodule AshArcadic.Query.WriteTest do
   end
 
   test "resource IS threaded so Expression's sensitive/non-stored guard stays live" do
-    # amount is :decimal on CrudPerson — Expression.ref_ok? rejects :decimal (range-incomparable).
-    # If Write seeded a resource-less %Query{}, ref_ok?'s fail-safe would PASS it (V2). This proves
-    # the guard fires because the real resource is threaded.
+    # amount is :decimal on CrudPerson: value_translatable (stored, non-sensitive) so it CLEARS the
+    # LHS target guard, then Expression.ref_ok? rejects the :decimal RHS ref (range-incomparable).
+    # Both guards — and hydrate_refs — key on the threaded resource; a resource-less %Query{} would
+    # fail hydration / bypass ref_ok?'s fail-safe (V2). So a reject here proves the REAL resource is
+    # threaded into build_set's working query.
     cs =
       atomic_cs(CrudPerson, %{id: "p1", amount: Decimal.new("1")}, %{},
         amount: Ash.Expr.expr(amount)
