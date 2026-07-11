@@ -36,16 +36,36 @@ defmodule AshArcadic.DataLayer.BulkUpsertGuardTest do
     assert error.reason =~ "non-empty identity"
   end
 
-  # Upsert-specific, not a blanket bulk reject: a non-upsert batch is NOT routed to the
-  # bulk-upsert clause — it reaches the CREATE path (which fails here only on
-  # MockClient's bad auth, a reason WITHOUT "bulk upsert"). Proves the clause keys on
-  # `upsert?`.
-  test "a non-upsert bulk batch is not routed to bulk upsert (reaches the CREATE path)" do
+  # The `:bulk_create` span tags `bulk_upsert?` per the `upsert?` route — the sole
+  # coverage of that telemetry key. Non-vacuous by construction: it asserts the tag is
+  # `true` for an upsert batch and `false` for a non-upsert one, so a mislabeled/constant
+  # tag reddens. The stop span fires regardless of result (both calls fail at MockClient's
+  # bad auth), so no DB write is needed; the handler filters on `resource == Basic` (only
+  # this test bulk-creates Basic) to isolate from any concurrent async span.
+  test "the :bulk_create span tags bulk_upsert? by the upsert? route (true vs false)" do
+    test_pid = self()
+    handler_id = {__MODULE__, :bulk_upsert_route, System.unique_integer([:positive])}
+
+    :telemetry.attach(
+      handler_id,
+      [:ash_arcadic, :bulk_create, :stop],
+      fn _event, _measure, meta, pid ->
+        if meta.resource == Basic, do: send(pid, {:bulk_upsert_tag, meta.bulk_upsert?})
+      end,
+      test_pid
+    )
+
+    on_exit(fn -> :telemetry.detach(handler_id) end)
+
     changeset = %Ash.Changeset{resource: Basic, attributes: %{name: "a"}}
 
-    assert {:error, %CreateFailed{} = error} =
-             DL.bulk_create(Basic, [changeset], %{upsert?: false, return_records?: true})
+    # Non-upsert route (catch-all CREATE clause) → bulk_upsert? false.
+    DL.bulk_create(Basic, [changeset], %{upsert?: false, return_records?: true})
+    assert_received {:bulk_upsert_tag, false}
 
-    refute error.reason =~ "bulk upsert"
+    # Upsert route (run_bulk_upsert; :id is a non-empty identity) → bulk_upsert? true.
+    DL.bulk_create(Basic, [changeset], %{upsert?: true, upsert_keys: [:id], return_records?: true})
+
+    assert_received {:bulk_upsert_tag, true}
   end
 end

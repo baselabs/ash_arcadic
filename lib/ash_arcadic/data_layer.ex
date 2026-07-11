@@ -1583,8 +1583,15 @@ defmodule AshArcadic.DataLayer do
   # (read by the merge pattern as `r.<key>` — the P4-proven bulk form, distinct from the
   # single-row `$mk_<key>` bound form), plus `"all"` (the full property map → ON CREATE
   # `n += r.all`, seeds the force-set discriminator from all_props → D4 tenant-scoped
-  # merge) and `"set"` (the ON MATCH subset → `n += r.set`).
-  defp run_bulk_upsert(resource, entries, options, identity_keys) do
+  # merge) and `"set"` (the ON MATCH subset → `n += r.set`). BOTH atomic phases fold (V8
+  # parity with run_upsert): the representative's `create_atomics` → ON CREATE SET suffix,
+  # its `atomics` → ON MATCH SET suffix — Ash groups a bulk batch by `{atomics,
+  # create_atomics, filter}` (create/bulk.ex:1233), so all entries share the head's
+  # atomics/create_atomics (same assumption bulk_create_atomic_set makes). The atomic
+  # $paramN literals are shared across every unwound row and ride the wire, so encode-gate
+  # them too; a sensitive/non-stored/discriminator atomic TARGET fails closed value-free
+  # (upsert_atomic_set → Write.atomic_fragments guards the LHS on BOTH phases, spec §7.1).
+  defp run_bulk_upsert(resource, [{rep_changeset, _} | _] = entries, options, identity_keys) do
     return_records? = Map.get(options, :return_records?, false)
     identity_key_strings = Enum.map(identity_keys, &Atom.to_string/1)
 
@@ -1602,26 +1609,37 @@ defmodule AshArcadic.DataLayer do
         |> Map.merge(%{"all" => all_props, "set" => set})
       end)
 
-    # Gate the COMPLETE wire payload ONCE (Task-1 consolidation parity): Jason.encode(rows)
-    # recurses into every row's identity values, "all", AND "set", so one gate covers ALL
-    # wire values before any DB touch. Fail closed value-free (Rule 4).
-    with :ok <- encode_gate(resource, %{"rows" => rows}, CreateFailed),
+    # Fold both atomic phases off the representative, threading one shared $paramN seed so
+    # ON CREATE and ON MATCH params never collide (exactly run_upsert's ordering). Then gate
+    # every wire value before any DB touch: `%{"rows" => rows}` (identity + all + set) AND
+    # the atomic params (bound RAW by Expression — a poisoned non-UTF8 literal there would
+    # otherwise crash Jason.EncodeError with the bytes in the message, Rule 4).
+    with {:ok, match_set, params} <- upsert_atomic_set(resource, rep_changeset.atomics, %{}),
+         {:ok, create_set, params} <-
+           upsert_atomic_set(resource, rep_changeset.create_atomics, params),
+         :ok <- encode_gate(resource, %{"rows" => rows}, CreateFailed),
+         :ok <- encode_gate(resource, params, CreateFailed),
          {:ok, conn} <- bulk_conn(resource, entries) do
       label = validated_label(resource)
       merge_pattern = bulk_merge_pattern(identity_keys)
 
       cypher =
         "UNWIND $rows AS r MERGE (n:#{label} #{merge_pattern}) " <>
-          "ON CREATE SET n += r.all ON MATCH SET n += r.set RETURN n"
+          "ON CREATE SET n += r.all#{create_set} ON MATCH SET n += r.set#{match_set} RETURN n"
 
       conn
-      |> Arcadic.command(cypher, %{"rows" => rows})
+      |> Arcadic.command(cypher, Map.merge(params, %{"rows" => rows}))
       |> decode_bulk_result(resource, entries, return_records?)
     else
+      # A sensitive/non-stored/discriminator atomic target normalizes to value-free
+      # CreateFailed (sibling parity with do_upsert); an encode_gate failure is already
+      # %CreateFailed{}; a conn error is an atom.
+      {:error, %AshArcadic.Errors.UnsupportedFilter{}} ->
+        {:error, CreateFailed.exception(resource: resource, reason: "unsupported atomic change")}
+
       {:error, reason} when is_atom(reason) ->
         {:error, CreateFailed.exception(resource: resource, reason: conn_error_reason(reason))}
 
-      # An encode_gate failure is already a value-free %CreateFailed{} — pass through.
       {:error, _} = err ->
         err
     end
