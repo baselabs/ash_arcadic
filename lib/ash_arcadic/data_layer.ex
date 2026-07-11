@@ -1590,9 +1590,10 @@ defmodule AshArcadic.DataLayer do
 
   # One UNWIND MERGE for the whole batch. Per row we ship: the identity values TOP-LEVEL
   # (read by the merge pattern as `r.<key>` — the P4-proven bulk form, distinct from the
-  # single-row `$mk_<key>` bound form), plus `"all"` (the full property map → ON CREATE
-  # `n += r.all`, seeds the force-set discriminator from all_props → D4 tenant-scoped
-  # merge) and `"set"` (the ON MATCH subset → `n += r.set`). BOTH atomic phases fold (V8
+  # single-row `$mk_<key>` bound form), plus the namespaced container `"__arcadic_all__"` (the full
+  # property map → ON CREATE `n += r.__arcadic_all__`, seeds the force-set discriminator from all_props
+  # → D4 tenant-scoped merge) and `"__arcadic_set__"` (the ON MATCH subset → `n += r.__arcadic_set__`;
+  # leading-underscore so a PK/identity literally named `:set`/`:all` can't collide). BOTH atomic phases fold (V8
   # parity with run_upsert): the representative's `create_atomics` → ON CREATE SET suffix,
   # its `atomics` → ON MATCH SET suffix — Ash groups a bulk batch by `{atomics,
   # create_atomics, filter}` (create/bulk.ex:1233), so all entries share the head's
@@ -1613,9 +1614,12 @@ defmodule AshArcadic.DataLayer do
         # keeps the discriminator OUT of ON MATCH (D3 — never SET the disc, a tenant-hop).
         set = upsert_set_map(resource, changeset, identity_keys)
 
+        # Container keys are namespaced (leading underscore) so they can NEVER collide with a
+        # same-named identity/PK carried TOP-LEVEL: `Arcadic.Identifier` requires a leading LETTER,
+        # so a field named `:set`/`:all` stays top-level while the containers ride `__arcadic_*__`.
         all_props
         |> Map.take(identity_key_strings)
-        |> Map.merge(%{"all" => all_props, "set" => set})
+        |> Map.merge(%{"__arcadic_all__" => all_props, "__arcadic_set__" => set})
       end)
 
     # Fold both atomic phases off the representative, threading one shared $paramN seed so
@@ -1634,7 +1638,7 @@ defmodule AshArcadic.DataLayer do
 
       cypher =
         "UNWIND $rows AS r MERGE (n:#{label} #{merge_pattern}) " <>
-          "ON CREATE SET n += r.all#{create_set} ON MATCH SET n += r.set#{match_set} RETURN n"
+          "ON CREATE SET n += r.__arcadic_all__#{create_set} ON MATCH SET n += r.__arcadic_set__#{match_set} RETURN n"
 
       conn
       |> Arcadic.command(cypher, Map.merge(params, %{"rows" => rows}))
@@ -2411,7 +2415,7 @@ defmodule AshArcadic.DataLayer do
   # group key), so `rep.atomics` folds into the statement ONCE and `rep.filter` composes into the
   # WHERE ONCE (see run_update_many), while each row's OWN static changes ride the per-row `$rows`
   # UNWIND. (A batch of static-only changes — e.g. `%{name: "X"}` per row — shares group key {[], nil}
-  # and forms ONE multi-row group exercising `n += r.set` across every row.) The `:attribute`
+  # and forms ONE multi-row group exercising `n += r.__arcadic_set__` across every row.) The `:attribute`
   # discriminator is injected from `opts.tenant` (never row data) as a WHERE predicate; `:context`
   # targets the tenant database and fails closed on a blank tenant. A row whose PK/filter matches
   # nothing is simply absent from the returned records (spec D2 bulk semantics) — never a data-layer
@@ -2445,9 +2449,12 @@ defmodule AshArcadic.DataLayer do
 
     rows =
       Enum.map(entries, fn changeset ->
+        # The per-record change map rides a namespaced container (leading underscore) so it can never
+        # collide with a same-named PK carried TOP-LEVEL (a PK named `:set` — `Arcadic.Identifier`
+        # requires a leading letter, so the container `__arcadic_set__` is unreachable as a field name).
         Map.put(
           pk_row_key(changeset, pk, types),
-          "set",
+          "__arcadic_set__",
           changeset_to_properties(resource, changeset)
         )
       end)
@@ -2456,7 +2463,7 @@ defmodule AshArcadic.DataLayer do
     # check, NOT an encode gate. JSON-encodability of every wire value (row `set` maps, atomic/filter
     # $paramN, $tenant) is gated ONCE on the final params in run_update_many, symmetric with
     # update_query's single encode_gate (AGENTS.md Rule 4).
-    if disc && Enum.any?(rows, &Map.has_key?(&1["set"], Atom.to_string(disc))) do
+    if disc && Enum.any?(rows, &Map.has_key?(&1["__arcadic_set__"], Atom.to_string(disc))) do
       {:error,
        UpdateFailed.exception(
          resource: resource,
@@ -2554,10 +2561,12 @@ defmodule AshArcadic.DataLayer do
     end)
   end
 
-  # The shared atomic fold prepends `n += r.set` (the per-row static merge) to the group's atomic
-  # SET fragments. Empty atomics → a pure static per-row merge.
-  defp update_many_set_clause([]), do: "n += r.set"
-  defp update_many_set_clause(atomic_frags), do: Enum.join(["n += r.set" | atomic_frags], ", ")
+  # The shared atomic fold prepends `n += r.__arcadic_set__` (the namespaced per-row static merge) to
+  # the group's atomic SET fragments. Empty atomics → a pure static per-row merge.
+  defp update_many_set_clause([]), do: "n += r.__arcadic_set__"
+
+  defp update_many_set_clause(atomic_frags),
+    do: Enum.join(["n += r.__arcadic_set__" | atomic_frags], ", ")
 
   # Prefixes the combined scope clause with the WHERE keyword, or "" when there is no scope (PK-only
   # match via the MATCH pattern). Keeps run_update_many's nesting within credo's depth budget.
