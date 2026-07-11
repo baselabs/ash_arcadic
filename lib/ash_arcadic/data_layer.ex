@@ -640,44 +640,50 @@ defmodule AshArcadic.DataLayer do
     end
   end
 
-  # Native (all union-family) → one CALL{UNION} statement via to_cypher. In-memory (any intersect/except)
-  # → run each branch, PK-fold, apply outer modifiers in Elixir. combination_unsupported/2 fails closed
-  # value-free on shapes Ash can construct but this slice cannot render, so nothing is silently dropped.
+  # Native (all union-family, no per-branch paging) → one CALL{UNION} statement via to_cypher. In-memory
+  # (any intersect/except, OR any per-branch limit/offset) → run each branch, PK-fold, apply outer modifiers
+  # in Elixir. combination_unsupported/2 fails closed value-free on shapes neither path can honor.
   defp run_combination(conn, query, resource) do
-    native? = Combination.native?(query.combination_of)
+    in_memory? = combination_in_memory?(query.combination_of)
 
-    case combination_unsupported(query, native?) do
+    case combination_unsupported(query, in_memory?) do
       nil ->
-        if native?,
-          do: run_native_combination(conn, query, resource),
-          else: run_inmemory_combination(conn, query, resource)
+        if in_memory?,
+          do: run_inmemory_combination(conn, query, resource),
+          else: run_native_combination(conn, query, resource)
 
       reason ->
         {:error, QueryFailed.exception(query: "ArcadeDB combination query", reason: reason)}
     end
   end
 
-  # Fail closed value-free on combination shapes this slice does not support (Ash CAN construct them —
-  # combination_queries applies per-branch limit/offset/sort/calculations, deps/ash query.ex:4607-4621 —
-  # and the whole-vertex `MATCH (n) RETURN n` render would SILENTLY drop them). Per-branch calculations and
-  # per-branch paging are rejected on BOTH paths (the render ignores them / native-vs-in-memory diverge). An
-  # expr-calc outer sort and a lazy outer :expression are rejected ONLY on the in-memory path — the native
-  # render handles both (order_fragment / build_where), but the in-memory path passes query.sort to
+  # The in-memory strategy runs when any branch is intersect/except (ArcadeDB has no INTERSECT/EXCEPT) OR
+  # any branch carries per-branch paging (a limit / positive offset). Per-branch paging forces in-memory
+  # because the native CALL-wrap applies the outer (tenant) filter AFTER the union, so a branch LIMIT would
+  # fill from cross-tenant rows the outer WHERE then trims (under-return); the in-memory `run_branch` pushes
+  # the outer filter INTO each branch, so the branch LIMIT sees only the tenant's rows. Whole-vertex UNION
+  # dedup ≡ PK-fold dedup for PK-bearing resources (spec §7.2), so the strategy switch is result-equivalent.
+  defp combination_in_memory?(combination_of) do
+    not Combination.native?(combination_of) or Enum.any?(combination_of, &branch_paged?/1)
+  end
+
+  # Fail closed value-free on combination shapes NEITHER path can honor (Ash CAN construct them —
+  # combination_queries applies per-branch limit/offset/sort/calculations, deps/ash query.ex:4607-4621).
+  # Per-branch calculations are rejected on both paths (the whole-vertex `RETURN n` render drops them). An
+  # expr-calc outer sort and a lazy outer :expression are rejected on the IN-MEMORY path — the native render
+  # honors both (order_fragment / build_where), but the in-memory path passes query.sort to
   # Ash.Actions.Sort.runtime_sort (which FunctionClauseErrors on a {:expr,_,_} 3-tuple, value-leaking the
   # record list, sort.ex:117,123) and never consults query.expression. All reasons are fixed literals.
-  defp combination_unsupported(query, native?) do
+  defp combination_unsupported(query, in_memory?) do
     cond do
       Enum.any?(query.combination_of, &branch_has_calculations?/1) ->
         "calculations on a combination branch are not supported"
 
-      Enum.any?(query.combination_of, &branch_paged?/1) ->
-        "per-branch limit/offset on a combination is not supported"
+      in_memory? and Enum.any?(query.sort, &match?({:expr, _, _}, &1)) ->
+        "expression-calculation sort on an in-memory combination is not supported"
 
-      not native? and Enum.any?(query.sort, &match?({:expr, _, _}, &1)) ->
-        "expression-calculation sort on an intersect/except combination is not supported"
-
-      not native? and not is_nil(query.expression) ->
-        "a lazy filter expression on an intersect/except combination is not supported"
+      in_memory? and not is_nil(query.expression) ->
+        "a lazy filter expression on an in-memory combination is not supported"
 
       true ->
         nil
@@ -686,9 +692,10 @@ defmodule AshArcadic.DataLayer do
 
   defp branch_has_calculations?({_type, branch}), do: branch.calculations != []
 
-  # A POSITIVE offset or any limit is MEANINGFUL per-branch paging. offset: 0 is Ash's spurious per-branch
-  # default (combination_queries always sets it, deps/ash query.ex:4608) and is a no-op — treating it as
-  # paging would fail-close EVERY combination read.
+  # A POSITIVE offset or any limit is MEANINGFUL per-branch paging → routes to the in-memory path
+  # (combination_in_memory?/1). offset: 0 is Ash's spurious per-branch default (combination_queries always
+  # sets it, deps/ash query.ex:4608) and is a no-op — treating it as paging would force EVERY combination
+  # onto the in-memory path.
   defp branch_paged?({_type, branch}),
     do: branch.limit != nil or (is_integer(branch.offset) and branch.offset > 0)
 

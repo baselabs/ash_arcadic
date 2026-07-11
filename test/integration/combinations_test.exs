@@ -99,6 +99,30 @@ defmodule AshArcadic.Integration.CombinationsTest do
     assert ids(records) == ["a"]
   end
 
+  test "native-family branch with a per-branch limit routes to the in-memory path, tenant-scoped" do
+    # base(eng) LIMIT 1 is union-family but PAGED → combination_in_memory?/1 routes it to the in-memory
+    # strategy, where the tenant filter is pushed into each branch BEFORE its LIMIT. So the base branch's
+    # LIMIT 1 sees only org1's {a,b} and never org2's "z": exactly 1 org1 eng row + union(ops)→{c} = 2 rows.
+    # (If paging had stayed on the native path, the LIMIT would apply before the outer tenant WHERE and could
+    # fill from org2's "z" — then dropped — yielding a wrong 1-row result.)
+    seed_attr("org1", [{"a", "eng", 10}, {"b", "eng", 20}, {"c", "ops", 30}])
+    seed_attr("org2", [{"z", "eng", 5}])
+
+    q =
+      AttributeDoc
+      |> Ash.Query.combination_of([
+        Combination.base(filter: Ash.Expr.expr(name == "eng"), limit: 1),
+        Combination.union(filter: Ash.Expr.expr(name == "ops"))
+      ])
+
+    records = Ash.read!(q, tenant: "org1", authorize?: false)
+    assert length(records) == 2
+    assert "c" in ids(records)
+    refute "z" in ids(records)
+    # the single eng row is one of org1's {a,b}, never org2's z
+    assert (ids(records) -- ["c"]) in [["a"], ["b"]]
+  end
+
   test ":context combination runs within the tenant database", %{t_ctx: t_ctx} do
     for {id, name, amount} <- [{"c1", "x", 1}, {"c2", "y", 2}, {"c3", "z", 3}] do
       ContextDoc

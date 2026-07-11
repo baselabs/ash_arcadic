@@ -16,19 +16,11 @@ defmodule AshArcadic.DataLayer.CombinationDispatchTest do
   defp build(fields),
     do: struct!(Query, Keyword.merge([resource: @resource, label: :Person], fields))
 
-  test "per-branch limit fails closed (native union path)" do
-    q = build(combination_of: [{:base, build(limit: 2)}, {:union, build([])}])
-
-    assert {:error, err} = DL.run_query(q, @resource)
-    assert Exception.message(err) =~ "per-branch limit/offset"
-  end
-
-  test "per-branch offset fails closed" do
-    q = build(combination_of: [{:base, build(offset: 3)}, {:union, build([])}])
-
-    assert {:error, err} = DL.run_query(q, @resource)
-    assert Exception.message(err) =~ "per-branch limit/offset"
-  end
+  # NOTE: per-branch limit/offset is NO LONGER rejected — it is SUPPORTED via the in-memory strategy
+  # (combination_in_memory?/1 routes any paged combination there so the branch LIMIT is applied AFTER the
+  # per-branch tenant filter). Its positive behavior is proven live in test/integration/combinations_test.exs
+  # ("native-family branch with a per-branch limit routes to the in-memory path, tenant-scoped"). The former
+  # DB-free "per-branch paging fails closed" rejection tests were removed here because the behavior changed.
 
   test "per-branch calculations fail closed" do
     q =
@@ -40,7 +32,7 @@ defmodule AshArcadic.DataLayer.CombinationDispatchTest do
     assert Exception.message(err) =~ "calculations on a combination branch"
   end
 
-  test "expression-calculation sort on an intersect/except combination fails closed (in-memory path)" do
+  test "expression-calculation sort on an in-memory combination fails closed" do
     q =
       build(
         combination_of: [{:base, build([])}, {:intersect, build([])}],
@@ -51,7 +43,7 @@ defmodule AshArcadic.DataLayer.CombinationDispatchTest do
     assert Exception.message(err) =~ "expression-calculation sort"
   end
 
-  test "a lazy filter expression on an intersect/except combination fails closed (in-memory path)" do
+  test "a lazy filter expression on an in-memory combination fails closed" do
     expression = Ash.Query.filter(@resource, name == "x").filter
 
     q =
