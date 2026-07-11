@@ -50,4 +50,24 @@ defmodule AshArcadic.Integration.BulkUpdateQueryTest do
     assert result.status == :success
     assert result.records == []
   end
+
+  test "a poisoned non-UTF8 binary in an atomic RHS fails closed value-free (encode-gate covers atomic params)" do
+    bad = <<0xFF, 0xFE>>
+
+    # Ash.bulk_update (non-bang) returns a BulkResult with :error status rather than raising —
+    # the encode-gate must turn the poisoned atomic into a value-free UpdateFailed, never a
+    # Jason.EncodeError with the bytes in the message.
+    result =
+      CrudPerson
+      |> Ash.Query.filter(age == 30)
+      |> Ash.bulk_update(:update, %{name: Ash.Expr.expr(name <> ^bad)},
+        strategy: :atomic,
+        return_errors?: true
+      )
+
+    assert result.status == :error
+    # Value-free: the raw bytes never appear in any error surfaced.
+    refute inspect(result.errors) =~ "255"
+    refute inspect(result.errors) =~ "0xFF"
+  end
 end

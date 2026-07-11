@@ -1784,7 +1784,10 @@ defmodule AshArcadic.DataLayer do
     {where, where_params} = AshArcadic.Query.where_and_params(query)
 
     with {:ok, set_clause, params} <- Write.build_set(resource, changeset, where_params),
-         :ok <- encode_gate(resource, Map.get(params, "static", %{}), UpdateFailed),
+         # Gate EVERY bound value — the $paramN atomic-RHS/WHERE scalars AND the nested
+         # "static" map (Jason.encode recurses into it). A poisoned binary in ANY of them
+         # fails closed value-free here instead of leaking bytes via Jason.EncodeError.
+         :ok <- encode_gate(resource, params, UpdateFailed),
          {:ok, conn} <- query_write_conn(query, resource) do
       label = validated_label(resource)
       return? = Map.get(opts, :return_records?, false)
