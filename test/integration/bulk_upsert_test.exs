@@ -38,8 +38,14 @@ defmodule AshArcadic.Integration.BulkUpsertTest do
         return_records?: true
       )
 
-    all = UpsertThing |> Ash.read!() |> Map.new(&{&1.code, &1.name})
-    assert all == %{"a" => "new-a", "b" => "new-b", "z" => "new-z"}
+    rows = Ash.read!(UpsertThing)
+
+    # Row COUNT, not just the by-code map: a CREATE-instead-of-MERGE regression (the
+    # duplicate-create fail-open this feature prevents) would leave the seeded "a"/"b"
+    # plus fresh duplicates (5 rows), but `Map.new` below collapses by code and would
+    # hide it. Exactly 3 distinct codes (a/b/z), no duplicates.
+    assert length(rows) == 3
+    assert Map.new(rows, &{&1.code, &1.name}) == %{"a" => "new-a", "b" => "new-b", "z" => "new-z"}
   end
 
   test "bulk upsert is idempotent (re-run yields the same rows, no duplicates)" do
