@@ -88,6 +88,10 @@ _An Ash DataLayer for ArcadeDB (native OpenCypher over HTTP)._
   nothing and creates its own row (never hijacks). Atomic changes fold on BOTH branches (`create_atomics`
   → ON CREATE, `atomics` → ON MATCH); the discriminator is never in the ON MATCH set (D3). Every wire value
   is encode-gated value-free.
+- **Concurrency caveat (inherent MERGE limit).** "No duplicates / idempotent" holds for SEQUENTIAL
+  re-runs. ArcadeDB enforces no identity uniqueness, so two CONCURRENT bulk upserts of the SAME NEW
+  identity can each MATCH nothing and both CREATE — duplicate rows. This is the same limitation as the
+  single-row upsert; add a unique index or serialize writers if you need a hard guarantee.
 
 ## Query & filter push-down (Plan 2)
 

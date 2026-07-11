@@ -134,24 +134,29 @@ defmodule AshArcadic.DataLayer.WriteResolutionTest do
              )
   end
 
-  # update_many/3 resolves its write conn via write_conn/2 from a synthesized changeset carrying
-  # opts.tenant. Its :context blank-tenant fail-closed arm is the SAME defense-in-depth backstop as
-  # query_write_conn's: Ash's bulk path rejects a blank :context tenant UPSTREAM
-  # (Bulk.validate_multitenancy), so the integration path is Ash-shadowed. This DB-free unit drives
-  # the callback DIRECTLY — a fall-through to the base database would be a silent cross-tenant write.
-  # It fails closed BEFORE any Arcadic.command (write_conn returns {:error, :tenant_required}), so no
-  # live server is needed. Non-vacuity: the reason is the EXACT :tenant_required string — an incidental
-  # crash would raise, not return this value-free %UpdateFailed{}.
+  # update_many/3 resolves its write conn via write_conn_for_tenant/2 keyed on the representative
+  # changeset's NORMALIZED to_tenant (sibling parity with the single-row write_conn/2 and the bulk
+  # upsert path — NOT the raw opts.tenant). Its :context blank-tenant fail-closed arm is the SAME
+  # defense-in-depth backstop as query_write_conn's: Ash's bulk path rejects a blank :context tenant
+  # UPSTREAM (Bulk.validate_multitenancy), so the integration path is Ash-shadowed. This DB-free unit
+  # drives the callback DIRECTLY with a blank to_tenant on the changeset — a fall-through to the base
+  # database would be a silent cross-tenant write. It fails closed BEFORE any Arcadic.command
+  # (write_conn_for_tenant returns {:error, :tenant_required}), so no live server is needed.
+  # Non-vacuity: the reason is the EXACT :tenant_required string — an incidental crash would raise, not
+  # return this value-free %UpdateFailed{}.
   test "update_many :context fails closed on a nil/blank tenant, value-free (DB-free backstop)" do
-    cs = %Ash.Changeset{
-      resource: ContextRes,
-      data: struct(ContextRes, %{id: "11111111-1111-1111-1111-111111111111"}),
-      attributes: %{},
-      atomics: [],
-      filter: nil
-    }
-
     for tenant <- [nil, ""] do
+      # The representative changeset carries the (blank) to_tenant — update_many scopes by it, so the
+      # loop exercises BOTH the nil and the "" branch of write_database_for_tenant's :context guard.
+      cs = %Ash.Changeset{
+        resource: ContextRes,
+        data: struct(ContextRes, %{id: "11111111-1111-1111-1111-111111111111"}),
+        to_tenant: tenant,
+        attributes: %{},
+        atomics: [],
+        filter: nil
+      }
+
       assert {:error, %AshArcadic.Errors.UpdateFailed{} = err} =
                DL.update_many(ContextRes, [cs], %{tenant: tenant})
 
