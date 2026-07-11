@@ -679,6 +679,14 @@ defmodule AshArcadic.DataLayer do
       Enum.any?(query.combination_of, &branch_has_calculations?/1) ->
         "calculations on a combination branch are not supported"
 
+      # A branch expr-calc SORT is rejected on both paths: rekey_branch/3 namespaces only the branch's
+      # WHERE clauses + params, so a {:expr, cypher, dir} branch-sort fragment keeps its ORIGINAL $paramN
+      # ref while the branch params are renamed to b<i>_paramN — the orphaned ref would mis-bind against
+      # the outer/tenant param. Unreachable today (a branch calc-sort fails closed at sort/3's sort_clause
+      # during branch build, before this callback) — a forward-compatible fail-closed for that future slice.
+      Enum.any?(query.combination_of, &branch_has_expr_sort?/1) ->
+        "expression-calculation sort on a combination branch is not supported"
+
       in_memory? and Enum.any?(query.sort, &match?({:expr, _, _}, &1)) ->
         "expression-calculation sort on an in-memory combination is not supported"
 
@@ -691,6 +699,9 @@ defmodule AshArcadic.DataLayer do
   end
 
   defp branch_has_calculations?({_type, branch}), do: branch.calculations != []
+
+  defp branch_has_expr_sort?({_type, branch}),
+    do: Enum.any?(branch.sort, &match?({:expr, _, _}, &1))
 
   # A POSITIVE offset or any limit is MEANINGFUL per-branch paging → routes to the in-memory path
   # (combination_in_memory?/1). offset: 0 is Ash's spurious per-branch default (combination_queries always
@@ -1112,21 +1123,34 @@ defmodule AshArcadic.DataLayer do
   # combined query's outer filter/sort/distinct/limit/offset are applied by data_layer_query AFTER this
   # returns.
   def combination_of(combinations, resource, _domain) do
-    case combination_database(combinations, resource) do
-      {:ok, database} ->
-        {:ok,
-         %AshArcadic.Query{
-           resource: resource,
-           client: Info.client(resource),
-           label: Info.label(resource),
-           database: database,
-           combination_of: combinations
-         }}
-
+    with :ok <- validate_combination_chain(combinations),
+         {:ok, database} <- combination_database(combinations, resource) do
+      {:ok,
+       %AshArcadic.Query{
+         resource: resource,
+         client: Info.client(resource),
+         label: Info.label(resource),
+         database: database,
+         combination_of: combinations
+       }}
+    else
       {:error, reason} ->
         {:error, QueryFailed.exception(query: "ArcadeDB combination", reason: reason)}
     end
   end
+
+  # The first branch must be `:base` and no later branch may be. Ash gates only the FIRST entry's type
+  # (validate_combinations, deps/ash read.ex:1214), so a mid-chain `:base` is constructible from public
+  # input. Reject it gracefully value-free HERE — a query error, not a render-time ArgumentError crash
+  # (union_op/1, Combination.apply_op/4 keep those raises as unreachable defense-in-depth).
+  defp validate_combination_chain([{:base, _} | rest]) do
+    if Enum.any?(rest, fn {type, _branch} -> type == :base end),
+      do: {:error, "combination_of: only the first branch may be :base"},
+      else: :ok
+  end
+
+  defp validate_combination_chain(_),
+    do: {:error, "combination_of: the first branch must be :base"}
 
   # :context — every branch must resolve to the SAME non-nil tenant database (set_tenant fired per
   # branch in combination_queries); a blank tenant (nil database) or branches spanning databases fail

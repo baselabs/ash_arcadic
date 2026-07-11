@@ -78,4 +78,17 @@ defmodule AshArcadic.DataLayer.CombinationPrepareTest do
 
     assert Exception.message(err) =~ "required"
   end
+
+  test "a mid-chain :base branch fails closed value-free (graceful error, not a render crash)" do
+    b = %Query{resource: AshArcadic.Test.AttributeDoc}
+
+    assert {:error, err} =
+             DL.combination_of(
+               [{:base, b}, {:union, b}, {:base, b}],
+               AshArcadic.Test.AttributeDoc,
+               nil
+             )
+
+    assert Exception.message(err) =~ "only the first branch may be :base"
+  end
 end

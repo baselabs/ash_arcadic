@@ -71,4 +71,14 @@ defmodule AshArcadic.Query.CombinationTest do
     assert rk_filters == ["n.a = $b2_param1 AND n.b = $b2_param10"]
     assert rk_params == %{"b2_param1" => "Ann", "b2_param10" => 42}
   end
+
+  test "combine raises value-free (not a record-carrying FunctionClauseError) on a non-:base first branch" do
+    err =
+      assert_raise ArgumentError, fn ->
+        Combination.combine([{:union, [rec("secretid", "secretname")]}], [:id])
+      end
+
+    assert Exception.message(err) =~ "first branch must be :base"
+    refute Exception.message(err) =~ "secret"
+  end
 end

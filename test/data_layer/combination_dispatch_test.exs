@@ -55,4 +55,17 @@ defmodule AshArcadic.DataLayer.CombinationDispatchTest do
     assert {:error, err} = DL.run_query(q, @resource)
     assert Exception.message(err) =~ "lazy filter expression"
   end
+
+  test "an expression-calculation sort on a combination BRANCH fails closed (both paths)" do
+    q =
+      build(
+        combination_of: [
+          {:base, build(sort: [{:expr, "n.amount + 1", :asc}])},
+          {:union, build([])}
+        ]
+      )
+
+    assert {:error, err} = DL.run_query(q, @resource)
+    assert Exception.message(err) =~ "expression-calculation sort on a combination branch"
+  end
 end

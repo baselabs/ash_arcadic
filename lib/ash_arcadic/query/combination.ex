@@ -27,6 +27,14 @@ defmodule AshArcadic.Query.Combination do
     end)
   end
 
+  # FAIL CLOSED value-free: a non-`:base` first branch (or an empty chain) reached here. Ash rejects a
+  # non-`:base` first entry upstream (read.ex:1214) and AshArcadic.DataLayer.combination_of/3 rejects it
+  # again, so this is direct-invocation defense-in-depth — a clear message, never a FunctionClauseError
+  # whose blamed args would carry the decoded record lists.
+  def combine(_branch_results, _pk_fields) do
+    raise ArgumentError, "combination_of: the first branch must be :base"
+  end
+
   # FAIL CLOSED: a mid-chain `:base` would REPLACE the accumulator, silently dropping every prior branch.
   # Ash's validate_combinations only rejects a non-`:base` FIRST entry (read.ex:1214), so this is
   # reachable. Value-free message (no record data), symmetric with the native path's loud reject.
