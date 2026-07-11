@@ -31,6 +31,7 @@ defmodule AshArcadic.DataLayer do
   alias AshArcadic.Query.Combination
   alias AshArcadic.Query.Expression
   alias AshArcadic.Query.Filter
+  alias AshArcadic.Query.Write
   alias AshArcadic.Telemetry
   alias Ecto.Schema.Metadata
 
@@ -139,6 +140,12 @@ defmodule AshArcadic.DataLayer do
   def can?(_, :destroy), do: true
   def can?(_, :upsert), do: true
   def can?(_, :bulk_create), do: true
+  # Slice 9: query-scoped bulk writes. :update_query enables the one-statement push-down
+  # (Ash's set_strategy, update/bulk.ex:1211, drops to [:stream] when false). :expr_error
+  # signals we surface expression errors so Ash keeps the FULL atomic strategy set incl. pure
+  # :atomic (else it drops to [:stream, :atomic_batches, :atomic] — spec §3/D7).
+  def can?(_, :update_query), do: true
+  def can?(_, :expr_error), do: true
   def can?(_, :filter), do: true
   def can?(_, :limit), do: true
   def can?(_, :offset), do: true
@@ -1759,6 +1766,76 @@ defmodule AshArcadic.DataLayer do
   end
 
   @impl true
+  def update_query(%AshArcadic.Query{} = query, changeset, resource, opts) do
+    Telemetry.span(:update_query, %{resource: resource, multitenancy: strategy(resource)}, fn ->
+      result = do_update_query(query, changeset, resource, opts)
+
+      {result,
+       %{
+         tenant?: not is_nil(query.tenant),
+         matched: matched_count(result),
+         result: Telemetry.result_tag(result),
+         in_transaction?: AshArcadic.Transaction.in_transaction?()
+       }}
+    end)
+  end
+
+  defp do_update_query(query, changeset, resource, opts) do
+    {where, where_params} = AshArcadic.Query.where_and_params(query)
+
+    with {:ok, set_clause, params} <- Write.build_set(resource, changeset, where_params),
+         :ok <- encode_gate(resource, Map.get(params, "static", %{}), UpdateFailed),
+         {:ok, conn} <- query_write_conn(query, resource) do
+      label = validated_label(resource)
+      return? = Map.get(opts, :return_records?, false)
+      cypher = "MATCH (n:#{label}) #{where} SET #{set_clause}#{return_suffix(return?)}"
+
+      decode_query_write(resource, return?, Arcadic.command(conn, cypher, params))
+    else
+      {:error, %AshArcadic.Errors.UnsupportedFilter{}} ->
+        {:error,
+         UpdateFailed.exception(resource: resource, reason: "unsupported atomic/static change")}
+
+      {:error, reason} when is_atom(reason) ->
+        {:error, UpdateFailed.exception(resource: resource, reason: conn_error_reason(reason))}
+
+      {:error, %{} = err} ->
+        {:error, err}
+    end
+  end
+
+  # RETURN n only when Ash wants the records back; otherwise the statement mutates and returns :ok.
+  defp return_suffix(true), do: " RETURN n"
+  defp return_suffix(false), do: ""
+
+  # return_records? false → :ok. true → decode each flat vertex. An EMPTY match is a valid no-op
+  # ({:ok, []}), NEVER StaleRecord — bulk semantics differ from the single-row pk-scoped write
+  # (spec D2). A row-count mismatch is impossible here (one statement, N matched rows returned).
+  defp decode_query_write(_resource, false, {:ok, _rows}), do: :ok
+
+  defp decode_query_write(resource, true, {:ok, rows}) do
+    attribute_map = Info.attribute_map(resource)
+    attribute_types = Info.attribute_types(resource)
+
+    records =
+      Enum.map(rows, fn row ->
+        record = struct(resource, Cast.row_to_attrs(row, attribute_map, attribute_types))
+        %{record | __meta__: %Metadata{state: :loaded, schema: resource}}
+      end)
+
+    {:ok, records}
+  end
+
+  defp decode_query_write(resource, _return?, {:error, error}) do
+    {:error, UpdateFailed.exception(resource: resource, reason: redact_db_error(error))}
+  end
+
+  # matched count for telemetry: the returned-row count when records are returned, else nil (a
+  # RETURN-less mutation reports no count — do not mis-report 0 matched). Value-free (an integer).
+  defp matched_count({:ok, records}) when is_list(records), do: length(records)
+  defp matched_count(_), do: nil
+
+  @impl true
   def destroy(resource, changeset) do
     Telemetry.span(:destroy, %{resource: resource, multitenancy: strategy(resource)}, fn ->
       result = do_destroy(resource, changeset)
@@ -2091,6 +2168,44 @@ defmodule AshArcadic.DataLayer do
             AshArcadic.Transaction.resolve_conn(
               Arcadic.with_database(conn_for(resource), database),
               :read
+            )
+        end
+    end
+  end
+
+  @doc false
+  # Write connection for a query-scoped bulk write, resolved from the DATA-LAYER QUERY (not a
+  # changeset) — symmetric with read_conn/2 but in :write resolve mode (session write-first /
+  # cross-database guard inside a transaction). :context REQUIRES query.database (set by
+  # set_tenant during data_layer_query); a nil/blank database means a blank tenant → fail closed
+  # (never the base database — a silent cross-tenant write). :attribute uses the configured/base
+  # database; its tenant scoping is the discriminator predicate already ANDed into query.filters.
+  @spec query_write_conn(AshArcadic.Query.t(), Ash.Resource.t()) ::
+          {:ok, Arcadic.Conn.t()}
+          | {:error, :tenant_required | :cross_database_transaction | :transaction_begin_failed}
+  def query_write_conn(%AshArcadic.Query{} = query, resource) do
+    case strategy(resource) do
+      :context ->
+        case query.database do
+          blank when blank in [nil, ""] ->
+            {:error, :tenant_required}
+
+          database ->
+            AshArcadic.Transaction.resolve_conn(
+              Arcadic.with_database(conn_for(resource), database),
+              :write
+            )
+        end
+
+      _ ->
+        case query.database do
+          nil ->
+            AshArcadic.Transaction.resolve_conn(conn_for(resource), :write)
+
+          database ->
+            AshArcadic.Transaction.resolve_conn(
+              Arcadic.with_database(conn_for(resource), database),
+              :write
             )
         end
     end

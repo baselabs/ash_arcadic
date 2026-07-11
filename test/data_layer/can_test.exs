@@ -26,6 +26,11 @@ defmodule AshArcadic.DataLayer.CanTest do
     end
   end
 
+  test "advertises :update_query and :expr_error" do
+    assert DL.can?(AshArcadic.Test.CrudPerson, :update_query)
+    assert DL.can?(AshArcadic.Test.CrudPerson, :expr_error)
+  end
+
   test "transact is true (Plan 3)" do
     assert DL.can?(AshArcadic.Test.Basic, :transact)
   end

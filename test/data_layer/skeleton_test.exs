@@ -47,6 +47,9 @@ defmodule AshArcadic.DataLayer.SkeletonTest do
     assert AshArcadic.DataLayer.can?(AshArcadic.Test.Basic, {:combine, :union})
     assert AshArcadic.DataLayer.can?(AshArcadic.Test.Basic, {:combine, :intersect})
     refute AshArcadic.DataLayer.can?(AshArcadic.Test.Basic, {:combine, :bogus})
+    # Slice 9: query-scoped bulk-write push-down + expression-error surfacing.
+    assert AshArcadic.DataLayer.can?(AshArcadic.Test.Basic, :update_query)
+    assert AshArcadic.DataLayer.can?(AshArcadic.Test.Basic, :expr_error)
     assert AshArcadic.DataLayer.can?(AshArcadic.Test.Basic, {:query_aggregate, :count})
     assert AshArcadic.DataLayer.can?(AshArcadic.Test.Basic, {:query_aggregate, :sum})
     # Slice 4: relationship aggregates enabled; flat/unrelated inline aggregates REFUSED

@@ -8,7 +8,7 @@ defmodule AshArcadic.Telemetry do
   # `in_transaction?` is added.
 
   @allowed_meta_keys ~w(resource multitenancy tenant? internal? stale? in_transaction?
-                        properties? direction row_count batch_size group_count
+                        properties? direction row_count batch_size group_count matched
                         destination_count depth result kinds aggregate_count
                         calculation_count distinct? combination? combination_types
                         combination_strategy traversal_aggregate? aggregate_kinds)a
