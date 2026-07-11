@@ -90,4 +90,23 @@ defmodule AshArcadic.Integration.BulkDestroyQueryTest do
     # Non-vacuity: nothing deleted (dropping the guard arm would run an unscoped DELETE).
     assert length(Ash.read!(CrudPerson)) == 3
   end
+
+  test "a poisoned non-UTF8 binary in a destroy filter fails closed value-free (WHERE encode-gate, sibling parity with update_query)" do
+    bad = <<0xFF, 0xFE>>
+
+    # Ash's :string cast ACCEPTS a non-UTF8 binary (probe-verified), so it reaches the WHERE
+    # $paramN un-gated; the destroy encode-gate must turn it into a value-free QueryFailed, never a
+    # Jason.EncodeError with the bytes (Rule 4). update_query already gates its WHERE params — this
+    # closes the sibling asymmetry (destroy had no equivalent gate).
+    result =
+      CrudPerson
+      |> Ash.Query.filter(name == ^bad)
+      |> Ash.bulk_destroy(:destroy, %{}, strategy: [:atomic], return_errors?: true)
+
+    assert result.status == :error
+    refute inspect(result.errors) =~ "255"
+    refute inspect(result.errors) =~ "0xFF"
+    # Non-vacuity: nothing deleted — the gate ran before any DELETE statement.
+    assert length(Ash.read!(CrudPerson)) == 3
+  end
 end

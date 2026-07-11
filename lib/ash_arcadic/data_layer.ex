@@ -2133,25 +2133,47 @@ defmodule AshArcadic.DataLayer do
   defp do_destroy_query_statement(query, resource, opts) do
     {where, params} = AshArcadic.Query.where_and_params(query)
 
-    case query_write_conn(query, resource) do
-      {:ok, conn} ->
-        label = validated_label(resource)
-        return? = Map.get(opts, :return_records?, false)
+    # Gate the WHERE $paramN scalars before the wire — SYMMETRIC with update_query (whose merged
+    # params are gated at do_update_query_statement). Ash's :string cast accepts a non-UTF8 binary,
+    # so a poisoned filter literal reaches params un-gated and would otherwise crash Jason.EncodeError
+    # with the bytes in the message (Rule 4). Value-free QueryFailed, before any conn/DELETE.
+    with :ok <- destroy_where_encode_gate(params),
+         {:ok, conn} <- query_write_conn(query, resource) do
+      label = validated_label(resource)
+      return? = Map.get(opts, :return_records?, false)
 
-        # P3: post-delete `RETURN n` yields no attributes; capture properties(n) BEFORE the
-        # DETACH DELETE when records are wanted. return_records? false → no RETURN, mutate only.
-        cypher =
-          if return? do
-            "MATCH (n:#{label}) #{where} WITH n, properties(n) AS p DETACH DELETE n RETURN p"
-          else
-            "MATCH (n:#{label}) #{where} DETACH DELETE n"
-          end
+      # P3: post-delete `RETURN n` yields no attributes; capture properties(n) BEFORE the
+      # DETACH DELETE when records are wanted. return_records? false → no RETURN, mutate only.
+      cypher =
+        if return? do
+          "MATCH (n:#{label}) #{where} WITH n, properties(n) AS p DETACH DELETE n RETURN p"
+        else
+          "MATCH (n:#{label}) #{where} DETACH DELETE n"
+        end
 
-        decode_destroy_query(resource, return?, Arcadic.command(conn, cypher, params))
+      decode_destroy_query(resource, return?, Arcadic.command(conn, cypher, params))
+    else
+      # The encode gate already returns a value-free %QueryFailed{} — pass it through.
+      {:error, %QueryFailed{}} = err ->
+        err
 
       {:error, reason} ->
         {:error,
          QueryFailed.exception(query: "ArcadeDB bulk delete", reason: conn_error_reason(reason))}
+    end
+  end
+
+  # Value-free encode gate for the destroy WHERE params — QueryFailed-flavored (encode_gate/3 is
+  # keyed on `resource:`, which QueryFailed's `[:query, :reason]` fields do not carry). Names only the
+  # $paramN KEY (structural), never the offending value.
+  defp destroy_where_encode_gate(params) do
+    case encode_check(params) do
+      :ok ->
+        :ok
+
+      {:error, key} ->
+        {:error,
+         QueryFailed.exception(query: "ArcadeDB bulk delete", reason: encode_error_reason(key))}
     end
   end
 
