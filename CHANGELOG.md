@@ -19,9 +19,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`change atomic_update(:field, expr(field + 1))`) push into Cypher `SET` via a new pure
   `AshArcadic.Query.Write` builder over `AshArcadic.Query.Expression`
   (`can?({:atomic, :update|:create|:upsert})`) — the RHS hydrated then translated, every literal bound;
-  atomic `create_atomics`/`atomics` are also folded into `create`/`upsert` (`ON CREATE`/`ON MATCH`). A
-  write to the multitenancy discriminator (atomic OR static), an empty SET, and a
-  `sensitive`/non-stored/`:binary`/`:decimal`/relationship/aggregate atomic RHS all fail closed value-free.
+  atomic `create_atomics` fold into EVERY create surface (single-row `create`, bulk `create`, and the
+  upsert `ON CREATE SET`) and `atomics` into the upsert `ON MATCH SET`. A write to the multitenancy
+  discriminator (atomic OR static), a `sensitive`/non-stored atomic TARGET (never plaintext into an
+  encrypted-binary column), an empty SET, and a `sensitive`/non-stored/`:binary`/`:decimal`/relationship/
+  aggregate atomic RHS all fail closed value-free.
   A `limit`/`offset`/`combination_of` on a query-scoped bulk write fails closed (a single `MATCH … SET`/
   `DELETE` cannot honor per-row paging; use `strategy: :stream`), as does a conditional after-batch hook on
   the action. Multitenancy stays fail-closed on every path (`:context` blank tenant → no statement;

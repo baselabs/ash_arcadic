@@ -49,11 +49,15 @@ _An Ash DataLayer for ArcadeDB (native OpenCypher over HTTP)._
   `AshArcadic.Query.Expression` — the RHS is hydrated then translated, every literal bound to a `$param`.
   A `sensitive`, non-stored, `:binary`, `:decimal`, relationship-path, or aggregate atomic RHS fails closed
   value-free (`%UnsupportedFilter{}`); an empty SET fails closed; the multitenancy discriminator is never
-  settable (atomic OR static) — a write to it is rejected value-free (it would tenant-hop the row).
+  settable (atomic OR static) — a write to it is rejected value-free (it would tenant-hop the row). The
+  atomic **target** (LHS) is likewise guarded: a `sensitive` (app-side-encrypted) or non-stored target
+  field is rejected value-free — an atomic binds its RHS raw (no serialization), so it must never write
+  plaintext into an encrypted-binary column.
 - **Atomic create/upsert are honest.** `change atomic_set(:field, expr(…))` on a create and an atomic
   change on an upsert action are applied (`can?({:atomic, :create|:upsert|:update})`): `create_atomics`
-  fold into the `CREATE … SET …` and `atomics` into the upsert `ON MATCH SET …`. (Advertising these
-  without folding would silently DROP the atomic change — closed.)
+  fold into the `CREATE … SET …` — on a single create, a **bulk create**, and the **upsert `ON CREATE
+  SET`** (the insert branch) — and `atomics` fold into the upsert `ON MATCH SET …`. (Advertising these
+  without folding on ANY of those surfaces would silently DROP the atomic change — closed.)
 - **Bulk destroy return-records captures pre-delete properties.** `return_records?: true` on a bulk
   destroy returns the deleted rows WITH their attributes (`… WITH n, properties(n) AS p DETACH DELETE n
   RETURN p`) — a post-delete read would yield no attributes.
