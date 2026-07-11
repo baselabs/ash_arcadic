@@ -2253,13 +2253,20 @@ defmodule AshArcadic.DataLayer do
             {:ok, base_where, params}
 
           {:ok, %AshArcadic.Query{params: params}, clause} ->
-            {:ok, base_where <> " AND " <> clause, params}
+            {:ok, and_compose(base_where, clause), params}
 
           {:error, _} = err ->
             err
         end
     end
   end
+
+  # AND-joins two bare WHERE clauses. An empty base (update_many's non-multitenant scope keeps the PK
+  # in the MATCH pattern, so its base clause is "") yields the filter clause alone — never a malformed
+  # leading " AND ". update/2 & destroy/2 always pass a non-empty PK clause, so their behavior is
+  # unchanged.
+  defp and_compose("", clause), do: clause
+  defp and_compose(base_where, clause), do: base_where <> " AND " <> clause
 
   defp decode_update_result(resource, _filter, {:ok, [row]}) do
     {:ok,
@@ -2299,12 +2306,15 @@ defmodule AshArcadic.DataLayer do
 
   @impl true
   # Heterogeneous per-record bulk update. Ash (`Ash.update_many/4`) groups the changesets by
-  # {atomics, filter} and hands each group here; a group shares one set of atomics (the group key),
-  # so `rep.atomics` folds into the statement ONCE, while each row's OWN static changes ride the
-  # per-row `$rows` UNWIND. The `:attribute` discriminator is injected from `opts.tenant` (never row
-  # data) as a WHERE predicate; `:context` targets the tenant database and fails closed on a blank
-  # tenant. A row whose PK matches nothing is simply absent from the returned records (spec D2 bulk
-  # semantics) — never a data-layer error.
+  # {atomics, filter} and hands each group here; a group shares one set of atomics AND one filter (the
+  # group key), so `rep.atomics` folds into the statement ONCE and `rep.filter` composes into the
+  # WHERE ONCE (see run_update_many), while each row's OWN static changes ride the per-row `$rows`
+  # UNWIND. (A batch of static-only changes — e.g. `%{name: "X"}` per row — shares group key {[], nil}
+  # and forms ONE multi-row group exercising `n += r.set` across every row.) The `:attribute`
+  # discriminator is injected from `opts.tenant` (never row data) as a WHERE predicate; `:context`
+  # targets the tenant database and fails closed on a blank tenant. A row whose PK/filter matches
+  # nothing is simply absent from the returned records (spec D2 bulk semantics) — never a data-layer
+  # error.
   def update_many(resource, changesets, opts) do
     entries = Enum.to_list(changesets)
 
@@ -2374,16 +2384,33 @@ defmodule AshArcadic.DataLayer do
          # closed value-free here instead of crashing Jason.EncodeError with the bytes (Rule 4).
          :ok <- encode_gate(resource, atomic_params, UpdateFailed),
          {:ok, conn} <- tenant_write_conn(resource, tenant) do
-      label = validated_label(resource)
-      {match_pattern, where, tenant_params} = update_many_scope(resource, pk, tenant)
-      set_clause = update_many_set_clause(atomic_frags)
+      {match_pattern, tenant_clause, tenant_params} = update_many_scope(resource, pk, tenant)
+      seed = Map.merge(atomic_params, Map.merge(tenant_params, %{"rows" => rows}))
 
-      cypher =
-        "UNWIND $rows AS r MATCH (n:#{label} #{match_pattern})#{where} SET #{set_clause} RETURN n"
+      # AND-compose the group's shared changeset.filter (rep.filter — atomic validation / optimistic
+      # lock / policy scoping) onto the tenant clause, SYMMETRIC with update/2 & destroy/2's
+      # changeset_where. The group key is {atomics, filter}, so rep.filter is shared across every row
+      # in `rows` → apply it ONCE. changeset_where threads the filter's $paramN off `seed` (skipping
+      # the atomic/tenant/rows keys) and FAILS CLOSED on an untranslatable filter — a filtered-out row
+      # is simply absent from RETURN n (Ash reports it StaleRecord), never a silent over-update.
+      case changeset_where(rep, tenant_clause, seed) do
+        {:ok, where_clause, params} ->
+          label = validated_label(resource)
+          set_clause = update_many_set_clause(atomic_frags)
 
-      params = Map.merge(atomic_params, Map.merge(tenant_params, %{"rows" => rows}))
+          cypher =
+            "UNWIND $rows AS r MATCH (n:#{label} #{match_pattern})#{where_keyword(where_clause)} " <>
+              "SET #{set_clause} RETURN n"
 
-      decode_query_write(resource, true, Arcadic.command(conn, cypher, params))
+          decode_query_write(resource, true, Arcadic.command(conn, cypher, params))
+
+        {:error, _} ->
+          {:error,
+           UpdateFailed.exception(
+             resource: resource,
+             reason: "unsupported scoping filter on bulk update"
+           )}
+      end
     else
       {:error, %UnsupportedFilter{}} ->
         {:error, UpdateFailed.exception(resource: resource, reason: "unsupported atomic change")}
@@ -2396,11 +2423,11 @@ defmodule AshArcadic.DataLayer do
     end
   end
 
-  # The per-row PK MATCH pattern (`{id: r.id, …}`) + the tenant scope. `:attribute` injects the
-  # discriminator predicate from `opts.tenant` (parsed to the stored value, NEVER read off row data)
-  # so every matched node is tenant-scoped; `:context` needs no predicate (physical-database
-  # isolation via tenant_write_conn). PK/discriminator NAMES are identifier-validated; the tenant
-  # value rides `$tenant` bound.
+  # The per-row PK MATCH pattern (`{id: r.id, …}`) + the BARE tenant scope clause (composed into the
+  # WHERE by changeset_where alongside rep.filter). `:attribute` injects the discriminator predicate
+  # from `opts.tenant` (parsed to the stored value, NEVER read off row data) so every matched node is
+  # tenant-scoped; `:context` needs no predicate (physical-database isolation via tenant_write_conn).
+  # PK/discriminator NAMES are identifier-validated; the tenant value rides `$tenant` bound.
   defp update_many_scope(resource, pk, tenant) do
     pattern =
       "{" <>
@@ -2415,7 +2442,7 @@ defmodule AshArcadic.DataLayer do
         {m, f, a} = Ash.Resource.Info.multitenancy_parse_attribute(resource)
         value = apply(m, f, [tenant | a])
         attr_name = attr |> to_string() |> AshArcadic.Identifier.validate!()
-        {pattern, " WHERE n.#{attr_name} = $tenant", %{"tenant" => value}}
+        {pattern, "n.#{attr_name} = $tenant", %{"tenant" => value}}
 
       _ ->
         {pattern, "", %{}}
@@ -2435,6 +2462,11 @@ defmodule AshArcadic.DataLayer do
   # SET fragments. Empty atomics → a pure static per-row merge.
   defp update_many_set_clause([]), do: "n += r.set"
   defp update_many_set_clause(atomic_frags), do: Enum.join(["n += r.set" | atomic_frags], ", ")
+
+  # Prefixes the combined scope clause with the WHERE keyword, or "" when there is no scope (PK-only
+  # match via the MATCH pattern). Keeps run_update_many's nesting within credo's depth budget.
+  defp where_keyword(""), do: ""
+  defp where_keyword(clause), do: " WHERE #{clause}"
 
   # Write connection for an update_many group, resolved from `opts.tenant` (there is no Query here).
   # `:context` targets the tenant database and fails CLOSED on a blank tenant (never the base DB — a

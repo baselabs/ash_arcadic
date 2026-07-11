@@ -2,6 +2,7 @@ defmodule AshArcadic.Integration.UpdateManyTest do
   @moduledoc false
   use AshArcadic.Test.IntegrationCase
 
+  require Ash.Expr
   alias AshArcadic.Test.CrudPerson
 
   # CONFIRMED ROUTING (verified against deps/ash at exec): the AshArcadic.DataLayer.update_many/3
@@ -9,11 +10,13 @@ defmodule AshArcadic.Integration.UpdateManyTest do
   # `{record_or_identifier, input}` tuples with `strategy: :atomic` (or :atomic_batches) and the
   # `:update_many` capability true (deps/ash actions/update/update_many.ex run_batch/use_update_many?
   # → ash.ex:3537). `Ash.bulk_update` does NOT route here — it uses update_query / :stream. Ash groups
-  # the changesets by `{atomics, filter}` and calls update_many/3 once per group; distinct per-row
-  # atomics (each name differs) means one single-row group per record, so the callback fires per row.
-  # The telemetry assertion below proves the callback actually ran (not the update_query fallback,
-  # which would emit a different span) — a non-vacuity anchor per the "harness observes the code under
-  # test" rule.
+  # the changesets by `{atomics, filter}` and calls update_many/3 once per group. A static `%{name: X}`
+  # change stays in changeset.attributes with atomics: [] and filter: nil (probed at exec:
+  # fully_atomic_changeset keeps a plain literal as an attribute), so all three seeded records share
+  # group key {[], nil} → ONE 3-ROW group → update_many/3 fires ONCE, exercising the multi-row `$rows`
+  # UNWIND (`n += r.set` across all three rows). The telemetry assertion below proves the callback
+  # actually ran (not the update_query fallback, which would emit a different span) — a non-vacuity
+  # anchor per the "harness observes the code under test" rule.
 
   # DETACH DELETE after each test — ArcadeDB has no PK uniqueness, so a per-test re-seed accumulates.
   setup %{admin: admin} do
@@ -85,5 +88,42 @@ defmodule AshArcadic.Integration.UpdateManyTest do
     # only rows rather than failing the batch on the missing PK (spec D2 bulk semantics).
     assert result.status == :partial_success
     assert result.error_count == 1
+  end
+
+  # A group's shared changeset.filter (rep.filter) must scope the UNWIND MATCH, symmetric with
+  # update/2 & destroy/2's changeset_where — else a filtered-out row is silently over-updated. No
+  # EXISTING fixture/action routes a filtered changeset to update_many/3 through the full stack:
+  # OptimisticLock.atomic/3 (deps/ash change/optimistic_lock.ex:33) is the only stack producer of
+  # changeset.filter for an atomic update, and no test resource uses it. So this exercises the
+  # data-layer callback DIRECTLY with realistically-built changesets (`Ash.Changeset.filter/2`
+  # produces the same `%Ash.Filter{}` OptimisticLock does), which is the correct level to prove the
+  # filter composition — the callback is the code under test.
+  test "changeset.filter scopes the update — a filtered-out row is NOT matched or mutated" do
+    p1 = Ash.get!(CrudPerson, "p1")
+    p2 = Ash.get!(CrudPerson, "p2")
+
+    # Both changesets set name "Z" and carry the SAME filter (age == 30) — a real update_many group
+    # shares one filter (the {atomics, filter} group key). Only p1 (age 30) satisfies it; p2 (age 40)
+    # is filtered out.
+    make_cs = fn record ->
+      record
+      |> Ash.Changeset.for_update(:update, %{name: "Z"})
+      |> Ash.Changeset.filter(Ash.Expr.expr(age == 30))
+    end
+
+    {:ok, records} =
+      AshArcadic.DataLayer.update_many(CrudPerson, [make_cs.(p1), make_cs.(p2)], %{
+        return_records?: true,
+        tenant: nil,
+        calculations: []
+      })
+
+    # Only p1 matched the filter → only p1 returned + updated.
+    assert Enum.map(records, & &1.id) == ["p1"]
+    assert Ash.get!(CrudPerson, "p1").name == "Z"
+
+    # MUTATION PROOF: p2 is UNCHANGED. Dropping the changeset_where composition in run_update_many
+    # (updating by PK alone) reddens this line — p2's name becomes "Z", a silent over-update.
+    assert Ash.get!(CrudPerson, "p2").name == "Bo"
   end
 end
