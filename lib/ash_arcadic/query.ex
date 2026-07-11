@@ -90,6 +90,25 @@ defmodule AshArcadic.Query do
     {Enum.join(parts, " "), query.params}
   end
 
+  @doc false
+  # The WHERE clause + params for a query, reusing the read path's `build_where/1` (which
+  # renders `filters` and fail-closed-raises on an untranslatable lazy `:expression`). Returns
+  # `{"", params}` when there is no WHERE, else `{"WHERE …", params}`. Consumed by the
+  # query-scoped bulk write callbacks (update_query/destroy_query) to render the SAME WHERE the
+  # flat read renders — tenant + caller + changeset filter, all pre-composed by Ash into `filters`.
+  @spec where_and_params(t()) :: {String.t(), map()}
+  def where_and_params(%__MODULE__{} = query) do
+    {where_parts, query} = build_where(query)
+
+    clause =
+      case build_where_clause(where_parts) do
+        [] -> ""
+        [where] -> where
+      end
+
+    {clause, query.params}
+  end
+
   # Native UNION/UNION ALL render (probe-confirmed, scratchpad/probe_combinations3.exs): each branch's
   # WHERE (its filters plus any translated `:expression`, via build_where — FAIL CLOSED on an
   # untranslatable expression, symmetric with the flat head) is re-keyed into a disjoint `b<i>_` namespace,
