@@ -72,9 +72,22 @@ _An Ash DataLayer for ArcadeDB (native OpenCypher over HTTP)._
 - **Every value is a bound `$param`; errors are value-free.** Write-path params (static changes AND atomic
   RHS literals) are JSON-encode-gated before the wire — a poisoned value fails closed value-free, never a
   byte-leaking crash. (Read-path filter params are a separate, pre-existing gap — tracked outside this slice.)
-- **Not yet supported (Slice 9, Plan 2 — pending):** heterogeneous per-record `update_many` and multi-row
-  bulk upsert. Until Plan 2 lands, a heterogeneous bulk update uses Ash's `:stream` fallback and a bulk
-  upsert action is rejected.
+- **Heterogeneous per-record bulk update (`update_many`, Slice 9 Plan 2).** `Ash.update_many/4` (a list of
+  `{record, input}` tuples with `strategy: :atomic`) pushes a heterogeneous bulk update — each record its
+  own changes — into ONE `UNWIND $rows AS r MATCH (n:Label {pk: r.pk}) [WHERE …] SET n += r.set[, <shared
+  atomics>]` statement keyed by primary key. A record absent from the graph is simply absent from the
+  result (never an error). Tenant scoping rides `opts.tenant`, never row data: `:context` targets the
+  tenant database and fails closed on a blank tenant; `:attribute` injects the discriminator predicate. The
+  group's shared `changeset.filter` (optimistic lock / atomic validation / policy) is AND-composed onto the
+  WHERE, fail-closed on an untranslatable filter — symmetric with single-row `update`/`destroy`.
+- **Multi-row bulk upsert (Slice 9 Plan 2).** A bulk `upsert? true` action (`upsert_fields` required by
+  Ash) compiles to ONE `UNWIND $rows AS r MERGE (n:Label {<identity>: r.<identity>, …}) ON CREATE SET
+  n += r.all[, <create atomics>] ON MATCH SET n += r.set[, <match atomics>]` statement — existing rows
+  update, new rows create, idempotent, no duplicates. For an **`:attribute`** resource the tenant
+  discriminator is added to the MERGE identity (D4), so a same-PK upsert from another tenant matches
+  nothing and creates its own row (never hijacks). Atomic changes fold on BOTH branches (`create_atomics`
+  → ON CREATE, `atomics` → ON MATCH); the discriminator is never in the ON MATCH set (D3). Every wire value
+  is encode-gated value-free.
 
 ## Query & filter push-down (Plan 2)
 
@@ -371,8 +384,11 @@ _An Ash DataLayer for ArcadeDB (native OpenCypher over HTTP)._
   same-PK upsert from another tenant matches nothing and creates its own row (MERGE
   matches the whole node pattern and cannot compose a `WHERE`, so the discriminator
   must ride the identity — otherwise it would hijack the other tenant's row).
-  **Bulk upsert is not supported** — a bulk `upsert? true` action **fails closed**
-  with an error (it never silently `CREATE`s duplicates); use a single-row upsert.
+  **Multi-row bulk upsert IS supported** (Slice 9 Plan 2) — a bulk `upsert? true`
+  action (`upsert_fields` required) compiles to ONE `UNWIND … MERGE … ON CREATE …
+  ON MATCH …` statement; existing rows update, new rows create, idempotent. The
+  `:attribute` discriminator rides the MERGE identity (same-PK cross-tenant upsert
+  creates its own row, never hijacks); atomic changes fold on both branches.
 
 ## Transactions (Plan 3)
 

@@ -32,8 +32,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (a poisoned value fails closed value-free, never a byte-leaking crash). Read/write-span telemetry gains a
   value-free `matched` tag and `:update_query`/`:destroy_query` spans. Also advertises
   `can?({:filter_expr, <literal>})` so an all-literal filter/atomic that Ash constant-folds
-  (`expr(100 + 1)` → `101`) is accepted (bound as a param). Heterogeneous `update_many` and multi-row bulk
-  upsert are Plan 2 (pending).
+  (`expr(100 + 1)` → `101`) is accepted (bound as a param).
+- **Heterogeneous bulk update + multi-row bulk upsert (Slice 9, Plan 2).** `update_many`
+  (`can?(:update_many)`): a heterogeneous bulk update — each record its own changes, via `Ash.update_many/4`
+  with `strategy: :atomic` — compiles to one `UNWIND … MATCH … SET n += r.set[, <shared atomics>]` statement
+  keyed by primary key (records absent from the graph are simply absent from the result). The group's shared
+  `changeset.filter` (optimistic lock / atomic validation / policy) AND-composes onto the WHERE, fail-closed
+  on an untranslatable filter (symmetric with the single-row `update`/`destroy` path). Multi-row bulk upsert
+  (lifting the prior "MERGE is single-row" rejection): `UNWIND … MERGE … ON CREATE … ON MATCH …` upserts many
+  rows in one statement — the merge key including the `:attribute` tenant discriminator so a cross-tenant
+  primary-key collision creates a new tenant-local row instead of hijacking another tenant's (fail-closed,
+  P4/D4-verified, mutation-proven). Atomic changes fold on BOTH upsert branches (`create_atomics` → ON CREATE,
+  `atomics` → ON MATCH); the discriminator is never in the ON MATCH set (D3). `:bulk_create_with_partial_success`
+  is **false** (D9 — ArcadeDB enforces a UNIQUE index built via SQL-DDL, but an `UNWIND` batch aborts
+  whole-batch with no per-row attribution, so a bulk write is one atomic unit, never partial success).
+  Multitenancy stays fail-closed on every path (`:context` blank tenant → no statement; `:attribute` scoped
+  by the discriminator); every wire value is JSON-encode-gated value-free. Telemetry gains `:update_many`
+  spans and a `bulk_upsert?` tag.
 - **Combinations (Slice 8, Plan 2).** `combination_of` support
   (`can?(:combine)` / `can?({:combine, :base|:union|:union_all|:intersect|:except})`):
   native `UNION`/`UNION ALL` Cypher push-down — one `CALL { <branch> UNION[ ALL] <branch> } … RETURN n`
