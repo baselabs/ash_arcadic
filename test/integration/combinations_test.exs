@@ -123,6 +123,60 @@ defmodule AshArcadic.Integration.CombinationsTest do
     assert (ids(records) -- ["c"]) in [["a"], ["b"]]
   end
 
+  test "a correlated (parent()) combination branch fails closed value-free (spec §5 non-goal)" do
+    q =
+      AttributeDoc
+      |> Ash.Query.combination_of([
+        Combination.base(filter: Ash.Expr.expr(name == "eng")),
+        Combination.union(filter: Ash.Expr.expr(parent(name) == "eng"))
+      ])
+
+    assert {:error, err} = Ash.read(q, tenant: "org1", authorize?: false)
+    msg = Exception.message(err)
+
+    # Rejected by the fail-closed filter translator (%UnsupportedFilter{}) — no data-layer support for a
+    # parent()-correlated branch. Value-free (names the operator, not a record value).
+    assert msg =~ "Unsupported filter operator" and msg =~ "Parent"
+  end
+
+  test "read-span telemetry carries the combination tags for both strategies (spec §9/§11)" do
+    seed_attr("org1", [{"a", "eng", 10}, {"b", "ops", 20}])
+
+    parent = self()
+    handler_id = "comb-telemetry-#{System.unique_integer([:positive])}"
+
+    :telemetry.attach_many(
+      handler_id,
+      [[:ash_arcadic, :read, :stop]],
+      fn _event, _measurements, meta, _config ->
+        if Map.get(meta, :combination?) do
+          send(parent, {:comb_span, meta.combination_types, meta.combination_strategy})
+        end
+      end,
+      nil
+    )
+
+    on_exit(fn -> :telemetry.detach(handler_id) end)
+
+    AttributeDoc
+    |> Ash.Query.combination_of([
+      Combination.base(filter: Ash.Expr.expr(name == "eng")),
+      Combination.union(filter: Ash.Expr.expr(name == "ops"))
+    ])
+    |> Ash.read!(tenant: "org1", authorize?: false)
+
+    assert_receive {:comb_span, [:base, :union], :native}
+
+    AttributeDoc
+    |> Ash.Query.combination_of([
+      Combination.base(filter: Ash.Expr.expr(name == "eng")),
+      Combination.intersect(filter: Ash.Expr.expr(amount == 10))
+    ])
+    |> Ash.read!(tenant: "org1", authorize?: false)
+
+    assert_receive {:comb_span, [:base, :intersect], :in_memory}
+  end
+
   test ":context combination runs within the tenant database", %{t_ctx: t_ctx} do
     for {id, name, amount} <- [{"c1", "x", 1}, {"c2", "y", 2}, {"c3", "z", 3}] do
       ContextDoc
