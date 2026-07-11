@@ -151,6 +151,15 @@ defmodule AshArcadic.DataLayer do
   # {atomics, filter} and hands each group to update_many/3; a shared-atomic fold + a per-row
   # UNWIND MATCH keyed by PK applies each row's own static changes in one statement).
   def can?(_, :update_many), do: true
+  # Slice 9 / D9: false — a batch write is whole-batch atomic with NO per-row attribution, so we
+  # cannot produce Ash's {:partial_success, failed, succeeded} return. Probe (throwaway db,
+  # scratchpad/probe_partial_success.exs): a SQL-DDL `CREATE INDEX … UNIQUE` DOES enforce (a single
+  # Cypher dup CREATE → DuplicatedKeyException/409 — this REFINES P6, whose non-enforcement was a
+  # Cypher-DDL artifact), but an UNWIND CREATE batch [new1, a(dup), new2] aborts ALL-OR-NOTHING
+  # (row count unchanged at 1 — the valid new1/new2 rolled back too) and the error is a bare
+  # DuplicatedKeyException/409 that never names WHICH row failed. No partial commit + no attribution
+  # ⇒ partial success infeasible; false = Ash never expects the {:partial_success, …} return.
+  def can?(_, :bulk_create_with_partial_success), do: false
   # Slice 9: atomic SET surface. {:atomic, :update} lets Ash use the pure :atomic strategy for
   # bulk update; {:atomic, :create}/{:atomic, :upsert} let an atomic_set on a create/upsert reach
   # create/2/upsert/3 — which now FOLD changeset.create_atomics/atomics into the statement (V8).

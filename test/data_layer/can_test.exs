@@ -39,6 +39,13 @@ defmodule AshArcadic.DataLayer.CanTest do
     assert AshArcadic.DataLayer.can?(AshArcadic.Test.CrudPerson, :update_many)
   end
 
+  test ":bulk_create_with_partial_success reflects the D9 probe (default false — whole-batch atomic)" do
+    refute AshArcadic.DataLayer.can?(
+             AshArcadic.Test.CrudPerson,
+             :bulk_create_with_partial_success
+           )
+  end
+
   test "advertises {:atomic, :update|:create|:upsert}" do
     for kind <- [:update, :create, :upsert] do
       assert AshArcadic.DataLayer.can?(AshArcadic.Test.CrudPerson, {:atomic, kind})
