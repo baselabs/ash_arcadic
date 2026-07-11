@@ -785,6 +785,10 @@ defmodule AshArcadic.DataLayer do
 
   # Outer sort/distinct via Ash's runtime helpers (ETS pattern, ets.ex:448-478 — note the module is
   # Ash.Actions.Sort; Ash.Sort delegates only runtime_sort, NOT runtime_distinct), then offset/limit.
+  # We omit ETS's `maybe_not_distinct?: true` (it switches Ash.load's duplicate-PK handling from batched
+  # to per-record): benign here because in-memory sort/distinct entries are guard-limited to stored
+  # attributes already on the decoded records (Ash.load short-circuits, no re-read). It becomes load-bearing
+  # only if a future slice admits calc/aggregate sorts on the in-memory path — add the flag then.
   defp apply_outer_modifiers(records, query, domain) do
     records
     |> distinct_and_sort(query, domain)

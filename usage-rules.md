@@ -114,9 +114,21 @@ _An Ash DataLayer for ArcadeDB (native OpenCypher over HTTP)._
     [ORDER BY/SKIP/LIMIT]` statement pushed to ArcadeDB (each branch's `$params` re-keyed into a
     disjoint namespace).
   - **In-memory** (`:in_memory`) when any branch is `:intersect`/`:except` (ArcadeDB has no
-    `INTERSECT`/`EXCEPT`) → each branch runs as its own query with the outer filter pushed in,
-    then the results are folded by primary key in the app. `intersect`/`except` therefore fetch
-    each branch's **full filtered result set** into memory before combining — filter narrowly.
+    `INTERSECT`/`EXCEPT`) **OR any branch carries a per-branch `limit`/`offset`** (paging forces the
+    in-memory strategy so the tenant filter is applied to each branch **before** its limit) → each
+    branch runs as its own query with the outer filter pushed in, then the results are folded by
+    primary key in the app. `intersect`/`except`/paged combinations therefore fetch each branch's
+    **full filtered result set** into memory before combining — filter narrowly.
+- **The in-memory strategy is NOT a consistent snapshot.** Its branches are separate,
+  non-transactional queries; a concurrent write between two branch reads can combine records from
+  different database states (e.g. a row updated to fail the filter between the base and subtrahend
+  reads of an `except`). The native path is a single atomic statement; the in-memory path matches the
+  Ash ETS reference's sequential-per-branch semantics. A strongly-consistent read is not available for
+  `intersect`/`except`/paged combinations this slice.
+- **`:union` after `:union_all` deduplicates only the incoming branch against the accumulator** (the
+  fold retains the accumulator's `union_all` duplicates), matching the Ash ETS reference. Appending an
+  `intersect`/`except` to a union-family chain (which switches it to the in-memory strategy) therefore
+  does not change what an earlier `union` deduplicated.
 - **Multitenancy is enforced per branch.** `:context` requires every branch to resolve to the
   **same non-nil tenant database** — a blank tenant or branches spanning databases **fail closed
   value-free**. `:attribute` scoping rides the outer `query.filters` (Ash injects the tenant
