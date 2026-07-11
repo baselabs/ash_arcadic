@@ -3,6 +3,8 @@ defmodule AshArcadic.Integration.BulkDestroyQueryTest do
   use AshArcadic.Test.IntegrationCase
 
   require Ash.Query
+  require Ash.Expr
+  alias Ash.Query.Combination
   alias AshArcadic.Test.CrudPerson
 
   setup %{admin: admin} do
@@ -57,6 +59,35 @@ defmodule AshArcadic.Integration.BulkDestroyQueryTest do
 
     assert result.status == :error
     # Non-vacuity: nothing deleted (the reject ran before any statement).
+    assert length(Ash.read!(CrudPerson)) == 3
+  end
+
+  test "an offset bulk destroy fails closed (offset>0 arm of the scopeable guard)" do
+    result =
+      CrudPerson
+      |> Ash.Query.filter(age == 30)
+      |> Ash.Query.offset(1)
+      |> Ash.bulk_destroy(:destroy, %{}, strategy: [:atomic], return_errors?: true)
+
+    assert result.status == :error
+    # Non-vacuity: nothing deleted (dropping the offset would delete the age==30 rows).
+    assert length(Ash.read!(CrudPerson)) == 3
+  end
+
+  test "a combination bulk destroy fails closed (combination_of arm of the scopeable guard)" do
+    # A combination query reaches destroy_query with combination_of != [] — the guard must
+    # reject it fail-closed (a combined-set bulk destroy has no single MATCH … DELETE form).
+    combined =
+      CrudPerson
+      |> Ash.Query.combination_of([
+        Combination.base(filter: Ash.Expr.expr(age == 30)),
+        Combination.union(filter: Ash.Expr.expr(age == 40))
+      ])
+
+    result = Ash.bulk_destroy(combined, :destroy, %{}, strategy: [:atomic], return_errors?: true)
+
+    assert result.status == :error
+    # Non-vacuity: nothing deleted (dropping the guard arm would run an unscoped DELETE).
     assert length(Ash.read!(CrudPerson)) == 3
   end
 end
