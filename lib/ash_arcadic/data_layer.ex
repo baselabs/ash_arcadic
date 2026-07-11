@@ -147,6 +147,12 @@ defmodule AshArcadic.DataLayer do
   def can?(_, :update_query), do: true
   def can?(_, :expr_error), do: true
   def can?(_, :destroy_query), do: true
+  # Slice 9: atomic SET surface. {:atomic, :update} lets Ash use the pure :atomic strategy for
+  # bulk update; {:atomic, :create}/{:atomic, :upsert} let an atomic_set on a create/upsert reach
+  # create/2/upsert/3 — which now FOLD changeset.create_atomics/atomics into the statement (V8).
+  def can?(_, {:atomic, :update}), do: true
+  def can?(_, {:atomic, :create}), do: true
+  def can?(_, {:atomic, :upsert}), do: true
   def can?(_, :filter), do: true
   def can?(_, :limit), do: true
   def can?(_, :offset), do: true
@@ -207,6 +213,11 @@ defmodule AshArcadic.DataLayer do
   def can?(_, {:filter_expr, %Ash.Query.Function.Length{}}), do: true
   def can?(_, {:filter_expr, %Ash.Query.Function.StringTrim{}}), do: true
   def can?(_, {:filter_expr, %Ash.Query.Function.Round{}}), do: true
+  # A CONSTANT-FOLDED expression: Operator.new/3 evaluates an all-literal call at hydration
+  # (100 + 1 → 101) and hydrate_refs then asks {:filter_expr, <literal>} (deps/ash
+  # filter.ex:3668/3677 — live-hit by atomic_set(:count, expr(100 + 1)) on create, Slice 9).
+  # A bare literal is always translatable — Expression.translate binds it as $paramN.
+  def can?(_, {:filter_expr, value}) when not is_struct(value), do: true
   def can?(_, {:filter_expr, _}), do: false
   # Query aggregates (Slice 3) — Ash.count/sum/aggregate route to run_aggregate_query/3,
   # gated per kind here. {:aggregate,_} (inline field loading) and {:aggregate_relationship,_}
@@ -1397,18 +1408,38 @@ defmodule AshArcadic.DataLayer do
   defp do_create(resource, changeset) do
     props = changeset_to_properties(resource, changeset)
 
-    case encode_gate(resource, props, CreateFailed) do
-      {:error, _} = err -> err
-      :ok -> do_create(resource, changeset, props)
+    # The encode-gate covers EVERYTHING that rides the wire: $props (gated per attribute,
+    # preserving the attribute-naming contract encode_gate_test pins) AND the atomic-fragment
+    # $paramN literals (Expression binds an atomic-RHS literal RAW, so a poisoned non-UTF8
+    # binary there would otherwise crash Jason.EncodeError at the wire with the bytes in the
+    # message — AGENTS.md Rule 4).
+    with {:ok, atomic_set, atomic_params} <- create_atomic_set(resource, changeset),
+         :ok <- encode_gate(resource, props, CreateFailed),
+         :ok <- encode_gate(resource, atomic_params, CreateFailed) do
+      do_create(resource, changeset, props, atomic_set, atomic_params)
     end
   end
 
-  defp do_create(resource, changeset, props) do
+  # Atomic SET fragments for a create (changeset.create_atomics). Empty when none. ON CREATE atomics
+  # reference incoming values only (no prior row); a self-ref `n.<field>` on a fresh node yields null.
+  defp create_atomic_set(_resource, %{create_atomics: []}), do: {:ok, "", %{}}
+
+  defp create_atomic_set(resource, changeset) do
+    case Write.atomic_fragments(resource, changeset.create_atomics, %{}) do
+      {:ok, [], _params} -> {:ok, "", %{}}
+      {:ok, frags, params} -> {:ok, " SET " <> Enum.join(frags, ", "), params}
+      {:error, _} = err -> err
+    end
+  end
+
+  defp do_create(resource, changeset, props, atomic_set, atomic_params) do
     case write_conn(resource, changeset) do
       {:ok, conn} ->
         label = validated_label(resource)
+        cypher = "CREATE (n:#{label} $props)#{atomic_set} RETURN n"
+        params = Map.merge(atomic_params, %{"props" => props})
 
-        case Arcadic.command(conn, "CREATE (n:#{label} $props) RETURN n", %{"props" => props}) do
+        case Arcadic.command(conn, cypher, params) do
           {:ok, [row]} ->
             {:ok,
              struct(
@@ -1600,15 +1631,31 @@ defmodule AshArcadic.DataLayer do
     props = changeset_to_properties(resource, changeset)
     on_match = upsert_set_map(resource, changeset, identity_keys)
 
-    # Both maps ride the wire ($props for ON CREATE, $on_match for ON MATCH); props
-    # already carries the identity values too. Gate them together before any DB touch.
-    case encode_gate(resource, Map.merge(props, on_match), CreateFailed) do
-      {:error, _} = err -> err
-      :ok -> run_upsert(resource, changeset, identity_keys, props, on_match)
+    # Everything that rides the wire is gated BEFORE any DB touch: $props/$on_match per
+    # attribute (props already carries the identity values too; attribute-naming contract
+    # preserved) AND the ON MATCH atomic $paramN literals — an atomic-RHS literal is bound
+    # RAW by Expression, so a poisoned non-UTF8 binary there would otherwise crash
+    # Jason.EncodeError with the bytes in the message (Rule 4).
+    with {:ok, atomic_set, atomic_params} <- upsert_atomic_set(resource, changeset),
+         :ok <- encode_gate(resource, Map.merge(props, on_match), CreateFailed),
+         :ok <- encode_gate(resource, atomic_params, CreateFailed) do
+      run_upsert(resource, changeset, identity_keys, props, on_match, atomic_set, atomic_params)
     end
   end
 
-  defp run_upsert(resource, changeset, identity_keys, props, on_match) do
+  # ON MATCH atomic fragments (changeset.atomics) — reference the matched row (n.x = n.x + $i).
+  # Empty when none.
+  defp upsert_atomic_set(_resource, %{atomics: []}), do: {:ok, "", %{}}
+
+  defp upsert_atomic_set(resource, changeset) do
+    case Write.atomic_fragments(resource, changeset.atomics, %{}) do
+      {:ok, [], _params} -> {:ok, "", %{}}
+      {:ok, frags, params} -> {:ok, ", " <> Enum.join(frags, ", "), params}
+      {:error, _} = err -> err
+    end
+  end
+
+  defp run_upsert(resource, changeset, identity_keys, props, on_match, atomic_set, atomic_params) do
     case write_conn(resource, changeset) do
       {:ok, conn} ->
         label = validated_label(resource)
@@ -1616,9 +1663,12 @@ defmodule AshArcadic.DataLayer do
 
         cypher =
           "MERGE (n:#{label} #{match_pattern}) " <>
-            "ON CREATE SET n += $props ON MATCH SET n += $on_match RETURN n"
+            "ON CREATE SET n += $props ON MATCH SET n += $on_match#{atomic_set} RETURN n"
 
-        params = Map.merge(match_params, %{"props" => props, "on_match" => on_match})
+        params =
+          match_params
+          |> Map.merge(%{"props" => props, "on_match" => on_match})
+          |> Map.merge(atomic_params)
 
         case Arcadic.command(conn, cypher, params) do
           {:ok, [row]} ->

@@ -51,6 +51,10 @@ defmodule AshArcadic.DataLayer.SkeletonTest do
     assert AshArcadic.DataLayer.can?(AshArcadic.Test.Basic, :update_query)
     assert AshArcadic.DataLayer.can?(AshArcadic.Test.Basic, :expr_error)
     assert AshArcadic.DataLayer.can?(AshArcadic.Test.Basic, :destroy_query)
+    # Slice 9: atomic SET on create/upsert (V8) + the pure :atomic bulk-update strategy.
+    assert AshArcadic.DataLayer.can?(AshArcadic.Test.Basic, {:atomic, :update})
+    assert AshArcadic.DataLayer.can?(AshArcadic.Test.Basic, {:atomic, :create})
+    assert AshArcadic.DataLayer.can?(AshArcadic.Test.Basic, {:atomic, :upsert})
     assert AshArcadic.DataLayer.can?(AshArcadic.Test.Basic, {:query_aggregate, :count})
     assert AshArcadic.DataLayer.can?(AshArcadic.Test.Basic, {:query_aggregate, :sum})
     # Slice 4: relationship aggregates enabled; flat/unrelated inline aggregates REFUSED
@@ -73,6 +77,10 @@ defmodule AshArcadic.DataLayer.SkeletonTest do
              AshArcadic.Test.Basic,
              {:filter_expr, %Ash.Query.Operator.Basic.Concat{}}
            )
+
+    # Slice 9: a constant-folded literal ({:filter_expr, 101} after Operator.new evaluates an
+    # all-literal call) is always translatable — bound as $paramN.
+    assert AshArcadic.DataLayer.can?(AshArcadic.Test.Basic, {:filter_expr, 101})
 
     # Slice 5: standard (attribute-FK) relationships — filter_relationship enabled for standard
     # rels (has_many/has_one manual: nil; belongs_to/m2m have no :manual key); manual Traverse rels

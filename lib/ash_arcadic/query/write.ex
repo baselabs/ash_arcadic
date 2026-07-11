@@ -44,6 +44,24 @@ defmodule AshArcadic.Query.Write do
     end
   end
 
+  @doc """
+  Atomic SET fragments (`["n.<f> = <cypher>", …]`) + params for a list of `{field, hydrated_expr}`
+  atomics, `seed_params`-threaded. Value-free fail-closed on a discriminator target or a
+  sensitive/non-stored/un-mapped RHS. Shared by update_query (via build_set), atomic create, and
+  atomic upsert.
+  """
+  @spec atomic_fragments(Ash.Resource.t(), keyword(), map()) ::
+          {:ok, [String.t()], map()} | {:error, Exception.t()}
+  def atomic_fragments(resource, atomics, seed_params) do
+    disc = discriminator(resource)
+    working = %Query{resource: resource, params: seed_params}
+
+    case atomic_set(atomics, working, disc) do
+      {:ok, frags, working} -> {:ok, frags, working.params}
+      {:error, _} = err -> err
+    end
+  end
+
   # Fold each atomic {field, expr} into `["n.<field> = <cypher>", …]` + accumulated params. Shared
   # by build_set (update_query) and atomic_fragments/3 (atomic create/upsert). Extracted per-atomic
   # into translate_atomic/4 to keep the nesting ≤ credo's max depth 2.

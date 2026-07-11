@@ -35,6 +35,12 @@ defmodule AshArcadic.DataLayer.CanTest do
     assert DL.can?(AshArcadic.Test.CrudPerson, :destroy_query)
   end
 
+  test "advertises {:atomic, :update|:create|:upsert}" do
+    for kind <- [:update, :create, :upsert] do
+      assert AshArcadic.DataLayer.can?(AshArcadic.Test.CrudPerson, {:atomic, kind})
+    end
+  end
+
   test "transact is true (Plan 3)" do
     assert DL.can?(AshArcadic.Test.Basic, :transact)
   end
@@ -104,6 +110,10 @@ defmodule AshArcadic.DataLayer.CanTest do
 
     # A date/time function stays unsupported (non-goal — ISO8601 storage; §9).
     refute DL.can?(AshArcadic.Test.Basic, {:filter_expr, %Ash.Query.Function.Ago{}})
+
+    # A constant-folded literal (Operator.new evaluates 100 + 1 → 101 at hydration, then Ash
+    # asks {:filter_expr, 101}) is always translatable — bound as $paramN (Slice 9).
+    assert DL.can?(AshArcadic.Test.Basic, {:filter_expr, 101})
   end
 
   test "filter_relationship: true for STANDARD rels (any type), false for MANUAL Traverse rels (V1 fail-closed)" do
