@@ -51,6 +51,19 @@ defmodule AshArcadic.Integration.BulkUpdateQueryTest do
     assert result.records == []
   end
 
+  test "a limit/offset bulk update fails closed (no silent unscoped mutation)" do
+    result =
+      CrudPerson
+      |> Ash.Query.filter(age == 30)
+      |> Ash.Query.limit(1)
+      |> Ash.bulk_update(:update, %{name: "Renamed"}, strategy: [:atomic], return_errors?: true)
+
+    assert result.status == :error
+    # Non-vacuity: NO age-30 row was renamed (the reject ran before any statement).
+    names = CrudPerson |> Ash.read!() |> Enum.map(& &1.name) |> Enum.sort()
+    assert names == ["Ann", "Bo", "Cy"]
+  end
+
   test "a poisoned non-UTF8 binary in an atomic RHS fails closed value-free (encode-gate covers atomic params)" do
     bad = <<0xFF, 0xFE>>
 

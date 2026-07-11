@@ -1781,6 +1781,31 @@ defmodule AshArcadic.DataLayer do
   end
 
   defp do_update_query(query, changeset, resource, opts) do
+    cond do
+      not bulk_write_scopeable?(query) ->
+        {:error,
+         UpdateFailed.exception(
+           resource: resource,
+           reason: "bulk update does not support limit/offset/combination (use strategy: :stream)"
+         )}
+
+      Map.get(opts, :calculations, []) != [] ->
+        # Ash passes {:run_after_batch, where} gating calcs so conditional after_batch
+        # hooks (`change …, where: [...]`) fire per-record; a one-statement SET cannot
+        # evaluate them, and ignoring them silently SKIPS the hooks. Fail closed.
+        {:error,
+         UpdateFailed.exception(
+           resource: resource,
+           reason:
+             "bulk update with conditional after-batch hooks is not supported (use strategy: :stream)"
+         )}
+
+      true ->
+        do_update_query_statement(query, changeset, resource, opts)
+    end
+  end
+
+  defp do_update_query_statement(query, changeset, resource, opts) do
     {where, where_params} = AshArcadic.Query.where_and_params(query)
 
     with {:ok, set_clause, params} <- Write.build_set(resource, changeset, where_params),
@@ -1805,6 +1830,14 @@ defmodule AshArcadic.DataLayer do
       {:error, %{} = err} ->
         {:error, err}
     end
+  end
+
+  # A query-scoped bulk write compiles to ONE `MATCH … SET/DELETE` over the WHERE — it cannot honor
+  # a limit/offset (no per-row ordering semantics) or a combination. offset: 0 is Ash's spurious
+  # default (query.ex build_skip treats it as absent) → NOT paging. Reject the rest fail-closed so a
+  # paged bulk write is a loud value-free error, never a silent unscoped mutation.
+  defp bulk_write_scopeable?(%AshArcadic.Query{} = query) do
+    is_nil(query.limit) and query.offset in [nil, 0] and query.combination_of == []
   end
 
   # RETURN n only when Ash wants the records back; otherwise the statement mutates and returns :ok.
