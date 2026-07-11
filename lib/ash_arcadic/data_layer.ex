@@ -2351,41 +2351,35 @@ defmodule AshArcadic.DataLayer do
         )
       end)
 
-    # Gate the per-row static `set` maps for JSON-encodability BEFORE any conn/DB touch, naming only
-    # the offending ATTRIBUTE (value-free). Atomic-RHS params are gated separately in
-    # run_update_many, symmetric with update_query (a poisoned binary in either would otherwise leak
-    # bytes via Jason.EncodeError — AGENTS.md Rule 4).
-    encode_fail = first_encode_failure(Enum.map(rows, fn r -> {nil, r["set"]} end))
-
-    cond do
-      disc && Enum.any?(rows, &Map.has_key?(&1["set"], Atom.to_string(disc))) ->
-        {:error,
-         UpdateFailed.exception(
-           resource: resource,
-           reason: "cannot set the multitenancy discriminator"
-         )}
-
-      not is_nil(encode_fail) ->
-        {:error,
-         UpdateFailed.exception(resource: resource, reason: encode_error_reason(encode_fail))}
-
-      true ->
-        run_update_many(resource, rep, rows, pk, opts)
+    # Reject a static write to the multitenancy discriminator (a tenant-hop) up front — a key-presence
+    # check, NOT an encode gate. JSON-encodability of every wire value (row `set` maps, atomic/filter
+    # $paramN, $tenant) is gated ONCE on the final params in run_update_many, symmetric with
+    # update_query's single encode_gate (AGENTS.md Rule 4).
+    if disc && Enum.any?(rows, &Map.has_key?(&1["set"], Atom.to_string(disc))) do
+      {:error,
+       UpdateFailed.exception(
+         resource: resource,
+         reason: "cannot set the multitenancy discriminator"
+       )}
+    else
+      run_update_many(resource, rep, rows, pk, opts)
     end
   end
 
   defp run_update_many(resource, rep, rows, pk, opts) do
     tenant = Map.get(opts, :tenant)
 
+    # write_conn_for_tenant/2 is the CANONICAL resource+tenant → write-conn resolver (the single-row
+    # write_conn/2 is a thin changeset adapter over it). update_many reuses it — no third parallel
+    # resolver — with the same :context blank→:tenant_required / present→tenant-db / non-:context→base
+    # behavior.
     with {:ok, atomic_frags, atomic_params} <-
            Write.atomic_fragments(resource, rep.atomics, %{}),
-         # Encode-gate the atomic-RHS $paramN scalars — SYMMETRIC with update_query's encode_gate
-         # (build_set does not pre-serialize them safe). A poisoned binary in an atomic RHS fails
-         # closed value-free here instead of crashing Jason.EncodeError with the bytes (Rule 4).
-         :ok <- encode_gate(resource, atomic_params, UpdateFailed),
-         {:ok, conn} <- tenant_write_conn(resource, tenant) do
+         {:ok, conn} <- write_conn_for_tenant(resource, tenant) do
       {match_pattern, tenant_clause, tenant_params} = update_many_scope(resource, pk, tenant)
       seed = Map.merge(atomic_params, Map.merge(tenant_params, %{"rows" => rows}))
+      label = validated_label(resource)
+      set_clause = update_many_set_clause(atomic_frags)
 
       # AND-compose the group's shared changeset.filter (rep.filter — atomic validation / optimistic
       # lock / policy scoping) onto the tenant clause, SYMMETRIC with update/2 & destroy/2's
@@ -2395,14 +2389,11 @@ defmodule AshArcadic.DataLayer do
       # is simply absent from RETURN n (Ash reports it StaleRecord), never a silent over-update.
       case changeset_where(rep, tenant_clause, seed) do
         {:ok, where_clause, params} ->
-          label = validated_label(resource)
-          set_clause = update_many_set_clause(atomic_frags)
-
           cypher =
             "UNWIND $rows AS r MATCH (n:#{label} #{match_pattern})#{where_keyword(where_clause)} " <>
               "SET #{set_clause} RETURN n"
 
-          decode_query_write(resource, true, Arcadic.command(conn, cypher, params))
+          emit_update_many(resource, conn, cypher, params)
 
         {:error, _} ->
           {:error,
@@ -2415,9 +2406,6 @@ defmodule AshArcadic.DataLayer do
       {:error, %UnsupportedFilter{}} ->
         {:error, UpdateFailed.exception(resource: resource, reason: "unsupported atomic change")}
 
-      {:error, %UpdateFailed{} = err} ->
-        {:error, err}
-
       {:error, reason} when is_atom(reason) ->
         {:error, UpdateFailed.exception(resource: resource, reason: conn_error_reason(reason))}
     end
@@ -2426,7 +2414,7 @@ defmodule AshArcadic.DataLayer do
   # The per-row PK MATCH pattern (`{id: r.id, …}`) + the BARE tenant scope clause (composed into the
   # WHERE by changeset_where alongside rep.filter). `:attribute` injects the discriminator predicate
   # from `opts.tenant` (parsed to the stored value, NEVER read off row data) so every matched node is
-  # tenant-scoped; `:context` needs no predicate (physical-database isolation via tenant_write_conn).
+  # tenant-scoped; `:context` needs no predicate (physical-database isolation via write_conn).
   # PK/discriminator NAMES are identifier-validated; the tenant value rides `$tenant` bound.
   defp update_many_scope(resource, pk, tenant) do
     pattern =
@@ -2468,29 +2456,14 @@ defmodule AshArcadic.DataLayer do
   defp where_keyword(""), do: ""
   defp where_keyword(clause), do: " WHERE #{clause}"
 
-  # Write connection for an update_many group, resolved from `opts.tenant` (there is no Query here).
-  # `:context` targets the tenant database and fails CLOSED on a blank tenant (never the base DB — a
-  # silent cross-tenant write); `:attribute`/non-multitenant use the base DB, tenant-scoped by the
-  # WHERE discriminator predicate.
-  defp tenant_write_conn(resource, tenant) do
-    case strategy(resource) do
-      :context ->
-        case tenant do
-          blank when blank in [nil, ""] ->
-            {:error, :tenant_required}
-
-          t ->
-            AshArcadic.Transaction.resolve_conn(
-              Arcadic.with_database(
-                conn_for(resource),
-                AshArcadic.Multitenancy.database_name(resource, t)
-              ),
-              :write
-            )
-        end
-
-      _ ->
-        AshArcadic.Transaction.resolve_conn(conn_for(resource), :write)
+  # Final wire step: encode-gate the COMPLETE params map ONCE (the `rows` set maps — Jason recurses —
+  # plus the atomic/filter `$paramN` scalars and the `$tenant` value), then command. SYMMETRIC with
+  # update_query's single encode_gate: any un-encodable value fails closed value-free naming only the
+  # $param KEY, before the wire, never a Jason.EncodeError leaking bytes (AGENTS.md Rule 4).
+  defp emit_update_many(resource, conn, cypher, params) do
+    case encode_gate(resource, params, UpdateFailed) do
+      :ok -> decode_query_write(resource, true, Arcadic.command(conn, cypher, params))
+      {:error, _} = err -> err
     end
   end
 
@@ -2562,17 +2535,24 @@ defmodule AshArcadic.DataLayer do
   defp tenant?(changeset), do: not is_nil(Map.get(changeset, :to_tenant))
 
   @doc false
-  # Resolves the ArcadeDB database name for a WRITE. Gated on the multitenancy
-  # STRATEGY, not on `to_tenant` presence (which is populated for :attribute too).
-  # For :context a nil/blank tenant FAILS CLOSED — there is no global database, and
-  # falling through to the base database would be a silent cross-tenant write.
+  # Resolves the ArcadeDB database name for a WRITE from a changeset — a thin adapter over
+  # write_database_for_tenant/2 keyed on `changeset.to_tenant`.
   @spec write_database(Ash.Resource.t(), Ash.Changeset.t()) ::
           {:ok, String.t() | nil} | {:error, :tenant_required}
-  def write_database(resource, changeset) do
+  def write_database(resource, changeset),
+    do: write_database_for_tenant(resource, Map.get(changeset, :to_tenant))
+
+  # The database name for a WRITE, keyed on the raw tenant (update_many has `opts.tenant`, not a
+  # changeset). Gated on the multitenancy STRATEGY, not on tenant presence (populated for :attribute
+  # too). For :context a nil/blank tenant FAILS CLOSED — there is no global database, and falling
+  # through to the base database would be a silent cross-tenant write.
+  @spec write_database_for_tenant(Ash.Resource.t(), term()) ::
+          {:ok, String.t() | nil} | {:error, :tenant_required}
+  defp write_database_for_tenant(resource, tenant) do
     if strategy(resource) == :context do
-      case Map.get(changeset, :to_tenant) do
+      case tenant do
         blank when blank in [nil, ""] -> {:error, :tenant_required}
-        tenant -> {:ok, AshArcadic.Multitenancy.database_name(resource, tenant)}
+        t -> {:ok, AshArcadic.Multitenancy.database_name(resource, t)}
       end
     else
       {:ok, Info.database(resource)}
@@ -2580,14 +2560,23 @@ defmodule AshArcadic.DataLayer do
   end
 
   @doc false
-  # The write connection for a changeset, fail-closed on a blank :context tenant. Routes the
-  # database-targeted base conn through resolve_conn/2, which is an EXACT passthrough outside
-  # a transaction and folds in the cross-database session guard inside one.
+  # The write connection for a changeset — a thin adapter over write_conn_for_tenant/2 keyed on
+  # `changeset.to_tenant`.
   @spec write_conn(Ash.Resource.t(), Ash.Changeset.t()) ::
           {:ok, Arcadic.Conn.t()}
           | {:error, :tenant_required | :cross_database_transaction | :transaction_begin_failed}
-  def write_conn(resource, changeset) do
-    case write_database(resource, changeset) do
+  def write_conn(resource, changeset),
+    do: write_conn_for_tenant(resource, Map.get(changeset, :to_tenant))
+
+  # The write connection keyed on the raw tenant, fail-closed on a blank :context tenant. The
+  # CANONICAL resource+tenant → write-conn resolver, shared by write_conn/2 (single-row) and
+  # update_many/3. Routes the database-targeted base conn through resolve_conn/2, an EXACT passthrough
+  # outside a transaction that folds in the cross-database session guard inside one.
+  @spec write_conn_for_tenant(Ash.Resource.t(), term()) ::
+          {:ok, Arcadic.Conn.t()}
+          | {:error, :tenant_required | :cross_database_transaction | :transaction_begin_failed}
+  defp write_conn_for_tenant(resource, tenant) do
+    case write_database_for_tenant(resource, tenant) do
       {:ok, nil} ->
         AshArcadic.Transaction.resolve_conn(conn_for(resource), :write)
 
