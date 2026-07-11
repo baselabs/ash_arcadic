@@ -51,6 +51,7 @@ defmodule AshArcadic.DataLayer.SkeletonTest do
     assert AshArcadic.DataLayer.can?(AshArcadic.Test.Basic, :update_query)
     assert AshArcadic.DataLayer.can?(AshArcadic.Test.Basic, :expr_error)
     assert AshArcadic.DataLayer.can?(AshArcadic.Test.Basic, :destroy_query)
+    assert AshArcadic.DataLayer.can?(AshArcadic.Test.Basic, :update_many)
     # Slice 9: atomic SET on create/upsert (V8) + the pure :atomic bulk-update strategy.
     assert AshArcadic.DataLayer.can?(AshArcadic.Test.Basic, {:atomic, :update})
     assert AshArcadic.DataLayer.can?(AshArcadic.Test.Basic, {:atomic, :create})

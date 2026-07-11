@@ -35,6 +35,10 @@ defmodule AshArcadic.DataLayer.CanTest do
     assert DL.can?(AshArcadic.Test.CrudPerson, :destroy_query)
   end
 
+  test "advertises :update_many" do
+    assert AshArcadic.DataLayer.can?(AshArcadic.Test.CrudPerson, :update_many)
+  end
+
   test "advertises {:atomic, :update|:create|:upsert}" do
     for kind <- [:update, :create, :upsert] do
       assert AshArcadic.DataLayer.can?(AshArcadic.Test.CrudPerson, {:atomic, kind})

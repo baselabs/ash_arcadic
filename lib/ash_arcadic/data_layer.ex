@@ -147,6 +147,10 @@ defmodule AshArcadic.DataLayer do
   def can?(_, :update_query), do: true
   def can?(_, :expr_error), do: true
   def can?(_, :destroy_query), do: true
+  # :update_many enables the heterogeneous per-record push-down (Ash groups changesets by
+  # {atomics, filter} and hands each group to update_many/3; a shared-atomic fold + a per-row
+  # UNWIND MATCH keyed by PK applies each row's own static changes in one statement).
+  def can?(_, :update_many), do: true
   # Slice 9: atomic SET surface. {:atomic, :update} lets Ash use the pure :atomic strategy for
   # bulk update; {:atomic, :create}/{:atomic, :upsert} let an atomic_set on a create/upsert reach
   # create/2/upsert/3 — which now FOLD changeset.create_atomics/atomics into the statement (V8).
@@ -2292,6 +2296,173 @@ defmodule AshArcadic.DataLayer do
 
   defp stale?({:error, %StaleRecord{}}), do: true
   defp stale?(_), do: false
+
+  @impl true
+  # Heterogeneous per-record bulk update. Ash (`Ash.update_many/4`) groups the changesets by
+  # {atomics, filter} and hands each group here; a group shares one set of atomics (the group key),
+  # so `rep.atomics` folds into the statement ONCE, while each row's OWN static changes ride the
+  # per-row `$rows` UNWIND. The `:attribute` discriminator is injected from `opts.tenant` (never row
+  # data) as a WHERE predicate; `:context` targets the tenant database and fails closed on a blank
+  # tenant. A row whose PK matches nothing is simply absent from the returned records (spec D2 bulk
+  # semantics) — never a data-layer error.
+  def update_many(resource, changesets, opts) do
+    entries = Enum.to_list(changesets)
+
+    Telemetry.span(:update_many, %{resource: resource, multitenancy: strategy(resource)}, fn ->
+      result = do_update_many(resource, entries, opts)
+
+      {result,
+       %{
+         batch_size: length(entries),
+         tenant?: tenant_present?(opts),
+         matched: matched_count(result),
+         result: Telemetry.result_tag(result),
+         in_transaction?: AshArcadic.Transaction.in_transaction?()
+       }}
+    end)
+  end
+
+  # An empty group writes nothing.
+  defp do_update_many(_resource, [], _opts), do: {:ok, []}
+
+  defp do_update_many(resource, [rep | _] = entries, opts) do
+    pk = Ash.Resource.Info.primary_key(resource)
+    types = Info.attribute_types(resource)
+
+    disc =
+      if strategy(resource) == :attribute, do: Ash.Resource.Info.multitenancy_attribute(resource)
+
+    rows =
+      Enum.map(entries, fn changeset ->
+        Map.put(
+          pk_row_key(changeset, pk, types),
+          "set",
+          changeset_to_properties(resource, changeset)
+        )
+      end)
+
+    # Gate the per-row static `set` maps for JSON-encodability BEFORE any conn/DB touch, naming only
+    # the offending ATTRIBUTE (value-free). Atomic-RHS params are gated separately in
+    # run_update_many, symmetric with update_query (a poisoned binary in either would otherwise leak
+    # bytes via Jason.EncodeError — AGENTS.md Rule 4).
+    encode_fail = first_encode_failure(Enum.map(rows, fn r -> {nil, r["set"]} end))
+
+    cond do
+      disc && Enum.any?(rows, &Map.has_key?(&1["set"], Atom.to_string(disc))) ->
+        {:error,
+         UpdateFailed.exception(
+           resource: resource,
+           reason: "cannot set the multitenancy discriminator"
+         )}
+
+      not is_nil(encode_fail) ->
+        {:error,
+         UpdateFailed.exception(resource: resource, reason: encode_error_reason(encode_fail))}
+
+      true ->
+        run_update_many(resource, rep, rows, pk, opts)
+    end
+  end
+
+  defp run_update_many(resource, rep, rows, pk, opts) do
+    tenant = Map.get(opts, :tenant)
+
+    with {:ok, atomic_frags, atomic_params} <-
+           Write.atomic_fragments(resource, rep.atomics, %{}),
+         # Encode-gate the atomic-RHS $paramN scalars — SYMMETRIC with update_query's encode_gate
+         # (build_set does not pre-serialize them safe). A poisoned binary in an atomic RHS fails
+         # closed value-free here instead of crashing Jason.EncodeError with the bytes (Rule 4).
+         :ok <- encode_gate(resource, atomic_params, UpdateFailed),
+         {:ok, conn} <- tenant_write_conn(resource, tenant) do
+      label = validated_label(resource)
+      {match_pattern, where, tenant_params} = update_many_scope(resource, pk, tenant)
+      set_clause = update_many_set_clause(atomic_frags)
+
+      cypher =
+        "UNWIND $rows AS r MATCH (n:#{label} #{match_pattern})#{where} SET #{set_clause} RETURN n"
+
+      params = Map.merge(atomic_params, Map.merge(tenant_params, %{"rows" => rows}))
+
+      decode_query_write(resource, true, Arcadic.command(conn, cypher, params))
+    else
+      {:error, %UnsupportedFilter{}} ->
+        {:error, UpdateFailed.exception(resource: resource, reason: "unsupported atomic change")}
+
+      {:error, %UpdateFailed{} = err} ->
+        {:error, err}
+
+      {:error, reason} when is_atom(reason) ->
+        {:error, UpdateFailed.exception(resource: resource, reason: conn_error_reason(reason))}
+    end
+  end
+
+  # The per-row PK MATCH pattern (`{id: r.id, …}`) + the tenant scope. `:attribute` injects the
+  # discriminator predicate from `opts.tenant` (parsed to the stored value, NEVER read off row data)
+  # so every matched node is tenant-scoped; `:context` needs no predicate (physical-database
+  # isolation via tenant_write_conn). PK/discriminator NAMES are identifier-validated; the tenant
+  # value rides `$tenant` bound.
+  defp update_many_scope(resource, pk, tenant) do
+    pattern =
+      "{" <>
+        Enum.map_join(pk, ", ", fn k ->
+          kk = k |> to_string() |> AshArcadic.Identifier.validate!()
+          "#{kk}: r.#{kk}"
+        end) <> "}"
+
+    case strategy(resource) do
+      :attribute ->
+        attr = Ash.Resource.Info.multitenancy_attribute(resource)
+        {m, f, a} = Ash.Resource.Info.multitenancy_parse_attribute(resource)
+        value = apply(m, f, [tenant | a])
+        attr_name = attr |> to_string() |> AshArcadic.Identifier.validate!()
+        {pattern, " WHERE n.#{attr_name} = $tenant", %{"tenant" => value}}
+
+      _ ->
+        {pattern, "", %{}}
+    end
+  end
+
+  # [{"<pk_field>" => serialized_original_value}] — the identity of each row. get_data/2 (the STORED
+  # key), never the pending value: a writable PK in `accept` would make the MATCH miss the row.
+  defp pk_row_key(changeset, pk, types) do
+    Map.new(pk, fn field ->
+      value = Ash.Changeset.get_data(changeset, field)
+      {Atom.to_string(field), Cast.serialize_value(value, Map.get(types, field))}
+    end)
+  end
+
+  # The shared atomic fold prepends `n += r.set` (the per-row static merge) to the group's atomic
+  # SET fragments. Empty atomics → a pure static per-row merge.
+  defp update_many_set_clause([]), do: "n += r.set"
+  defp update_many_set_clause(atomic_frags), do: Enum.join(["n += r.set" | atomic_frags], ", ")
+
+  # Write connection for an update_many group, resolved from `opts.tenant` (there is no Query here).
+  # `:context` targets the tenant database and fails CLOSED on a blank tenant (never the base DB — a
+  # silent cross-tenant write); `:attribute`/non-multitenant use the base DB, tenant-scoped by the
+  # WHERE discriminator predicate.
+  defp tenant_write_conn(resource, tenant) do
+    case strategy(resource) do
+      :context ->
+        case tenant do
+          blank when blank in [nil, ""] ->
+            {:error, :tenant_required}
+
+          t ->
+            AshArcadic.Transaction.resolve_conn(
+              Arcadic.with_database(
+                conn_for(resource),
+                AshArcadic.Multitenancy.database_name(resource, t)
+              ),
+              :write
+            )
+        end
+
+      _ ->
+        AshArcadic.Transaction.resolve_conn(conn_for(resource), :write)
+    end
+  end
+
+  defp tenant_present?(opts), do: not is_nil(Map.get(opts, :tenant))
 
   # Maps changeset.attributes (minus `skip`) to a JSON-safe string-keyed property
   # map, each value serialized by attribute type. Passed as ONE `$props` map param
