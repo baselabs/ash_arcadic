@@ -1499,6 +1499,7 @@ defmodule AshArcadic.DataLayer do
        %{
          batch_size: length(entries),
          tenant?: bulk_tenant?(entries),
+         bulk_upsert?: Map.get(options, :upsert?, false) == true,
          result: Telemetry.result_tag(result),
          in_transaction?: AshArcadic.Transaction.in_transaction?()
        }}
@@ -1508,17 +1509,30 @@ defmodule AshArcadic.DataLayer do
   # An empty batch writes nothing (no scoping surface) → :ok without touching the DB.
   defp do_bulk_create(_resource, [], _options), do: :ok
 
-  # Bulk UPSERT is unsupported (native MERGE is single-row; documented non-goal).
-  # Ash routes a bulk `upsert? true` action here with `options.upsert? == true`; the
-  # normal CREATE path would silently emit `UNWIND ... CREATE` and produce DUPLICATE
-  # rows for what the caller asked to be idempotent. Fail CLOSED — reject before any
-  # DB touch — rather than fail open against the upsert contract.
-  defp do_bulk_create(resource, _entries, %{upsert?: true}) do
-    {:error,
-     CreateFailed.exception(
-       resource: resource,
-       reason: "bulk upsert is not supported; use a single-row upsert action"
-     )}
+  # Bulk UPSERT via UNWIND MERGE — the ArcadeDB divergence from the AGE sibling (which
+  # BANS MERGE). Ash routes a bulk `upsert? true` action here with `options.upsert? ==
+  # true`. `upsert_identity_keys/2` appends the `:attribute` discriminator to the merge
+  # key so a cross-tenant PK collision MATCHes nothing and CREATEs its own tenant-local
+  # row (D4 — never hijacks another tenant's row); `:context` isolates by database and
+  # needs no discriminator.
+  defp do_bulk_create(resource, entries, %{upsert?: true} = options) do
+    identity_keys =
+      upsert_identity_keys(
+        resource,
+        options.upsert_keys || Ash.Resource.Info.primary_key(resource)
+      )
+
+    if identity_keys == [] do
+      # Fail closed: an empty identity would emit `MERGE (n:L {})`, matching ANY node
+      # (a catastrophic ON MATCH clobber). Sibling parity with do_upsert/3.
+      {:error,
+       CreateFailed.exception(
+         resource: resource,
+         reason: "bulk upsert requires a non-empty identity (no primary key or upsert keys)"
+       )}
+    else
+      run_bulk_upsert(resource, entries, options, identity_keys)
+    end
   end
 
   defp do_bulk_create(resource, entries, options) do
@@ -1563,6 +1577,66 @@ defmodule AshArcadic.DataLayer do
       {:error, _} = err ->
         err
     end
+  end
+
+  # One UNWIND MERGE for the whole batch. Per row we ship: the identity values TOP-LEVEL
+  # (read by the merge pattern as `r.<key>` — the P4-proven bulk form, distinct from the
+  # single-row `$mk_<key>` bound form), plus `"all"` (the full property map → ON CREATE
+  # `n += r.all`, seeds the force-set discriminator from all_props → D4 tenant-scoped
+  # merge) and `"set"` (the ON MATCH subset → `n += r.set`).
+  defp run_bulk_upsert(resource, entries, options, identity_keys) do
+    return_records? = Map.get(options, :return_records?, false)
+    identity_key_strings = Enum.map(identity_keys, &Atom.to_string/1)
+
+    rows =
+      Enum.map(entries, fn {changeset, all_props} ->
+        # Sibling parity with do_upsert/3: the ON MATCH subset is Ash's canonical
+        # `set_on_upsert/2` (honors the changeset's configured upsert_fields context AND
+        # folds update-defaults) minus identity_keys+skip — NOT a raw options.upsert_fields
+        # filter over changeset.attributes, which would diverge. Rejecting identity_keys
+        # keeps the discriminator OUT of ON MATCH (D3 — never SET the disc, a tenant-hop).
+        set = upsert_set_map(resource, changeset, identity_keys)
+
+        all_props
+        |> Map.take(identity_key_strings)
+        |> Map.merge(%{"all" => all_props, "set" => set})
+      end)
+
+    # Gate the COMPLETE wire payload ONCE (Task-1 consolidation parity): Jason.encode(rows)
+    # recurses into every row's identity values, "all", AND "set", so one gate covers ALL
+    # wire values before any DB touch. Fail closed value-free (Rule 4).
+    with :ok <- encode_gate(resource, %{"rows" => rows}, CreateFailed),
+         {:ok, conn} <- bulk_conn(resource, entries) do
+      label = validated_label(resource)
+      merge_pattern = bulk_merge_pattern(identity_keys)
+
+      cypher =
+        "UNWIND $rows AS r MERGE (n:#{label} #{merge_pattern}) " <>
+          "ON CREATE SET n += r.all ON MATCH SET n += r.set RETURN n"
+
+      conn
+      |> Arcadic.command(cypher, %{"rows" => rows})
+      |> decode_bulk_result(resource, entries, return_records?)
+    else
+      {:error, reason} when is_atom(reason) ->
+        {:error, CreateFailed.exception(resource: resource, reason: conn_error_reason(reason))}
+
+      # An encode_gate failure is already a value-free %CreateFailed{} — pass through.
+      {:error, _} = err ->
+        err
+    end
+  end
+
+  # The bulk MERGE identity pattern `{k1: r.k1, ...}` — each key validated as an identifier
+  # (only the field NAME is interpolated), each value read TOP-LEVEL off the unwound `r`
+  # (NEVER interpolated). Composite identities supported. Distinct from the single-row
+  # `merge_identity/3`'s `$mk_<key>` bound form: the values ride inside `$rows`.
+  defp bulk_merge_pattern(identity_keys) do
+    "{" <>
+      Enum.map_join(identity_keys, ", ", fn key ->
+        k = key |> to_string() |> AshArcadic.Identifier.validate!()
+        "#{k}: r.#{k}"
+      end) <> "}"
   end
 
   # Shared create-phase atomic SET fragments for a bulk create — Ash groups by create_atomics so all

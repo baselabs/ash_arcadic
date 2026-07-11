@@ -11,7 +11,8 @@ defmodule AshArcadic.Telemetry do
                         properties? direction row_count batch_size group_count matched
                         destination_count depth result kinds aggregate_count
                         calculation_count distinct? combination? combination_types
-                        combination_strategy traversal_aggregate? aggregate_kinds)a
+                        combination_strategy traversal_aggregate? aggregate_kinds
+                        bulk_upsert?)a
 
   @spec allowed_meta_keys() :: [atom()]
   def allowed_meta_keys, do: @allowed_meta_keys
