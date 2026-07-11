@@ -9,6 +9,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Query-scoped bulk writes + atomics (Slice 9, Plan 1).** `update_query`/`destroy_query`
+  (`can?(:update_query)` / `can?(:destroy_query)` / `can?(:expr_error)`): a query-scoped bulk update or
+  destroy compiles to ONE parameterized Cypher statement — the tenant predicate, caller filter, and
+  changeset filter all ANDed into the WHERE — instead of Ash's per-row `:stream` fallback. An empty match
+  is a no-op (`{:ok, []}`), never `StaleRecord` (bulk semantics differ from the single-row path). Bulk
+  destroy with `return_records?: true` captures each row's properties BEFORE the delete
+  (`… WITH n, properties(n) AS p DETACH DELETE n RETURN p`). Atomic expression updates
+  (`change atomic_update(:field, expr(field + 1))`) push into Cypher `SET` via a new pure
+  `AshArcadic.Query.Write` builder over `AshArcadic.Query.Expression`
+  (`can?({:atomic, :update|:create|:upsert})`) — the RHS hydrated then translated, every literal bound;
+  atomic `create_atomics`/`atomics` are also folded into `create`/`upsert` (`ON CREATE`/`ON MATCH`). A
+  write to the multitenancy discriminator (atomic OR static), an empty SET, and a
+  `sensitive`/non-stored/`:binary`/`:decimal`/relationship/aggregate atomic RHS all fail closed value-free.
+  A `limit`/`offset`/`combination_of` on a query-scoped bulk write fails closed (a single `MATCH … SET`/
+  `DELETE` cannot honor per-row paging; use `strategy: :stream`), as does a conditional after-batch hook on
+  the action. Multitenancy stays fail-closed on every path (`:context` blank tenant → no statement;
+  `:attribute` scoped by the WHERE predicate) — a fabricated cross-tenant attacker cannot cross tenants
+  (mutation-proven). Write-path params (static + atomic-RHS literals) are JSON-encode-gated before the wire
+  (a poisoned value fails closed value-free, never a byte-leaking crash). Read/write-span telemetry gains a
+  value-free `matched` tag and `:update_query`/`:destroy_query` spans. Also advertises
+  `can?({:filter_expr, <literal>})` so an all-literal filter/atomic that Ash constant-folds
+  (`expr(100 + 1)` → `101`) is accepted (bound as a param). Heterogeneous `update_many` and multi-row bulk
+  upsert are Plan 2 (pending).
 - **Combinations (Slice 8, Plan 2).** `combination_of` support
   (`can?(:combine)` / `can?({:combine, :base|:union|:union_all|:intersect|:except})`):
   native `UNION`/`UNION ALL` Cypher push-down — one `CALL { <branch> UNION[ ALL] <branch> } … RETURN n`

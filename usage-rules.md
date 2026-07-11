@@ -33,6 +33,45 @@ _An Ash DataLayer for ArcadeDB (native OpenCypher over HTTP)._
 - **`MERGE` is used** for idempotent upsert (ArcadeDB-verified) — unlike the
   `ash_age` sibling. Do not import AGE's "never MERGE" rule.
 
+## Query-scoped bulk writes + atomics (Slice 9, Plan 1)
+
+- **Query-scoped bulk update/destroy push down to ONE statement.** `Ash.bulk_update`/`Ash.bulk_destroy`
+  over a query (`strategy: :atomic`) compile to a single parameterized Cypher `MATCH (n:Label) WHERE …
+  SET …`/`DETACH DELETE n` — the tenant predicate, the caller filter, and the changeset filter are all
+  ANDed into the WHERE (Ash pre-composes them into the data-layer query). Without this the operations
+  still work via Ash's per-row `:stream` fallback; this is the efficient one-statement path
+  (`can?(:update_query)` / `can?(:destroy_query)` / `can?(:expr_error)`).
+- **Empty match is a NO-OP, not `StaleRecord`.** A query-scoped bulk update/destroy matching zero rows
+  returns success with `[]` records — bulk semantics differ from the single-row pk-scoped `update`/`destroy`
+  (which raise `StaleRecord` on a no-match).
+- **Atomic expression updates push into Cypher `SET`.** `change atomic_update(:field, expr(field + 1))`
+  (and cross-property refs, `if`/`round`, etc.) render as `n.field = <cypher>` via
+  `AshArcadic.Query.Expression` — the RHS is hydrated then translated, every literal bound to a `$param`.
+  A `sensitive`, non-stored, `:binary`, `:decimal`, relationship-path, or aggregate atomic RHS fails closed
+  value-free (`%UnsupportedFilter{}`); an empty SET fails closed; the multitenancy discriminator is never
+  settable (atomic OR static) — a write to it is rejected value-free (it would tenant-hop the row).
+- **Atomic create/upsert are honest.** `change atomic_set(:field, expr(…))` on a create and an atomic
+  change on an upsert action are applied (`can?({:atomic, :create|:upsert|:update})`): `create_atomics`
+  fold into the `CREATE … SET …` and `atomics` into the upsert `ON MATCH SET …`. (Advertising these
+  without folding would silently DROP the atomic change — closed.)
+- **Bulk destroy return-records captures pre-delete properties.** `return_records?: true` on a bulk
+  destroy returns the deleted rows WITH their attributes (`… WITH n, properties(n) AS p DETACH DELETE n
+  RETURN p`) — a post-delete read would yield no attributes.
+- **`limit`/`offset`/`combination_of` on a query-scoped bulk write fail CLOSED.** A single `MATCH … SET`/
+  `DELETE` cannot honor a per-row limit/offset (no ordering semantics) or a combination — a paged/combined
+  bulk update/destroy returns a value-free error (use `strategy: :stream`), never a silent unscoped mutation.
+  A conditional after-batch hook (`change …, where: […]`) on the action likewise fails closed (unsupported
+  on the atomic path; use `:stream`).
+- **Multitenancy is fail-closed on every bulk-write path.** `:context` — a blank tenant resolves no
+  database, so no statement runs; `:attribute` — the discriminator predicate scopes the WHERE. A fabricated
+  cross-tenant attacker cannot bulk-update/destroy another tenant's rows (mutation-proven).
+- **Every value is a bound `$param`; errors are value-free.** Write-path params (static changes AND atomic
+  RHS literals) are JSON-encode-gated before the wire — a poisoned value fails closed value-free, never a
+  byte-leaking crash. (Read-path filter params are a separate, pre-existing gap — tracked outside this slice.)
+- **Not yet supported (Slice 9, Plan 2 — pending):** heterogeneous per-record `update_many` and multi-row
+  bulk upsert. Until Plan 2 lands, a heterogeneous bulk update uses Ash's `:stream` fallback and a bulk
+  upsert action is rejected.
+
 ## Query & filter push-down (Plan 2)
 
 - **Supported filter operators:** `==` / `!=` / `>` / `<` / `>=` / `<=` / `in` /
