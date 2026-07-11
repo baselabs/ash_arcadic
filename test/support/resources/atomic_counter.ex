@@ -51,5 +51,24 @@ defmodule AshArcadic.Test.AtomicCounter do
       argument :secret, :integer
       change atomic_set(:count, expr(dec + ^arg(:secret)))
     end
+
+    # PK-based upsert whose CREATE-phase atomic (atomic_set → changeset.create_atomics) must apply on
+    # the INSERT branch (ON CREATE SET), NOT ON MATCH. Distinct from :upsert_bump (atomic_update →
+    # changeset.atomics → ON MATCH). Proves the V8 fold covers the upsert-insert surface.
+    create :upsert_create_bump do
+      accept [:id]
+      upsert? true
+      change atomic_set(:count, expr(100 + 1))
+    end
+
+    # Upsert whose ON MATCH atomic RHS carries a caller binary (atomic_update → changeset.atomics),
+    # for the encode-gate poison regression on the upsert path (mirror of :poison_name on create).
+    # The field-ref concat keeps the RHS a genuine EXPRESSION so the poison rides the atomic $paramN.
+    create :upsert_poison do
+      accept [:id]
+      argument :bad, :string
+      upsert? true
+      change atomic_update(:label_txt, expr(label_txt <> ^arg(:bad)))
+    end
   end
 end

@@ -28,6 +28,51 @@ defmodule AshArcadic.Integration.AtomicCreateUpsertTest do
     assert Ash.get!(AtomicCounter, "u1").count == 15
   end
 
+  test "atomic_set on bulk create is applied (create_atomics folded into run_bulk_create — V8)" do
+    # bulk_create routes to run_bulk_create; advertising {:atomic, :create} makes Ash push
+    # create_atomics to it too. Both rows share :create_with_bump's create_atomics (Ash groups by
+    # them). If run_bulk_create dropped the fold, count would be nil (never set) — this asserts it.
+    result =
+      Ash.bulk_create([%{id: "bc1"}, %{id: "bc2"}], AtomicCounter, :create_with_bump,
+        return_records?: true
+      )
+
+    assert result.status == :success
+    assert result.records |> Enum.map(& &1.count) |> Enum.sort() == [101, 101]
+    assert Ash.get!(AtomicCounter, "bc1").count == 101
+    assert Ash.get!(AtomicCounter, "bc2").count == 101
+  end
+
+  test "atomic_set on upsert-INSERT is applied ON CREATE (create_atomics folded into upsert/3 — V8)" do
+    # No pre-existing row → the MERGE takes the ON CREATE branch. atomic_set populates
+    # create_atomics (create phase), which must fold into ON CREATE SET (not ON MATCH). If dropped,
+    # count is nil (never computed on insert).
+    AtomicCounter
+    |> Ash.Changeset.for_create(:upsert_create_bump, %{id: "uc1"})
+    |> Ash.create!()
+
+    assert Ash.get!(AtomicCounter, "uc1").count == 101
+  end
+
+  test "a poisoned non-UTF8 binary in an upsert ON MATCH atomic RHS fails closed value-free" do
+    bad = <<0xFF, 0xFE>>
+    # Pre-create the row so the MERGE takes the ON MATCH branch (where the atomic RHS binds the
+    # poisoned $paramN). The upsert-path encode-gate must turn it into a value-free {:error, _},
+    # never a Jason.EncodeError with the bytes (Rule 4) — mirrors the create-path poison regression.
+    AtomicCounter
+    |> Ash.Changeset.for_create(:create, %{id: "up1", label_txt: "x"})
+    |> Ash.create!()
+
+    result =
+      AtomicCounter
+      |> Ash.Changeset.for_create(:upsert_poison, %{id: "up1", bad: bad})
+      |> Ash.create()
+
+    assert {:error, err} = result
+    refute inspect(err) =~ "255"
+    refute inspect(err) =~ "0xFF"
+  end
+
   test "a poisoned non-UTF8 binary in an atomic create RHS fails closed value-free" do
     bad = <<0xFF, 0xFE>>
 

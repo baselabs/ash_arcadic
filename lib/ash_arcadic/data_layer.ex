@@ -1531,26 +1531,47 @@ defmodule AshArcadic.DataLayer do
   end
 
   defp run_bulk_create(resource, entries, options) do
-    # Ash batches by tenant, so all changesets share one database — resolve off the
-    # first, reusing the fail-closed nil-:context-tenant path.
-    case bulk_conn(resource, entries) do
-      {:ok, conn} ->
-        label = validated_label(resource)
-        rows = Enum.map(entries, fn {_changeset, props} -> props end)
-        return_records? = Map.get(options, :return_records?, false)
+    # Ash batches by tenant AND groups by changeset.create_atomics (create/bulk.ex), so all
+    # changesets in one batch share one database AND one atomic-set — resolve/fold off the first.
+    # Advertising {:atomic, :create} makes Ash push create_atomics HERE too (V8 fail-open surface):
+    # fold the shared create-phase atomic into the UNWIND CREATE, or the atomic change is silently
+    # dropped on bulk create. The atomic $paramN literals ride the wire, so encode-gate them too.
+    with {:ok, atomic_set, atomic_params} <- bulk_create_atomic_set(resource, entries),
+         :ok <- encode_gate(resource, atomic_params, CreateFailed),
+         {:ok, conn} <- bulk_conn(resource, entries) do
+      label = validated_label(resource)
+      rows = Enum.map(entries, fn {_changeset, props} -> props end)
+      return_records? = Map.get(options, :return_records?, false)
+      cypher = "UNWIND $rows AS row CREATE (n:#{label}) SET n += row#{atomic_set} RETURN n"
 
-        conn
-        |> Arcadic.command("UNWIND $rows AS row CREATE (n:#{label}) SET n += row RETURN n", %{
-          "rows" => rows
-        })
-        |> decode_bulk_result(resource, entries, return_records?)
+      conn
+      |> Arcadic.command(cypher, Map.merge(atomic_params, %{"rows" => rows}))
+      |> decode_bulk_result(resource, entries, return_records?)
+    else
+      # A sensitive/non-stored/discriminator atomic target normalizes to value-free CreateFailed
+      # (sibling parity with do_create); an encode_gate failure is already %CreateFailed{}.
+      {:error, %AshArcadic.Errors.UnsupportedFilter{}} ->
+        {:error, CreateFailed.exception(resource: resource, reason: "unsupported atomic change")}
 
-      {:error, reason} ->
-        {:error,
-         CreateFailed.exception(
-           resource: resource,
-           reason: conn_error_reason(reason)
-         )}
+      {:error, reason} when is_atom(reason) ->
+        {:error, CreateFailed.exception(resource: resource, reason: conn_error_reason(reason))}
+
+      {:error, _} = err ->
+        err
+    end
+  end
+
+  # Shared create-phase atomic SET fragments for a bulk create — Ash groups by create_atomics so all
+  # entries share the representative from the first. Empty ("") when there are no create atomics; else
+  # a `, n.<f> = <cypher>` continuation of the existing `SET n += row`, applied to every unwound row.
+  defp bulk_create_atomic_set(_resource, [{%{create_atomics: []}, _props} | _]),
+    do: {:ok, "", %{}}
+
+  defp bulk_create_atomic_set(resource, [{changeset, _props} | _]) do
+    case Write.atomic_fragments(resource, changeset.create_atomics, %{}) do
+      {:ok, [], _params} -> {:ok, "", %{}}
+      {:ok, frags, params} -> {:ok, ", " <> Enum.join(frags, ", "), params}
+      {:error, _} = err -> err
     end
   end
 
@@ -1643,13 +1664,27 @@ defmodule AshArcadic.DataLayer do
 
     # Everything that rides the wire is gated BEFORE any DB touch: $props/$on_match per
     # attribute (props already carries the identity values too; attribute-naming contract
-    # preserved) AND the ON MATCH atomic $paramN literals — an atomic-RHS literal is bound
-    # RAW by Expression, so a poisoned non-UTF8 binary there would otherwise crash
-    # Jason.EncodeError with the bytes in the message (Rule 4).
-    with {:ok, atomic_set, atomic_params} <- upsert_atomic_set(resource, changeset),
+    # preserved) AND the atomic $paramN literals — an atomic-RHS literal is bound RAW by
+    # Expression, so a poisoned non-UTF8 binary there would otherwise crash Jason.EncodeError
+    # with the bytes in the message (Rule 4). BOTH atomic phases fold (V8): changeset.atomics →
+    # ON MATCH SET (`atomic_update`, references the matched row), changeset.create_atomics → ON
+    # CREATE SET (`atomic_set`, the insert branch — dropping it silently loses the atomic on an
+    # upsert-insert). The two share one $paramN accumulator (threaded) so their params never collide.
+    with {:ok, match_set, params} <- upsert_atomic_set(resource, changeset.atomics, %{}),
+         {:ok, create_set, params} <-
+           upsert_atomic_set(resource, changeset.create_atomics, params),
          :ok <- encode_gate(resource, Map.merge(props, on_match), CreateFailed),
-         :ok <- encode_gate(resource, atomic_params, CreateFailed) do
-      run_upsert(resource, changeset, identity_keys, props, on_match, atomic_set, atomic_params)
+         :ok <- encode_gate(resource, params, CreateFailed) do
+      run_upsert(
+        resource,
+        changeset,
+        identity_keys,
+        props,
+        on_match,
+        match_set,
+        create_set,
+        params
+      )
     else
       # Normalize the atomic-fold rejection (sibling parity with do_update_query_statement):
       # a raw %UnsupportedFilter{} from upsert_atomic_set is filter-flavored — misleading
@@ -1663,19 +1698,29 @@ defmodule AshArcadic.DataLayer do
     end
   end
 
-  # ON MATCH atomic fragments (changeset.atomics) — reference the matched row (n.x = n.x + $i).
-  # Empty when none.
-  defp upsert_atomic_set(_resource, %{atomics: []}), do: {:ok, "", %{}}
+  # Atomic SET-clause suffix ("" or ", n.<f> = <cypher>, …") for a list of atomics, threading
+  # `seed_params` so the ON MATCH and ON CREATE folds never collide on $paramN. Shared by both
+  # upsert branches; the suffix continues the existing `SET n += $on_match`/`$props`.
+  defp upsert_atomic_set(_resource, [], seed_params), do: {:ok, "", seed_params}
 
-  defp upsert_atomic_set(resource, changeset) do
-    case Write.atomic_fragments(resource, changeset.atomics, %{}) do
-      {:ok, [], _params} -> {:ok, "", %{}}
+  defp upsert_atomic_set(resource, atomics, seed_params) do
+    case Write.atomic_fragments(resource, atomics, seed_params) do
+      {:ok, [], params} -> {:ok, "", params}
       {:ok, frags, params} -> {:ok, ", " <> Enum.join(frags, ", "), params}
       {:error, _} = err -> err
     end
   end
 
-  defp run_upsert(resource, changeset, identity_keys, props, on_match, atomic_set, atomic_params) do
+  defp run_upsert(
+         resource,
+         changeset,
+         identity_keys,
+         props,
+         on_match,
+         match_set,
+         create_set,
+         params
+       ) do
     case write_conn(resource, changeset) do
       {:ok, conn} ->
         label = validated_label(resource)
@@ -1683,12 +1728,12 @@ defmodule AshArcadic.DataLayer do
 
         cypher =
           "MERGE (n:#{label} #{match_pattern}) " <>
-            "ON CREATE SET n += $props ON MATCH SET n += $on_match#{atomic_set} RETURN n"
+            "ON CREATE SET n += $props#{create_set} ON MATCH SET n += $on_match#{match_set} RETURN n"
 
         params =
           match_params
           |> Map.merge(%{"props" => props, "on_match" => on_match})
-          |> Map.merge(atomic_params)
+          |> Map.merge(params)
 
         case Arcadic.command(conn, cypher, params) do
           {:ok, [row]} ->
