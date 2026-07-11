@@ -57,6 +57,49 @@ defmodule AshArcadic.DataLayer.EncodeGateTest do
     assert value_free?(err.reason)
   end
 
+  # Bulk UPSERT is a NEW wire surface (Slice 9 Plan 2): run_bulk_upsert gates the whole `%{"rows" =>
+  # rows}` param at line 1629 BEFORE bulk_conn, so the poison never reaches the wire. The gate keys on
+  # the top-level param ("rows"), so the reason names it rather than "data" — the anchor is the
+  # value-free encode-gate signature, not the attribute name. Deleting that encode_gate line lets the
+  # poison reach Arcadic.command → Jason.EncodeError with the bytes → RED (leak or crash).
+  test "bulk upsert fails closed value-free on a nested non-encodable binary (new wire surface)" do
+    cs = %Ash.Changeset{resource: EncodeDoc, attributes: %{id: "e1", data: @poison}}
+
+    assert {:error, %CreateFailed{} = err} =
+             DL.bulk_create(EncodeDoc, [cs], %{
+               upsert?: true,
+               upsert_keys: [:id],
+               return_records?: true
+             })
+
+    assert err.reason =~ "not JSON-encodable"
+    assert value_free?(err.reason)
+  end
+
+  # update_many is the OTHER new wire surface: emit_update_many gates the COMPLETE params map at
+  # line 2565 before Arcadic.command. Non-multitenant EncodeDoc on MockClient resolves the write conn
+  # (passthrough) but never touches the DB — the gate fires first. Deleting that encode_gate line lets
+  # the poison reach the wire → Jason.EncodeError with the bytes → RED.
+  test "update_many fails closed value-free on a nested non-encodable binary (new wire surface)" do
+    cs = %Ash.Changeset{
+      resource: EncodeDoc,
+      data: %EncodeDoc{id: "e1"},
+      attributes: %{data: @poison},
+      atomics: [],
+      filter: nil
+    }
+
+    assert {:error, %UpdateFailed{} = err} =
+             DL.update_many(EncodeDoc, [cs], %{
+               tenant: nil,
+               return_records?: true,
+               calculations: []
+             })
+
+    assert err.reason =~ "not JSON-encodable"
+    assert value_free?(err.reason)
+  end
+
   # Positive control: an encodable :map value must pass the gate and proceed to the
   # write path (which then fails only on MockClient's bad auth — a reason WITHOUT the
   # encode-gate string), proving the gate does not blanket-reject :map attributes.

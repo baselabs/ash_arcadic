@@ -94,4 +94,47 @@ defmodule AshArcadic.Integration.BulkUpsertTest do
     row = AtomicCounter |> Ash.read!() |> Enum.find(&(&1.id == "m1"))
     assert row.count == 15
   end
+
+  # Fail-closed arm parity with the single-row create (atomic_create_upsert_test.exs): the BULK upsert
+  # path had no coverage for a rejected atomic fold. `:bad_atomic_rhs` carries atomic_set(:count,
+  # expr(dec + ^arg(:secret))) — the :decimal field-ref RHS is rejected by upsert_atomic_set ->
+  # Write.atomic_fragments -> {:error, %UnsupportedFilter{}} BEFORE bulk_conn. run_bulk_upsert's else
+  # must normalize it to a value-free %CreateFailed{}, never leak the raw filter-flavored error or the
+  # caller operand. Driven at the data-layer callback directly, exactly as the single-row test does.
+  test "a bulk upsert whose atomic fold is rejected returns a value-free CreateFailed (not UnsupportedFilter)" do
+    cs = Ash.Changeset.for_create(AtomicCounter, :bad_atomic_rhs, %{id: "b1", secret: 31_337})
+
+    assert {:error, err} =
+             AshArcadic.DataLayer.bulk_create(AtomicCounter, [cs], %{
+               upsert?: true,
+               upsert_keys: [:id],
+               return_records?: true
+             })
+
+    refute match?(%AshArcadic.Errors.UnsupportedFilter{}, err)
+    assert %AshArcadic.Errors.CreateFailed{reason: "unsupported atomic change"} = err
+    refute inspect(err) =~ "31337"
+    refute inspect(err) =~ "31_337"
+  end
+
+  # The atomic-param encode-gate on the BULK upsert path (run_bulk_upsert line 1630 gates the atomic
+  # $paramN literals). `:upsert_poison` folds atomic_update(:label_txt, expr(label_txt <> ^arg(:bad)))
+  # ON MATCH, binding the poisoned non-UTF8 arg RAW into an atomic param. The gate must turn it into a
+  # value-free {:error, _} before bulk_conn, never a Jason.EncodeError with the bytes (Rule 4) — mirror
+  # of the single-row :upsert_poison regression.
+  test "a poisoned non-UTF8 binary in a bulk upsert ON MATCH atomic RHS fails closed value-free" do
+    bad = <<0xFF, 0xFE>>
+    cs = Ash.Changeset.for_create(AtomicCounter, :upsert_poison, %{id: "up1", bad: bad})
+
+    assert {:error, err} =
+             AshArcadic.DataLayer.bulk_create(AtomicCounter, [cs], %{
+               upsert?: true,
+               upsert_keys: [:id],
+               return_records?: true
+             })
+
+    assert %AshArcadic.Errors.CreateFailed{} = err
+    refute inspect(err) =~ "255"
+    refute inspect(err) =~ "0xFF"
+  end
 end
