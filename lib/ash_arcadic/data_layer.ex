@@ -1417,6 +1417,16 @@ defmodule AshArcadic.DataLayer do
          :ok <- encode_gate(resource, props, CreateFailed),
          :ok <- encode_gate(resource, atomic_params, CreateFailed) do
       do_create(resource, changeset, props, atomic_set, atomic_params)
+    else
+      # Normalize the atomic-fold rejection (sibling parity with do_update_query_statement):
+      # a raw %UnsupportedFilter{} from create_atomic_set is filter-flavored ("unsupported
+      # filter operator") — misleading escaping a create callback. Value-free.
+      {:error, %AshArcadic.Errors.UnsupportedFilter{}} ->
+        {:error, CreateFailed.exception(resource: resource, reason: "unsupported atomic change")}
+
+      # An encode_gate failure is already a value-free %CreateFailed{} — pass through.
+      {:error, _} = err ->
+        err
     end
   end
 
@@ -1640,6 +1650,16 @@ defmodule AshArcadic.DataLayer do
          :ok <- encode_gate(resource, Map.merge(props, on_match), CreateFailed),
          :ok <- encode_gate(resource, atomic_params, CreateFailed) do
       run_upsert(resource, changeset, identity_keys, props, on_match, atomic_set, atomic_params)
+    else
+      # Normalize the atomic-fold rejection (sibling parity with do_update_query_statement):
+      # a raw %UnsupportedFilter{} from upsert_atomic_set is filter-flavored — misleading
+      # escaping an upsert callback. Value-free.
+      {:error, %AshArcadic.Errors.UnsupportedFilter{}} ->
+        {:error, CreateFailed.exception(resource: resource, reason: "unsupported atomic change")}
+
+      # An encode_gate failure is already a value-free %CreateFailed{} — pass through.
+      {:error, _} = err ->
+        err
     end
   end
 

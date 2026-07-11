@@ -11,6 +11,7 @@ defmodule AshArcadic.Test.AtomicCounter do
     attribute :id, :string, primary_key?: true, allow_nil?: false, public?: true
     attribute :count, :integer, public?: true
     attribute :label_txt, :string, public?: true
+    attribute :dec, :decimal, public?: true
   end
 
   actions do
@@ -38,6 +39,17 @@ defmodule AshArcadic.Test.AtomicCounter do
       accept [:id]
       argument :bad, :string
       change atomic_set(:label_txt, expr(^arg(:bad) <> "sfx"))
+    end
+
+    # An atomic create RHS referencing a :decimal field — Expression.ref_ok? rejects
+    # :decimal storage (exact-string; Cypher value ops over it are wrong, D27), so the
+    # atomic fold returns {:error, %UnsupportedFilter{}}. The field-ref keeps the RHS a
+    # genuine EXPRESSION (never statically cast into attributes); the ^arg routes a
+    # caller value in so the value-free assertion on the normalized error is non-vacuous.
+    create :bad_atomic_rhs do
+      accept [:id]
+      argument :secret, :integer
+      change atomic_set(:count, expr(dec + ^arg(:secret)))
     end
   end
 end

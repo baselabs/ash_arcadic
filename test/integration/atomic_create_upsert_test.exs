@@ -43,4 +43,21 @@ defmodule AshArcadic.Integration.AtomicCreateUpsertTest do
     refute inspect(err) =~ "255"
     refute inspect(err) =~ "0xFF"
   end
+
+  test "a create whose atomic fold is rejected returns a value-free CreateFailed (not UnsupportedFilter)" do
+    # :bad_atomic_rhs carries atomic_set(:count, expr(dec + ^arg(:secret))) — the :decimal
+    # field-ref RHS is rejected by Expression.ref_ok? inside the fold, so create_atomic_set
+    # returns {:error, %UnsupportedFilter{}}. do_create's else must normalize it to a
+    # value-free %CreateFailed{} (sibling parity with do_update_query_statement's
+    # update_query normalization), never leak the raw filter-flavored error from the
+    # create/2 callback.
+    cs = Ash.Changeset.for_create(AtomicCounter, :bad_atomic_rhs, %{id: "bad1", secret: 31_337})
+
+    assert {:error, err} = AshArcadic.DataLayer.create(AtomicCounter, cs)
+    refute match?(%AshArcadic.Errors.UnsupportedFilter{}, err)
+    assert %AshArcadic.Errors.CreateFailed{} = err
+    # value-free: the caller-supplied atomic operand never rides the error
+    refute inspect(err) =~ "31337"
+    refute inspect(err) =~ "31_337"
+  end
 end
