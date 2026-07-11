@@ -38,7 +38,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   with `strategy: :atomic` — compiles to one `UNWIND … MATCH … SET n += r.set[, <shared atomics>]` statement
   keyed by primary key (records absent from the graph are simply absent from the result). The group's shared
   `changeset.filter` (optimistic lock / atomic validation / policy) AND-composes onto the WHERE, fail-closed
-  on an untranslatable filter (symmetric with the single-row `update`/`destroy` path). Multi-row bulk upsert
+  on an untranslatable filter (symmetric with the single-row `update`/`destroy` path). update_many scopes by
+  the ToTenant-normalized tenant (matching the single-row path) and fails closed if one primary key matches
+  more than one row (ArcadeDB enforces no PK uniqueness — sibling parity with the single-row cardinality
+  guard). Multi-row bulk upsert
   (lifting the prior "MERGE is single-row" rejection): `UNWIND … MERGE … ON CREATE … ON MATCH …` upserts many
   rows in one statement — the merge key including the `:attribute` tenant discriminator so a cross-tenant
   primary-key collision creates a new tenant-local row instead of hijacking another tenant's (fail-closed,
