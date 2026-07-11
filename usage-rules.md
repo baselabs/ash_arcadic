@@ -101,6 +101,48 @@ _An Ash DataLayer for ArcadeDB (native OpenCypher over HTTP)._
   ≠ value order, so the "first" row after ordering would be the wrong representative) — the same
   `can?({:sort, storage})` decision the record sort path already makes.
 
+## Combinations (Slice 8, Plan 2)
+
+- **`Ash.Query.combination_of(res, [Combination.base(...), Combination.union(...), ...])` is
+  first-class.** All five types are advertised: `:base` (the required first branch),
+  `:union`, `:union_all`, `:intersect`, `:except`. Combinations return **whole vertices**
+  (no field-projection `select`); the set-op keys on the resource's **primary key**.
+- **Two execution strategies, chosen automatically by the branch types** (surfaced by the
+  `combination_strategy` telemetry tag):
+  - **Native** (`:native`) when every branch is union-family (`:base`/`:union`/`:union_all`) →
+    one `CALL { <branch> UNION[ ALL] <branch> } WITH n [WHERE <outer filter>] [distinct] RETURN n
+    [ORDER BY/SKIP/LIMIT]` statement pushed to ArcadeDB (each branch's `$params` re-keyed into a
+    disjoint namespace).
+  - **In-memory** (`:in_memory`) when any branch is `:intersect`/`:except` (ArcadeDB has no
+    `INTERSECT`/`EXCEPT`) → each branch runs as its own query with the outer filter pushed in,
+    then the results are folded by primary key in the app. `intersect`/`except` therefore fetch
+    each branch's **full filtered result set** into memory before combining — filter narrowly.
+- **Multitenancy is enforced per branch.** `:context` requires every branch to resolve to the
+  **same non-nil tenant database** — a blank tenant or branches spanning databases **fail closed
+  value-free**. `:attribute` scoping rides the outer `query.filters` (Ash injects the tenant
+  predicate on the outer combination query); it is applied by the native `CALL`-wrap `WHERE` and
+  **pushed into every branch** on the in-memory path, so a cross-tenant primary-key collision can
+  never enter the fold.
+- **An outer `distinct` over a combination** renders the DISTINCT-ON collect-group on the union
+  output but keeps an **engine-arbitrary representative** per group — it does **not** honor
+  `distinct_sort` (the union output has no stable pre-collect order to select by).
+- **Read-span telemetry** gains `combination?`, `combination_types` (the branch type atoms), and
+  `combination_strategy` (`:native` | `:in_memory` | `nil`).
+- **Fails closed value-free (`QueryFailed`)** on combination shapes this slice does not support:
+  - a branch carrying **`calculations`**;
+  - a branch carrying **`limit`/`offset`** (a positive offset or any limit — Ash's spurious
+    `offset: 0` default is a no-op and is allowed);
+  - on the **in-memory** (`intersect`/`except`) path only: an **expression-calculation outer
+    `sort`** or a **lazy outer filter `:expression`** (both are honored on the native path — they
+    are rejected in-memory because the runtime sort/fold path cannot evaluate them);
+  - **loading an aggregate or a calculation ON a combination read** (Ash runs `add_aggregates`/
+    `add_calculations` on the combined query; both are out of scope this slice).
+- **Documented Ash-core limitation — aggregating a combination directly is silently wrong.** A
+  standalone `Ash.count`/`Ash.sum`/`Ash.aggregate` over a combination query drops the combination
+  in **Ash core** (the aggregate action rebuilds the query without `combination_of`) and returns
+  the **un-combined base** result. This is not fixable in the data layer (the combination never
+  arrives). To aggregate a combination, **read it and fold app-side.**
+
 ## Calculations (Slice 7)
 
 - **Expression calculations are first-class — load, filter-on, and sort-on.** A

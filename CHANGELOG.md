@@ -9,6 +9,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Combinations (Slice 8, Plan 2).** `combination_of` support
+  (`can?(:combine)` / `can?({:combine, :base|:union|:union_all|:intersect|:except})`):
+  native `UNION`/`UNION ALL` Cypher push-down — one `CALL { <branch> UNION[ ALL] <branch> } … RETURN n`
+  statement — when every branch is union-family; an in-memory primary-key-keyed set-op fold when any
+  `intersect`/`except` is present (ArcadeDB has no `INTERSECT`/`EXCEPT`, live-verified parse error), which
+  fetches each branch's full filtered result set into the app before combining. Combinations return whole
+  vertices (no field-projection `select`); the fold keys on the primary key. Multitenancy is enforced per
+  branch: `:context` requires every branch to resolve to the SAME non-nil tenant database (else fail-closed
+  value-free — a blank tenant or branches spanning databases are rejected); `:attribute` scoping rides the
+  outer `query.filters` (the tenant predicate Ash injects on the outer combination query), applied by the
+  native `CALL`-wrap `WHERE` and pushed into every branch on the in-memory path (so a cross-tenant PK
+  collision can never enter the fold). An outer `distinct` over a combination keeps an engine-arbitrary
+  representative per group (does not honor `distinct_sort` — the union output has no stable pre-collect
+  order). Read-span telemetry gains `combination?` / `combination_types` / `combination_strategy`
+  (`:native` | `:in_memory`) tags. **Fails closed value-free** on combination shapes this slice does not
+  support: per-branch `calculations`, per-branch `limit`/`offset` (a spurious `offset: 0` default is treated
+  as no paging), and — on the in-memory (`intersect`/`except`) path only — an expression-calculation outer
+  `sort` or a lazy outer filter `:expression` (both are honored on the native path). Loading an aggregate or
+  calculation ON a combination read also fails closed value-free (out of scope this slice). **Documented
+  Ash-core limitation (not data-layer-fixable):** a standalone `Ash.count`/`Ash.sum`/`Ash.aggregate` OVER a
+  combination silently drops the combination in Ash core (the aggregate action rebuilds the query without
+  `combination_of`) and returns the un-combined base result — aggregate a combination by reading it and
+  folding app-side.
 - **Distinct (Slice 8, Plan 1).** `distinct`/`distinct_sort` support
   (`can?(:distinct)` / `can?(:distinct_sort)`): native Cypher DISTINCT-ON-subset
   (`WITH n.<f> AS __d0, collect(n)[0] AS n`), representative row chosen by `distinct_sort`
