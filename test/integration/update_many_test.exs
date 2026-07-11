@@ -126,4 +126,38 @@ defmodule AshArcadic.Integration.UpdateManyTest do
     # (updating by PK alone) reddens this line — p2's name becomes "Z", a silent over-update.
     assert Ash.get!(CrudPerson, "p2").name == "Bo"
   end
+
+  # ArcadeDB enforces NO primary-key uniqueness, so a duplicate PK is reachable in the graph (a raw
+  # write, or the MERGE upsert concurrency race). The per-row UNWIND `MATCH (n {id: r.id})` then
+  # matches BOTH rows for ONE changeset and — absent a guard — silently SETs and returns them both,
+  # exactly the failure the single-row decode_update_result guards against. update_many must fail
+  # CLOSED value-free rather than update multiple rows for one primary key. Seeded via the raw admin
+  # conn (Ash's create path can't produce a duplicate PK).
+  test "a duplicate PK in the graph fails the bulk update closed (never silently updates both rows)",
+       %{admin: admin} do
+    for _ <- 1..2 do
+      Arcadic.command!(admin, "CREATE (n:CrudPerson {id: 'dup', name: 'a', age: 1})")
+    end
+
+    dup = struct(CrudPerson, %{id: "dup", name: "a", age: 1})
+
+    result =
+      Ash.update_many([{dup, %{name: "x"}}], CrudPerson, :update,
+        strategy: :atomic,
+        return_records?: true,
+        return_errors?: true
+      )
+
+    # Fail-closed: the data-layer guard turns the multi-match into an {:error, %UpdateFailed{}}, which
+    # Ash surfaces as a non-success bulk result (never :success with two records for one changeset).
+    assert result.status == :error
+
+    # And neither "dup" row was mutated — the guard fires on decode, but the whole batch rolls back.
+    still =
+      admin
+      |> Arcadic.command!("MATCH (n:CrudPerson {id: 'dup'}) RETURN n.name AS name")
+      |> Enum.map(& &1["name"])
+
+    assert still == ["a", "a"]
+  end
 end

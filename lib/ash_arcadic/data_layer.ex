@@ -2563,10 +2563,43 @@ defmodule AshArcadic.DataLayer do
   # $param KEY, before the wire, never a Jason.EncodeError leaking bytes (AGENTS.md Rule 4).
   defp emit_update_many(resource, conn, cypher, params) do
     case encode_gate(resource, params, UpdateFailed) do
-      :ok -> decode_query_write(resource, true, Arcadic.command(conn, cypher, params))
-      {:error, _} = err -> err
+      :ok ->
+        resource
+        |> decode_query_write(true, Arcadic.command(conn, cypher, params))
+        |> guard_update_many_cardinality(resource)
+
+      {:error, _} = err ->
+        err
     end
   end
+
+  # ArcadeDB enforces NO primary-key uniqueness, so the per-row `MATCH (n {id: r.id})` can match 2+
+  # nodes for ONE changeset PK (a duplicate row in the graph — a raw write, or the MERGE upsert
+  # concurrency race). Fail CLOSED value-free — mirroring the single-row decode_update_result guard —
+  # rather than silently updating (and returning) multiple rows for one primary key. A PK ABSENT from
+  # the returned records (0 matches) is a legitimate bulk no-op (spec D2); only >1 fails. The
+  # frequency map is value-free (PK-field NAMES + integer counts only, never a value or the Cypher).
+  defp guard_update_many_cardinality({:ok, records} = ok, resource) do
+    pk = Ash.Resource.Info.primary_key(resource)
+
+    duplicated? =
+      records
+      |> Enum.frequencies_by(fn record -> Enum.map(pk, &Map.get(record, &1)) end)
+      |> Enum.any?(fn {_key, count} -> count > 1 end)
+
+    if duplicated? do
+      {:error,
+       UpdateFailed.exception(
+         resource: resource,
+         reason:
+           "bulk update matched multiple rows for one primary key (duplicate rows in graph?)"
+       )}
+    else
+      ok
+    end
+  end
+
+  defp guard_update_many_cardinality({:error, _} = err, _resource), do: err
 
   defp tenant_present?(opts), do: not is_nil(Map.get(opts, :tenant))
 
