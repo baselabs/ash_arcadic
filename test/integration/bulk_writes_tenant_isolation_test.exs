@@ -124,7 +124,7 @@ defmodule AshArcadic.Integration.BulkWritesTenantIsolationTest do
       # return_errors?: true so the bang raises the REAL class (Ash.Error.Invalid wrapping
       # TenantRequired, from Bulk.validate_multitenancy — before any statement); without it
       # bulk_update! raises a diagnostic-free Ash.Error.Unknown.
-      assert_raise Ash.Error.Invalid, fn ->
+      assert_raise Ash.Error.Invalid, ~r/require a tenant to be specified/, fn ->
         ContextDoc
         |> Ash.Query.for_read(:read)
         |> Ash.bulk_update!(:update, %{name: "X"}, strategy: :atomic, return_errors?: true)
