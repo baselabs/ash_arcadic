@@ -2400,77 +2400,48 @@ defmodule AshArcadic.DataLayer do
   end
 
   @doc false
-  # The read connection for a query. :context REQUIRES a database resolved by
-  # set_tenant/3; a nil database means set_tenant never fired (blank tenant) → fail
-  # closed rather than reading the base database (a silent cross-tenant read). Routes the
-  # database-targeted base conn through resolve_conn/2 (exact passthrough outside a tx;
-  # session reuse / read-own-conn inside one — a read is never an atomicity hazard).
+  # The read connection for a query — resolve_query_conn/3 in :read mode. :context REQUIRES a
+  # database resolved by set_tenant/3; a nil/blank database means set_tenant never fired (blank
+  # tenant) → fail closed rather than reading the base database (a silent cross-tenant read).
   @spec read_conn(AshArcadic.Query.t(), Ash.Resource.t()) ::
           {:ok, Arcadic.Conn.t()}
           | {:error, :tenant_required | :cross_database_transaction | :transaction_begin_failed}
-  def read_conn(%AshArcadic.Query{} = query, resource) do
-    case strategy(resource) do
-      :context ->
-        case query.database do
-          blank when blank in [nil, ""] ->
-            {:error, :tenant_required}
-
-          database ->
-            AshArcadic.Transaction.resolve_conn(
-              Arcadic.with_database(conn_for(resource), database),
-              :read
-            )
-        end
-
-      _ ->
-        case query.database do
-          nil ->
-            AshArcadic.Transaction.resolve_conn(conn_for(resource), :read)
-
-          database ->
-            AshArcadic.Transaction.resolve_conn(
-              Arcadic.with_database(conn_for(resource), database),
-              :read
-            )
-        end
-    end
-  end
+  def read_conn(%AshArcadic.Query{} = query, resource),
+    do: resolve_query_conn(query, resource, :read)
 
   @doc false
-  # Write connection for a query-scoped bulk write, resolved from the DATA-LAYER QUERY (not a
-  # changeset) — symmetric with read_conn/2 but in :write resolve mode (session write-first /
-  # cross-database guard inside a transaction). :context REQUIRES query.database (set by
-  # set_tenant during data_layer_query); a nil/blank database means a blank tenant → fail closed
-  # (never the base database — a silent cross-tenant write). :attribute uses the configured/base
-  # database; its tenant scoping is the discriminator predicate already ANDed into query.filters.
+  # Write connection for a query-scoped bulk write (update_query/destroy_query), resolved from the
+  # DATA-LAYER QUERY (not a changeset) — resolve_query_conn/3 in :write mode (session write-first /
+  # cross-database guard inside a transaction). Same fail-closed :context posture as read_conn/2;
+  # :attribute uses the base database (its tenant scoping is the discriminator predicate already
+  # ANDed into query.filters).
   @spec query_write_conn(AshArcadic.Query.t(), Ash.Resource.t()) ::
           {:ok, Arcadic.Conn.t()}
           | {:error, :tenant_required | :cross_database_transaction | :transaction_begin_failed}
-  def query_write_conn(%AshArcadic.Query{} = query, resource) do
-    case strategy(resource) do
-      :context ->
-        case query.database do
-          blank when blank in [nil, ""] ->
-            {:error, :tenant_required}
+  def query_write_conn(%AshArcadic.Query{} = query, resource),
+    do: resolve_query_conn(query, resource, :write)
 
-          database ->
-            AshArcadic.Transaction.resolve_conn(
-              Arcadic.with_database(conn_for(resource), database),
-              :write
-            )
-        end
+  # Shared query-conn resolver — read and write differ ONLY in the resolve_conn/2 mode atom. :context
+  # fails closed on a blank tenant (nil/"" database) — never the base DB (a silent cross-tenant op);
+  # a resolved :context database re-targets the conn; :attribute/non-multitenant use the base DB (nil
+  # database) or the query's database, scoped by the WHERE predicate. resolve_conn/2 is exact
+  # passthrough outside a transaction, session-reuse / cross-database-guarded inside one.
+  @spec resolve_query_conn(AshArcadic.Query.t(), Ash.Resource.t(), :read | :write) ::
+          {:ok, Arcadic.Conn.t()}
+          | {:error, :tenant_required | :cross_database_transaction | :transaction_begin_failed}
+  defp resolve_query_conn(%AshArcadic.Query{} = query, resource, mode) do
+    case {strategy(resource), query.database} do
+      {:context, blank} when blank in [nil, ""] ->
+        {:error, :tenant_required}
 
-      _ ->
-        case query.database do
-          nil ->
-            AshArcadic.Transaction.resolve_conn(conn_for(resource), :write)
+      {_strategy, nil} ->
+        AshArcadic.Transaction.resolve_conn(conn_for(resource), mode)
 
-          database ->
-            AshArcadic.Transaction.resolve_conn(
-              Arcadic.with_database(conn_for(resource), database),
-              :write
-            )
-        end
+      {_strategy, database} ->
+        AshArcadic.Transaction.resolve_conn(
+          Arcadic.with_database(conn_for(resource), database),
+          mode
+        )
     end
   end
 
