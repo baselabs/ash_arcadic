@@ -102,6 +102,24 @@ defmodule AshArcadic.Integration.BulkWritesTenantIsolationTest do
       assert Ash.get!(ContextDoc, "d1", tenant: t2).name == "B"
     end
 
+    test ":context bulk destroy targets only the tenant's database", %{t1: t1, t2: t2} do
+      ContextDoc
+      |> Ash.Changeset.for_create(:create, %{id: "d1", name: "A", amount: 1})
+      |> Ash.create!(tenant: t1)
+
+      ContextDoc
+      |> Ash.Changeset.for_create(:create, %{id: "d1", name: "B", amount: 9})
+      |> Ash.create!(tenant: t2)
+
+      ContextDoc
+      |> Ash.Query.for_read(:read, %{}, tenant: t1)
+      |> Ash.bulk_destroy!(:destroy, %{}, tenant: t1, strategy: :atomic)
+
+      assert Ash.read!(ContextDoc, tenant: t1) == []
+      # Physical isolation: the same PK "d1" in t2's SEPARATE database survives.
+      assert Ash.get!(ContextDoc, "d1", tenant: t2).name == "B"
+    end
+
     test ":context blank tenant fails closed (no statement runs)" do
       # return_errors?: true so the bang raises the REAL class (Ash.Error.Invalid wrapping
       # TenantRequired, from Bulk.validate_multitenancy — before any statement); without it
