@@ -125,6 +125,25 @@ defmodule AshArcadic.Integration.CombinationsTest do
     assert (ids(records) -- ["c"]) in [["a"], ["b"]]
   end
 
+  test "in-memory mixed chain folds a union-family prefix then an intersect (strategy-boundary composition)" do
+    # base(eng)→{a,b,d}; union(ops)→+{c}; intersect(amount==20)→keep {a,c}. The :intersect forces the
+    # in-memory strategy, so the :union executes via the PK fold (not native UNION) — exercises the
+    # union-family-on-in-memory composition the unit 3-op-chain test covers only at the fold level.
+    seed_attr("org1", [{"a", "eng", 20}, {"b", "eng", 10}, {"c", "ops", 20}, {"d", "eng", 30}])
+    seed_attr("org2", [{"a", "eng", 20}])
+
+    q =
+      AttributeDoc
+      |> Ash.Query.combination_of([
+        Combination.base(filter: Ash.Expr.expr(name == "eng")),
+        Combination.union(filter: Ash.Expr.expr(name == "ops")),
+        Combination.intersect(filter: Ash.Expr.expr(amount == 20))
+      ])
+
+    records = Ash.read!(q, tenant: "org1", authorize?: false)
+    assert ids(records) == ["a", "c"]
+  end
+
   test "a correlated (parent()) combination branch fails closed value-free (spec §5 non-goal)" do
     q =
       AttributeDoc
