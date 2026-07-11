@@ -142,11 +142,12 @@ _An Ash DataLayer for ArcadeDB (native OpenCypher over HTTP)._
   `combination_strategy` (`:native` | `:in_memory` | `nil`).
 - **Fails closed value-free (`QueryFailed`)** on combination shapes this slice does not support:
   - a branch carrying **`calculations`**;
-  - a branch carrying **`limit`/`offset`** (a positive offset or any limit — Ash's spurious
-    `offset: 0` default is a no-op and is allowed);
-  - on the **in-memory** (`intersect`/`except`) path only: an **expression-calculation outer
-    `sort`** or a **lazy outer filter `:expression`** (both are honored on the native path — they
-    are rejected in-memory because the runtime sort/fold path cannot evaluate them);
+  - a branch carrying an **expression-calculation `sort`** (the branch-param re-key does not cover a
+    `sort` fragment — forward-compatible fail-closed);
+  - when the query runs on the **in-memory** path (any `intersect`/`except`, or any per-branch paging):
+    an **expression-calculation outer `sort`** or a **lazy outer filter `:expression`** (both are
+    honored on the native path — the in-memory runtime sort/fold path cannot evaluate them);
+  - a **mid-chain `:base`** branch (only the first branch may be `:base`);
   - **loading an aggregate or a calculation ON a combination read** (Ash runs `add_aggregates`/
     `add_calculations` on the combined query; both are out of scope this slice).
 - **Documented Ash-core limitation — aggregating a combination directly is silently wrong.** A

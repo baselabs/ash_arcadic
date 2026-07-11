@@ -754,11 +754,12 @@ defmodule AshArcadic.DataLayer do
     end
   end
 
-  # Push the OUTER filter into the branch so the combined set is outer-filtered. The set-algebra identity
-  # (A op B) ∩ F == (A∩F) op (B∩F) for op ∈ {union, union_all, intersect, except} holds for the SUPPORTED
-  # shape only — non-paged, same-resource, deterministic stored-field filters; per-branch-paged branches
-  # (where the identity fails) are rejected upstream by combination_unsupported/2. Re-key the branch's own
-  # $params so they never collide with the outer filter's $param<n> in this branch's single map.
+  # Push the OUTER filter into the branch so the combined set is outer-filtered — and, for a PAGED branch,
+  # so the tenant filter applies BEFORE the branch's own SKIP/LIMIT (the reason combination_in_memory?/1
+  # routes paged combinations here rather than to the native CALL-wrap, which filters after the union). The
+  # set-algebra identity (A op B) ∩ F == (A∩F) op (B∩F) holds for same-resource deterministic stored-field
+  # filters; a per-branch LIMIT is applied to the already-F-scoped branch, so it selects the tenant's top-k.
+  # Re-key the branch's own $params so they never collide with the outer filter's $param<n> in this map.
   defp run_branch(conn, branch, query, resource) do
     {rk_filters, rk_params} = Combination.rekey_branch(branch.filters, branch.params, 0)
 
@@ -2111,8 +2112,11 @@ defmodule AshArcadic.DataLayer do
 
   defp combination_strategy([]), do: nil
 
+  # Must key on the SAME predicate as the run_combination dispatch (combination_in_memory?/1) — a paged
+  # union-family combination is union-family (native?/1 true) but EXECUTES in-memory, so keying on native?/1
+  # would mislabel it :native.
   defp combination_strategy(combos),
-    do: if(Combination.native?(combos), do: :native, else: :in_memory)
+    do: if(combination_in_memory?(combos), do: :in_memory, else: :native)
 
   @doc false
   # Maps an arcadic error to a value-free structural reason. We interpolate `reason`

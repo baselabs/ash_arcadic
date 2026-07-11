@@ -23,11 +23,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   collision can never enter the fold). An outer `distinct` over a combination keeps an engine-arbitrary
   representative per group (does not honor `distinct_sort` — the union output has no stable pre-collect
   order). Read-span telemetry gains `combination?` / `combination_types` / `combination_strategy`
-  (`:native` | `:in_memory`) tags. **Fails closed value-free** on combination shapes this slice does not
-  support: per-branch `calculations`, per-branch `limit`/`offset` (a spurious `offset: 0` default is treated
-  as no paging), and — on the in-memory (`intersect`/`except`) path only — an expression-calculation outer
-  `sort` or a lazy outer filter `:expression` (both are honored on the native path). Loading an aggregate or
-  calculation ON a combination read also fails closed value-free (out of scope this slice). **Documented
+  (`:native` | `:in_memory`) tags. A **per-branch `limit`/`offset`** routes the combination to the
+  in-memory strategy (so the tenant filter applies to each branch before its limit; a spurious `offset: 0`
+  default is a no-op). **Fails closed value-free** on combination shapes this slice does not support:
+  per-branch `calculations`, a branch expression-calculation `sort`, a mid-chain `:base`, and — when the
+  query runs on the in-memory path (any `intersect`/`except` or per-branch paging) — an
+  expression-calculation outer `sort` or a lazy outer filter `:expression` (both are honored on the native
+  path). Loading an aggregate or calculation ON a combination read also fails closed value-free (out of
+  scope this slice). **Documented
   Ash-core limitation (not data-layer-fixable):** a standalone `Ash.count`/`Ash.sum`/`Ash.aggregate` OVER a
   combination silently drops the combination in Ash core (the aggregate action rebuilds the query without
   `combination_of`) and returns the un-combined base result — aggregate a combination by reading it and

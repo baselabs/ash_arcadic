@@ -103,10 +103,11 @@ defmodule AshArcadic.Integration.CombinationsTest do
     # base(eng) LIMIT 1 is union-family but PAGED → combination_in_memory?/1 routes it to the in-memory
     # strategy, where the tenant filter is pushed into each branch BEFORE its LIMIT. So the base branch's
     # LIMIT 1 sees only org1's {a,b} and never org2's "z": exactly 1 org1 eng row + union(ops)→{c} = 2 rows.
-    # (If paging had stayed on the native path, the LIMIT would apply before the outer tenant WHERE and could
-    # fill from org2's "z" — then dropped — yielding a wrong 1-row result.)
+    # NON-VACUITY: org2's cross-tenant eng rows are seeded FIRST, so an unscoped LIMIT 1 (the bug — tenant
+    # filter applied after the union, or per-branch scoping dropped) fills the base branch from "z1"/"z2"
+    # (insertion order) and the test reddens ("z*" present / length 1). With the fix, "z*" is never in reach.
+    seed_attr("org2", [{"z1", "eng", 4}, {"z2", "eng", 5}])
     seed_attr("org1", [{"a", "eng", 10}, {"b", "eng", 20}, {"c", "ops", 30}])
-    seed_attr("org2", [{"z", "eng", 5}])
 
     q =
       AttributeDoc
@@ -118,8 +119,9 @@ defmodule AshArcadic.Integration.CombinationsTest do
     records = Ash.read!(q, tenant: "org1", authorize?: false)
     assert length(records) == 2
     assert "c" in ids(records)
-    refute "z" in ids(records)
-    # the single eng row is one of org1's {a,b}, never org2's z
+    refute "z1" in ids(records)
+    refute "z2" in ids(records)
+    # the single eng row is one of org1's {a,b}, never an org2 "z*"
     assert (ids(records) -- ["c"]) in [["a"], ["b"]]
   end
 
