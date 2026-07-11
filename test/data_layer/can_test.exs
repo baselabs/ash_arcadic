@@ -31,6 +31,10 @@ defmodule AshArcadic.DataLayer.CanTest do
     assert DL.can?(AshArcadic.Test.CrudPerson, :expr_error)
   end
 
+  test "advertises :destroy_query" do
+    assert DL.can?(AshArcadic.Test.CrudPerson, :destroy_query)
+  end
+
   test "transact is true (Plan 3)" do
     assert DL.can?(AshArcadic.Test.Basic, :transact)
   end

@@ -146,6 +146,7 @@ defmodule AshArcadic.DataLayer do
   # :atomic (else it drops to [:stream, :atomic_batches, :atomic] — spec §3/D7).
   def can?(_, :update_query), do: true
   def can?(_, :expr_error), do: true
+  def can?(_, :destroy_query), do: true
   def can?(_, :filter), do: true
   def can?(_, :limit), do: true
   def can?(_, :offset), do: true
@@ -1970,6 +1971,95 @@ defmodule AshArcadic.DataLayer do
   defp decode_destroy_result(_resource, _filter, {:error, error}) do
     {:error,
      QueryFailed.exception(query: "ArcadeDB delete query", reason: redact_db_error(error))}
+  end
+
+  @impl true
+  def destroy_query(%AshArcadic.Query{} = query, _changeset, resource, opts) do
+    Telemetry.span(:destroy_query, %{resource: resource, multitenancy: strategy(resource)}, fn ->
+      result = do_destroy_query(query, resource, opts)
+
+      {result,
+       %{
+         tenant?: not is_nil(query.tenant),
+         matched: matched_count(result),
+         result: Telemetry.result_tag(result),
+         in_transaction?: AshArcadic.Transaction.in_transaction?()
+       }}
+    end)
+  end
+
+  defp do_destroy_query(query, resource, opts) do
+    cond do
+      not bulk_write_scopeable?(query) ->
+        {:error,
+         QueryFailed.exception(
+           query: "ArcadeDB bulk delete",
+           reason:
+             "bulk destroy does not support limit/offset/combination (use strategy: :stream)"
+         )}
+
+      Map.get(opts, :calculations, []) != [] ->
+        # Symmetric with do_update_query: Ash passes {:run_after_batch, where} gating calcs
+        # (destroy/bulk.ex hooks_and_calcs_for_update_query) so conditional after_batch hooks
+        # fire per-record; a one-statement DELETE cannot evaluate them, and ignoring them
+        # silently SKIPS the hooks. Fail closed.
+        {:error,
+         QueryFailed.exception(
+           query: "ArcadeDB bulk delete",
+           reason:
+             "bulk destroy with conditional after-batch hooks is not supported (use strategy: :stream)"
+         )}
+
+      true ->
+        do_destroy_query_statement(query, resource, opts)
+    end
+  end
+
+  defp do_destroy_query_statement(query, resource, opts) do
+    {where, params} = AshArcadic.Query.where_and_params(query)
+
+    case query_write_conn(query, resource) do
+      {:ok, conn} ->
+        label = validated_label(resource)
+        return? = Map.get(opts, :return_records?, false)
+
+        # P3: post-delete `RETURN n` yields no attributes; capture properties(n) BEFORE the
+        # DETACH DELETE when records are wanted. return_records? false → no RETURN, mutate only.
+        cypher =
+          if return? do
+            "MATCH (n:#{label}) #{where} WITH n, properties(n) AS p DETACH DELETE n RETURN p"
+          else
+            "MATCH (n:#{label}) #{where} DETACH DELETE n"
+          end
+
+        decode_destroy_query(resource, return?, Arcadic.command(conn, cypher, params))
+
+      {:error, reason} ->
+        {:error,
+         QueryFailed.exception(query: "ArcadeDB bulk delete", reason: conn_error_reason(reason))}
+    end
+  end
+
+  # return_records? false → :ok. true → decode each captured pre-delete property map. An empty
+  # match is a valid no-op ({:ok, []}), NEVER StaleRecord (spec D2). `p` is the properties(n)
+  # map (user props only) — Cast.row_to_attrs maps the declared attributes from it.
+  defp decode_destroy_query(_resource, false, {:ok, _rows}), do: :ok
+
+  defp decode_destroy_query(resource, true, {:ok, rows}) do
+    attribute_map = Info.attribute_map(resource)
+    attribute_types = Info.attribute_types(resource)
+
+    records =
+      Enum.map(rows, fn %{"p" => props} ->
+        record = struct(resource, Cast.row_to_attrs(props, attribute_map, attribute_types))
+        %{record | __meta__: %Metadata{state: :deleted, schema: resource}}
+      end)
+
+    {:ok, records}
+  end
+
+  defp decode_destroy_query(_resource, _return?, {:error, error}) do
+    {:error, QueryFailed.exception(query: "ArcadeDB bulk delete", reason: redact_db_error(error))}
   end
 
   # [{pk_field, serialized_original_value}] — the identity of the row being
