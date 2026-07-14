@@ -22,7 +22,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `multitenancy :allow_global`/`:bypass` AND preparation `allow_global?: true`). Candidate cardinality
   is bounded by `max_vector_candidates` (default 10 000, config-overridable) — reject, never truncate.
   Params-only, value-free; `can?(:vector_search)` / `can?({:vector_search, :dense})` advertised; a
-  `vector_search?` read-span telemetry tag. Sparse + hybrid fusion follow in Plan 2.
+  `vector_search?` read-span telemetry tag.
+- **Vector search — sparse + hybrid fusion (Slice 10, Plan 2).** Extends the vector slice with
+  **sparse** (learned-sparse / BM25-style) kNN and **hybrid fusion**. Declare a `sparse_vector_index
+  :name, tokens:, weights:` over a `(tokens, weights)` attribute pair (both stored, non-`sensitive`,
+  array-typed — compile-verified); host-creates via `Arcadic.Vector.create_sparse_index`. Attach
+  `AshArcadic.Preparations.VectorSearch` with `kind: :sparse` (arguments `:query_tokens`/
+  `:query_weights`/`:k`) or `kind: :hybrid` with an `arms:` list of `{:dense, index}` |
+  `{:sparse, index}` | `{:fulltext, property}` (≥2 arms; `fusion` `:rrf`/`:dbsf`/`:linear`). Sparse and
+  hybrid results rank by `score` on `record.__metadata__[:vector_score]` (dense keeps `distance`).
+  The full-text fuse arm ships now (host-created full-text index; its DSL declaration surface is a
+  later slice). **Tenant scoping is identical to dense** — the self-injecting candidate-set scopes the
+  sparse arm AND every hybrid arm including full-text (mutation-proven live: a `:bypass` sparse or
+  hybrid-full-text action is still scoped by self-injection alone). A crafted/malformed stash fails
+  closed value-free per kind. `can?({:vector_search, :sparse})` / `{:vector_search, :hybrid}`
+  advertised; value-free `vector_kind` telemetry tag. **Sparse retro-index caveat (documented):** a
+  sparse index does not cover rows created before it — create it before loading.
 - **Query-scoped bulk writes + atomics (Slice 9, Plan 1).** `update_query`/`destroy_query`
   (`can?(:update_query)` / `can?(:destroy_query)` / `can?(:expr_error)`): a query-scoped bulk update or
   destroy compiles to ONE parameterized Cypher statement — the tenant predicate, caller filter, and

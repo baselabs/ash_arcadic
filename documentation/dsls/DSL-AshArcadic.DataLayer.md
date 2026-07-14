@@ -28,6 +28,7 @@ Configuration for the ArcadeDB data layer.
 ### Nested DSLs
  * [edge](#arcade-edge)
  * [vector_index](#arcade-vector_index)
+ * [sparse_vector_index](#arcade-sparse_vector_index)
 
 
 
@@ -112,6 +113,38 @@ Declares a dense vector index on an attribute (metadata only — the host create
 ### Introspection
 
 Target: `AshArcadic.VectorIndex`
+
+### arcade.sparse_vector_index
+```elixir
+sparse_vector_index name
+```
+
+
+Declares a sparse vector index over a (tokens, weights) attribute pair (metadata only — the host creates the index).
+
+
+
+
+
+### Arguments
+
+| Name | Type | Default | Docs |
+|------|------|---------|------|
+| [`name`](#arcade-sparse_vector_index-name){: #arcade-sparse_vector_index-name .spark-required} | `atom` |  | A logical index name (referenced by the vector-search preparation). |
+### Options
+
+| Name | Type | Default | Docs |
+|------|------|---------|------|
+| [`tokens`](#arcade-sparse_vector_index-tokens){: #arcade-sparse_vector_index-tokens .spark-required} | `atom` |  | The integer-array attribute holding token ids (stored, non-sensitive). |
+| [`weights`](#arcade-sparse_vector_index-weights){: #arcade-sparse_vector_index-weights .spark-required} | `atom` |  | The float-array attribute holding the matching weights (stored, non-sensitive). |
+
+
+
+
+
+### Introspection
+
+Target: `AshArcadic.SparseVectorIndex`
 
 
 

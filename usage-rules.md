@@ -33,7 +33,7 @@ _An Ash DataLayer for ArcadeDB (native OpenCypher over HTTP)._
 - **`MERGE` is used** for idempotent upsert (ArcadeDB-verified) — unlike the
   `ash_age` sibling. Do not import AGE's "never MERGE" rule.
 
-## Vector search — dense kNN (Slice 10, Plan 1)
+## Vector search — dense, sparse & hybrid (Slice 10)
 
 - **Declare the index in the `arcade` block; the HOST creates it.** `vector_index :embedding,
   dimensions: 384, similarity: :cosine` is metadata only (the `Type[property]` reference + distance
@@ -58,11 +58,64 @@ _An Ash DataLayer for ArcadeDB (native OpenCypher over HTTP)._
   |> Ash.read()`. Results are records ranked closest-first; the distance rides
   `record.__metadata__[:vector_distance]`. Pass `ef_search`/`max_distance` as preparation options.
 
-- **Tenant-scoped, fail-closed, by default.** `:context` runs the kNN in the tenant's physical DB;
+- **Sparse (learned-sparse / BM25-style) kNN** — declare a `sparse_vector_index` over a `(tokens,
+  weights)` attribute PAIR (an integer array + a float array; BOTH stored, non-`sensitive`,
+  array-typed — verified at compile), and attach the preparation with `kind: :sparse`:
+
+  ```elixir
+  arcade do
+    sparse_vector_index :sparse_embedding, tokens: :tokens, weights: :weights
+  end
+
+  read :sparse_search do
+    argument :query_tokens, {:array, :integer}, allow_nil?: false
+    argument :query_weights, {:array, :float}, allow_nil?: false
+    argument :k, :integer, allow_nil?: false
+    prepare {AshArcadic.Preparations.VectorSearch, kind: :sparse, index: :sparse_embedding}
+  end
+  ```
+
+  Host-creates the index: `Arcadic.Vector.create_sparse_index(conn, "Label", "tokens", "weights")`.
+  Sparse results rank by a **`score`** (higher = better) on `record.__metadata__[:vector_score]` (no
+  `distance`). Sparse passthrough opts are `group_by`/`group_size` only (`ef_search`/`max_distance`
+  do not apply).
+
+  > **⚠️ Sparse retro-index caveat (silent).** An ArcadeDB sparse index does NOT cover rows that
+  > existed BEFORE it was created — only rows inserted/updated afterwards are searchable — and the
+  > coverage signal fires at index-CREATE time, not at query time. **Create the sparse index BEFORE
+  > loading data**, or re-touch pre-existing rows. A query over uncovered rows silently returns fewer
+  > results, with no error.
+
+- **Hybrid fusion** — combine ≥2 arms (dense / sparse / full-text) into one fused ranked list via
+  `kind: :hybrid`. Arms name the indexes/properties (developer config); the caller passes the query
+  values. The full-text arm's property needs a host-created full-text index
+  (`Arcadic.FullText.create_index`); its declaration surface is a later slice, but the fuse ARM ships now.
+
+  ```elixir
+  read :hybrid_search do
+    argument :query_vector, {:array, :float}, allow_nil?: false
+    argument :query_tokens, {:array, :integer}, allow_nil?: false
+    argument :query_weights, {:array, :float}, allow_nil?: false
+    argument :text_query, :string, allow_nil?: false
+    argument :k, :integer, allow_nil?: false
+
+    prepare {AshArcadic.Preparations.VectorSearch,
+             kind: :hybrid,
+             arms: [{:dense, :embedding}, {:sparse, :sparse_embedding}, {:fulltext, :body}],
+             fusion: :rrf}
+  end
+  ```
+
+  `fusion` is `:rrf` (default) | `:dbsf` | `:linear`; `weights`/`group_by`/`group_size` pass through;
+  a single `k` bounds every arm and the fused output. Fused rows rank by `score`
+  (`record.__metadata__[:vector_score]`).
+
+- **Tenant-scoped, fail-closed, by default (ALL kinds).** `:context` runs the kNN in the tenant's physical DB;
   `:attribute` two-phase-scopes it — ash_arcadic SELF-INJECTS the tenant predicate (never trusting
   Ash's own filter, so a `:bypass` action cannot leak), pre-queries the scoped `@rid`s, and passes them
-  as the native candidate set. A no-tenant search fails closed (`tenant required`). Caller/row-policy
-  filters compose (a denied/filtered row never enters the candidate set).
+  as the native candidate set. The SAME candidate set scopes sparse and **every hybrid arm, including
+  the full-text arm** (mutation-proven live). A no-tenant search fails closed (`tenant required`).
+  Caller/row-policy filters compose (a denied/filtered row never enters the candidate set).
 
 - **Cross-tenant search is a deliberate TWO-part opt-in.** BOTH the Ash action must permit the
   no-tenant read (`multitenancy :allow_global` or `:bypass`, or a `global?` resource) AND the
@@ -75,9 +128,10 @@ _An Ash DataLayer for ArcadeDB (native OpenCypher over HTTP)._
   :max_vector_candidates`) fails closed — **never truncates** (truncation would silently drop the true
   nearest neighbour). For very large tenants prefer `:context` (physical isolation) for vector search.
 
-- **Params-only + value-free.** The query vector, `k`, and the tenant value all bind as `$param`; no
-  vector value ever reaches an error or telemetry (the read span carries only a `vector_search?` tag).
-  Dense only this slice; sparse + hybrid fusion land in Plan 2.
+- **Params-only + value-free.** The query vector/tokens/weights/text, `k`, and the tenant value all
+  bind as `$param`; no query value ever reaches an error or telemetry (the read span carries only
+  value-free `vector_search?` + `vector_kind` tags). A malformed stash (crafted via `set_context`)
+  fails closed value-free — never a leak.
 
 ## Query-scoped bulk writes + atomics (Slice 9, Plan 1)
 
