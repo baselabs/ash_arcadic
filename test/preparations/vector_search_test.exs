@@ -1,5 +1,6 @@
 defmodule AshArcadic.Preparations.VectorSearchTest do
   use ExUnit.Case, async: true
+  alias AshArcadic.Preparations.VectorSearch
 
   defmodule Doc do
     use Ash.Resource,
@@ -62,8 +63,8 @@ defmodule AshArcadic.Preparations.VectorSearchTest do
 
   describe "init/1" do
     test "requires an :index atom option" do
-      assert {:error, _} = AshArcadic.Preparations.VectorSearch.init([])
-      assert {:ok, _} = AshArcadic.Preparations.VectorSearch.init(index: :embedding)
+      assert {:error, _} = VectorSearch.init([])
+      assert {:ok, _} = VectorSearch.init(index: :embedding)
     end
   end
 

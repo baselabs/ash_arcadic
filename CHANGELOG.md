@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Vector search — dense kNN (Slice 10, Plan 1).** ArcadeDB dense vector similarity search is
+  first-class: declare `vector_index :embedding, dimensions:, similarity:` in the `arcade` block
+  (metadata + compile validation — the host creates the index via `Arcadic.Vector.create_dense_index`;
+  no migration machinery), attach `AshArcadic.Preparations.VectorSearch` to a read action whose
+  `:query_vector`/`:k` arguments drive the search, and read records ranked closest-first with the
+  distance on `record.__metadata__[:vector_distance]`. Executes through the ArcadeDB SQL
+  `vector.neighbors` path (separate from the Cypher engine). **Fail-closed multitenant:** `:context`
+  runs the kNN in the tenant DB; `:attribute` SELF-INJECTS the tenant predicate (never trusting Ash's
+  filter — a `:bypass` action cannot leak) and scopes via the native candidate-set `filter:`; a
+  no-tenant search fails closed. Cross-tenant search is a deliberate two-part opt-in (Ash action
+  `multitenancy :allow_global`/`:bypass` AND preparation `allow_global?: true`). Candidate cardinality
+  is bounded by `max_vector_candidates` (default 10 000, config-overridable) — reject, never truncate.
+  Params-only, value-free; `can?(:vector_search)` / `can?({:vector_search, :dense})` advertised; a
+  `vector_search?` read-span telemetry tag. Sparse + hybrid fusion follow in Plan 2.
 - **Query-scoped bulk writes + atomics (Slice 9, Plan 1).** `update_query`/`destroy_query`
   (`can?(:update_query)` / `can?(:destroy_query)` / `can?(:expr_error)`): a query-scoped bulk update or
   destroy compiles to ONE parameterized Cypher statement — the tenant predicate, caller filter, and

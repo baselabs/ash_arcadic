@@ -33,6 +33,52 @@ _An Ash DataLayer for ArcadeDB (native OpenCypher over HTTP)._
 - **`MERGE` is used** for idempotent upsert (ArcadeDB-verified) — unlike the
   `ash_age` sibling. Do not import AGE's "never MERGE" rule.
 
+## Vector search — dense kNN (Slice 10, Plan 1)
+
+- **Declare the index in the `arcade` block; the HOST creates it.** `vector_index :embedding,
+  dimensions: 384, similarity: :cosine` is metadata only (the `Type[property]` reference + distance
+  semantics + compile validation) — ash_arcadic has no migration/DDL machinery. Create the actual
+  index in your app: `Arcadic.Vector.create_dense_index!(conn, "Label", "embedding", 384,
+  similarity: :cosine)`. A `vector_index` attribute must be a STORED, NON-`sensitive`, array-typed
+  property (verified at compile — a float-array index cannot be encrypted-binary, and encryption would
+  break the index).
+
+- **Search is a normal read action + a preparation** (dense kNN is ArcadeDB SQL `vector.neighbors`, a
+  separate path from the Cypher engine — not a filter/sort):
+
+  ```elixir
+  read :semantic_search do
+    argument :query_vector, {:array, :float}, allow_nil?: false
+    argument :k, :integer, allow_nil?: false
+    prepare {AshArcadic.Preparations.VectorSearch, index: :embedding}
+  end
+  ```
+
+  `Ash.Query.for_read(Resource, :semantic_search, %{query_vector: v, k: 10}) |> Ash.Query.set_tenant(t)
+  |> Ash.read()`. Results are records ranked closest-first; the distance rides
+  `record.__metadata__[:vector_distance]`. Pass `ef_search`/`max_distance` as preparation options.
+
+- **Tenant-scoped, fail-closed, by default.** `:context` runs the kNN in the tenant's physical DB;
+  `:attribute` two-phase-scopes it — ash_arcadic SELF-INJECTS the tenant predicate (never trusting
+  Ash's own filter, so a `:bypass` action cannot leak), pre-queries the scoped `@rid`s, and passes them
+  as the native candidate set. A no-tenant search fails closed (`tenant required`). Caller/row-policy
+  filters compose (a denied/filtered row never enters the candidate set).
+
+- **Cross-tenant search is a deliberate TWO-part opt-in.** BOTH the Ash action must permit the
+  no-tenant read (`multitenancy :allow_global` or `:bypass`, or a `global?` resource) AND the
+  preparation must set `allow_global?: true`. One without the other either rejects upstream
+  (`TenantRequired`) or stays tenant-scoped. `allow_global?` is `:attribute`-only (`:context` has no
+  cross-DB "global" target). A non-multitenant resource searches globally (no tenancy to enforce).
+
+- **Cardinality ceiling (`:attribute`).** The candidate set materializes the tenant's matching `@rid`s;
+  a set larger than `max_vector_candidates` (default 10 000, `config :ash_arcadic,
+  :max_vector_candidates`) fails closed — **never truncates** (truncation would silently drop the true
+  nearest neighbour). For very large tenants prefer `:context` (physical isolation) for vector search.
+
+- **Params-only + value-free.** The query vector, `k`, and the tenant value all bind as `$param`; no
+  vector value ever reaches an error or telemetry (the read span carries only a `vector_search?` tag).
+  Dense only this slice; sparse + hybrid fusion land in Plan 2.
+
 ## Query-scoped bulk writes + atomics (Slice 9, Plan 1)
 
 - **Query-scoped bulk update/destroy push down to ONE statement.** `Ash.bulk_update`/`Ash.bulk_destroy`
