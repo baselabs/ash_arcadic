@@ -20,10 +20,16 @@ defmodule AshArcadic.DataLayer.CanTest do
           :composite_primary_key,
           :changeset_filter,
           :distinct,
-          :distinct_sort
+          :distinct_sort,
+          :vector_search
         ] do
       assert DL.can?(AshArcadic.Test.Basic, feature), "expected can?(#{feature})"
     end
+  end
+
+  test "advertises {:vector_search, :dense} (documentary — Ash issues no gate)" do
+    assert DL.can?(AshArcadic.Test.Basic, {:vector_search, :dense})
+    refute DL.can?(AshArcadic.Test.Basic, {:vector_search, :sparse})
   end
 
   test "advertises :update_query and :expr_error" do

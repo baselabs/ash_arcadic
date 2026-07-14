@@ -317,6 +317,11 @@ defmodule AshArcadic.DataLayer do
   # `:expression_calculation` (above). Advertised so the capability reads honestly; not the gate.
   def can?(_, :expression_calculation_sort), do: true
 
+  # Vector search rides a normal read action (a preparation stashes it); Ash issues no `can?`
+  # for it, so this is documentary/telemetry-facing, not a load-bearing gate.
+  def can?(_, :vector_search), do: true
+  def can?(_, {:vector_search, :dense}), do: true
+
   def can?(_, _), do: false
 
   # Slice 5 (fail-closed): true when the filter destination carries ANY authorizer. Used by
@@ -631,7 +636,8 @@ defmodule AshArcadic.DataLayer do
          distinct?: query.distinct != [],
          combination?: query.combination_of != [],
          combination_types: Enum.map(query.combination_of, &elem(&1, 0)),
-         combination_strategy: combination_strategy(query.combination_of)
+         combination_strategy: combination_strategy(query.combination_of),
+         vector_search?: not is_nil(query.vector_search)
        }}
     end)
   end
@@ -651,7 +657,7 @@ defmodule AshArcadic.DataLayer do
          {:ok, mode} <- vector_scope_mode(query, resource, vs),
          {:ok, conn} <- read_conn(query, resource),
          {:ok, rows} <- run_vector_search(conn, query, resource, vs, mode) do
-      {:ok, decode_records(resource, rows)}
+      {:ok, decode_neighbor_rows(resource, rows)}
     else
       {:error, atom} when is_atom(atom) -> {:error, vector_error(atom)}
       {:error, other} -> {:error, other}
@@ -858,6 +864,24 @@ defmodule AshArcadic.DataLayer do
     do: vector_failed("multitenancy tenant required for a vector search")
 
   defp vector_error(_atom), do: vector_failed("vector search failed")
+
+  # Decodes neighbors rows (dense: top-level vertex fields + a `distance`). Captures `distance`
+  # BEFORE decode_records strips undeclared keys, and attaches it as record metadata
+  # (:vector_distance). Rank order (closest-first) is preserved. Never reads the broken nested
+  # `record` map (its embedding is a Java-array string) — top-level fields only.
+  defp decode_neighbor_rows(resource, rows) do
+    attribute_map = Info.attribute_map(resource)
+    attribute_types = Info.attribute_types(resource)
+
+    Enum.map(rows, fn row ->
+      record = struct(resource, Cast.row_to_attrs(row, attribute_map, attribute_types))
+
+      case Map.get(row, "distance") do
+        nil -> record
+        distance -> Ash.Resource.put_metadata(record, :vector_distance, distance)
+      end
+    end)
+  end
 
   # Native (all union-family, no per-branch paging) → one CALL{UNION} statement via to_cypher. In-memory
   # (any intersect/except, OR any per-branch limit/offset) → run each branch, PK-fold, apply outer modifiers
