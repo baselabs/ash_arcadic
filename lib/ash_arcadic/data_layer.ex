@@ -652,6 +652,7 @@ defmodule AshArcadic.DataLayer do
   defp do_run_query(%AshArcadic.Query{vector_search: vs} = query, resource) when is_map(vs) do
     with :ok <- vector_reject_combination(query),
          :ok <- vector_reject_kind(vs),
+         :ok <- vector_reject_malformed(vs),
          :ok <- vector_reject_computed(query),
          :ok <- vector_reject_paging(query),
          {:ok, mode} <- vector_scope_mode(query, resource, vs),
@@ -741,6 +742,25 @@ defmodule AshArcadic.DataLayer do
   defp vector_reject_kind(_),
     do: {:error, vector_failed("only dense vector search is supported")}
 
+  # The stash comes from the query CONTEXT (public `Ash.Query.set_context`), so a caller can craft a
+  # malformed one. Validate the SHAPE fail-closed value-free (CV-2/CV-3) — otherwise a missing key
+  # later dot-accesses (KeyError inspecting `vs`, leaking the query vector — Rule 4), and a non-boolean
+  # `allow_global?` would pass the truthiness scope check and open a global kNN.
+  defp vector_reject_malformed(%{
+         kind: _,
+         index: index,
+         query_vector: query_vector,
+         k: k,
+         allow_global?: allow_global?,
+         opts: opts
+       })
+       when is_atom(index) and is_list(query_vector) and query_vector != [] and
+              is_integer(k) and k > 0 and is_boolean(allow_global?) and is_list(opts),
+       do: :ok
+
+  defp vector_reject_malformed(_),
+    do: {:error, vector_failed("malformed vector search request")}
+
   defp vector_reject_computed(%AshArcadic.Query{aggregates: [_ | _]}),
     do: {:error, vector_failed("aggregates over a vector search are not supported")}
 
@@ -767,9 +787,10 @@ defmodule AshArcadic.DataLayer do
         {:ok, :scoped}
 
       {:attribute, true} ->
-        # Map.get (not vs.allow_global?) — a dot-access KeyError on a malformed stash would inspect
-        # `vs`, leaking the query vector (Rule 4 / redaction_fail_path class). Value-free by default.
-        if(Map.get(vs, :allow_global?, false),
+        # STRICT `== true` (not truthiness) — a non-boolean allow_global? is already rejected by
+        # vector_reject_malformed, but keep the scope gate itself strict so only a real opt-in opens
+        # global (CV-2). Map.get keeps it value-free (never dot-accesses a malformed stash).
+        if(Map.get(vs, :allow_global?, false) == true,
           do: {:ok, :global},
           else: {:error, :tenant_required}
         )
@@ -857,13 +878,26 @@ defmodule AshArcadic.DataLayer do
   defp vector_tenant_predicate(resource, tenant) do
     attr = Ash.Resource.Info.multitenancy_attribute(resource)
     {m, f, a} = Ash.Resource.Info.multitenancy_parse_attribute(resource)
-    value = apply(m, f, [Ash.ToTenant.to_tenant(tenant, resource) | a])
+    raw = apply(m, f, [Ash.ToTenant.to_tenant(tenant, resource) | a])
+
+    # SERIALIZE to the STORED representation (CV-1) — the write path stores the discriminator via
+    # Cast.serialize_value (Base64 for a :binary type), and the flat read binds the same
+    # (filter.ex cast_value → Cast.serialize_value). Binding the RAW value here would mismatch a
+    # binary discriminator (wrong/no rows, or a cross-tenant collision). Identity for string/uuid.
+    value = Cast.serialize_value(raw, Info.attribute_types(resource)[attr])
     attr_name = attr |> to_string() |> AshArcadic.Identifier.validate!()
     {"n.#{attr_name} = $vtenant", %{"vtenant" => value}}
   end
 
-  defp max_vector_candidates,
-    do: Application.get_env(:ash_arcadic, :max_vector_candidates, @default_max_vector_candidates)
+  # Validated pos-integer (CV-4) — a misconfigured value (string "10000", nil, :infinity) makes
+  # `length(rids) > value` fail OPEN under Erlang term ordering, disabling the ceiling. Fall back to
+  # the safe default for any non-pos-integer config.
+  defp max_vector_candidates do
+    case Application.get_env(:ash_arcadic, :max_vector_candidates, @default_max_vector_candidates) do
+      n when is_integer(n) and n > 0 -> n
+      _ -> @default_max_vector_candidates
+    end
+  end
 
   defp vector_failed(reason),
     do: QueryFailed.exception(query: "ArcadeDB vector search", reason: reason)

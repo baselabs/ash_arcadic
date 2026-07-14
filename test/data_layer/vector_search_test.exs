@@ -85,4 +85,37 @@ defmodule AshArcadic.DataLayer.VectorSearchTest do
       refute message(result) =~ "limit/offset"
     end
   end
+
+  describe "malformed stash guard (CV-2/CV-3 — the stash is public via set_context)" do
+    test "a stash missing a required key fails closed" do
+      malformed = %{kind: :dense, k: 3, allow_global?: false, opts: []}
+      result = run(vquery(vector_search: malformed))
+      assert {:error, _} = result
+      assert message(result) =~ "malformed"
+    end
+
+    test "a non-boolean allow_global? is rejected — cannot open a global kNN" do
+      # A hand-crafted truthy non-boolean must NOT resolve to :global (CV-2).
+      malformed = %{
+        kind: :dense,
+        index: :embedding,
+        query_vector: [1.0, 0.0, 0.0],
+        k: 3,
+        allow_global?: "false",
+        opts: []
+      }
+
+      result = run(vquery(tenant: nil, vector_search: malformed))
+      assert {:error, _} = result
+      assert message(result) =~ "malformed"
+    end
+
+    test "the malformed error is value-free (never echoes the query vector)" do
+      malformed = %{kind: :dense, k: 3, allow_global?: false, opts: [], query_vector: [31_337.5]}
+      result = run(vquery(vector_search: malformed))
+      assert {:error, _} = result
+      refute message(result) =~ "31337"
+      refute message(result) =~ "31_337"
+    end
+  end
 end
