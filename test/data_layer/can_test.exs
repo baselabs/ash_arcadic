@@ -27,9 +27,11 @@ defmodule AshArcadic.DataLayer.CanTest do
     end
   end
 
-  test "advertises {:vector_search, :dense} (documentary — Ash issues no gate)" do
+  test "advertises {:vector_search, :dense|:sparse|:hybrid} (documentary — Ash issues no gate)" do
     assert DL.can?(AshArcadic.Test.Basic, {:vector_search, :dense})
-    refute DL.can?(AshArcadic.Test.Basic, {:vector_search, :sparse})
+    assert DL.can?(AshArcadic.Test.Basic, {:vector_search, :sparse})
+    assert DL.can?(AshArcadic.Test.Basic, {:vector_search, :hybrid})
+    refute DL.can?(AshArcadic.Test.Basic, {:vector_search, :bogus})
   end
 
   test "advertises :update_query and :expr_error" do

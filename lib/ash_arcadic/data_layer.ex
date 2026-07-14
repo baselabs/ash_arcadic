@@ -347,6 +347,8 @@ defmodule AshArcadic.DataLayer do
   # for it, so this is documentary/telemetry-facing, not a load-bearing gate.
   def can?(_, :vector_search), do: true
   def can?(_, {:vector_search, :dense}), do: true
+  def can?(_, {:vector_search, :sparse}), do: true
+  def can?(_, {:vector_search, :hybrid}), do: true
 
   def can?(_, _), do: false
 
@@ -663,7 +665,8 @@ defmodule AshArcadic.DataLayer do
          combination?: query.combination_of != [],
          combination_types: Enum.map(query.combination_of, &elem(&1, 0)),
          combination_strategy: combination_strategy(query.combination_of),
-         vector_search?: not is_nil(query.vector_search)
+         vector_search?: not is_nil(query.vector_search),
+         vector_kind: vector_kind(query.vector_search)
        }}
     end)
   end
@@ -1037,23 +1040,31 @@ defmodule AshArcadic.DataLayer do
 
   defp vector_error(_atom), do: vector_failed("vector search failed")
 
-  # Decodes neighbors rows (dense: top-level vertex fields + a `distance`). Captures `distance`
-  # BEFORE decode_records strips undeclared keys, and attaches it as record metadata
-  # (:vector_distance). Rank order (closest-first) is preserved. Never reads the broken nested
-  # `record` map (its embedding is a Java-array string) — top-level fields only.
+  # Value-free telemetry tag: the vector-search kind (an atom, never row data), nil for a non-vector read.
+  defp vector_kind(%{kind: kind}), do: kind
+  defp vector_kind(_), do: nil
+
+  # Decodes neighbors rows. Captures the rank metadata BEFORE decode_records strips undeclared keys:
+  # dense rows carry a `distance` (→ :vector_distance); sparse/hybrid rows carry a `score`
+  # (→ :vector_score, higher = better). A fuse row carries a `distance` KEY that is `nil` (it ranks by
+  # `score`), so each capture is gated `is_number` — a nil distance is skipped, never attached. Rank
+  # order (best-first) is preserved. Never reads the broken nested `record` map (top-level only).
   defp decode_neighbor_rows(resource, rows) do
     attribute_map = Info.attribute_map(resource)
     attribute_types = Info.attribute_types(resource)
 
     Enum.map(rows, fn row ->
-      record = struct(resource, Cast.row_to_attrs(row, attribute_map, attribute_types))
-
-      case Map.get(row, "distance") do
-        nil -> record
-        distance -> Ash.Resource.put_metadata(record, :vector_distance, distance)
-      end
+      resource
+      |> struct(Cast.row_to_attrs(row, attribute_map, attribute_types))
+      |> put_rank_metadata(:vector_distance, Map.get(row, "distance"))
+      |> put_rank_metadata(:vector_score, Map.get(row, "score"))
     end)
   end
+
+  defp put_rank_metadata(record, key, value) when is_number(value),
+    do: Ash.Resource.put_metadata(record, key, value)
+
+  defp put_rank_metadata(record, _key, _value), do: record
 
   # Native (all union-family, no per-branch paging) → one CALL{UNION} statement via to_cypher. In-memory
   # (any intersect/except, OR any per-branch limit/offset) → run each branch, PK-fold, apply outer modifiers
