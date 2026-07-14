@@ -881,9 +881,13 @@ defmodule AshArcadic.DataLayer do
     raw = apply(m, f, [Ash.ToTenant.to_tenant(tenant, resource) | a])
 
     # SERIALIZE to the STORED representation (CV-1) — the write path stores the discriminator via
-    # Cast.serialize_value (Base64 for a :binary type), and the flat read binds the same
-    # (filter.ex cast_value → Cast.serialize_value). Binding the RAW value here would mismatch a
-    # binary discriminator (wrong/no rows, or a cross-tenant collision). Identity for string/uuid.
+    # Cast.serialize_value (Base64 for a :binary type) and the flat read binds the same
+    # (filter.ex cast_value → Cast.serialize_value); this predicate must match. DEFENSIVE PARITY:
+    # the only type where serialize ≠ raw ON THE WIRE is :binary, which ValidateMultitenancyAttr
+    # COMPILE-FORBIDS as a discriminator ("plaintext comparator"); every other reachable type
+    # coincides (string/uuid/integer identity; date/datetime/decimal share a Jason encoder). So this
+    # is a no-op for every ALLOWED discriminator today — kept for correctness and to stay closed if
+    # that verifier ever changes. See project memory vector_search_self_injection_and_stash_validation.
     value = Cast.serialize_value(raw, Info.attribute_types(resource)[attr])
     attr_name = attr |> to_string() |> AshArcadic.Identifier.validate!()
     {"n.#{attr_name} = $vtenant", %{"vtenant" => value}}

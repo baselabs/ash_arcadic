@@ -6,6 +6,7 @@ defmodule AshArcadic.DataLayer.VectorSearchTest do
   the reject guards and the `:tenant_required` scope decision.
   """
   use ExUnit.Case, async: true
+  alias AshArcadic.Cast
   alias AshArcadic.Test.VectorDoc
 
   @dense %{
@@ -116,6 +117,41 @@ defmodule AshArcadic.DataLayer.VectorSearchTest do
       assert {:error, _} = result
       refute message(result) =~ "31337"
       refute message(result) =~ "31_337"
+    end
+  end
+
+  # CV-1 (cross-vendor closeout): the self-injected :attribute predicate SERIALIZES the tenant value
+  # via Cast.serialize_value — the SAME call the write path stores with and the flat read binds with.
+  # The ONLY discriminator type where serialize ≠ raw ON THE WIRE is :binary, and
+  # ValidateMultitenancyAttr COMPILE-FORBIDS a binary discriminator (see
+  # test/data_layer/verifiers/validate_multitenancy_attr_test.exs "a binary-storage discriminator …
+  # => compile error"). So CV-1's binary-collision leak is UNREACHABLE, and no non-vacuous
+  # integration tripwire exists — every ALLOWED type coincides on the wire, so mutating the fix to
+  # raw would red nothing live. These unit assertions pin both halves of that finding.
+  describe "CV-1 tenant-value serialization parity (defensive; the leak is compile-unreachable)" do
+    test "the fix produces the STORE-matching form for a :binary value (Base64, non-identity)" do
+      raw = "abc"
+
+      # If a :binary discriminator were ever allowed, the fix binds the stored Base64 form (matching
+      # the write path) rather than the raw bytes — closing the raw-vs-stored mismatch/collision.
+      assert Cast.serialize_value(raw, {Ash.Type.Binary, []}) == Base.encode64(raw)
+      refute Cast.serialize_value(raw, {Ash.Type.Binary, []}) == raw
+    end
+
+    test "for every ALLOWED discriminator type, raw and serialized coincide on the wire (no-op)" do
+      cases = [
+        {"tenant-a", {Ash.Type.String, []}},
+        {123, {Ash.Type.Integer, []}},
+        {Decimal.new("1.50"), {Ash.Type.Decimal, []}},
+        {~D[2024-01-01], {Ash.Type.Date, []}}
+      ]
+
+      for {raw, spec} <- cases do
+        serialized = Cast.serialize_value(raw, spec)
+
+        assert Jason.encode!(%{"vtenant" => serialized}) == Jason.encode!(%{"vtenant" => raw}),
+               "raw and serialized #{inspect(raw)} must coincide on the wire (fix is a no-op)"
+      end
     end
   end
 end
