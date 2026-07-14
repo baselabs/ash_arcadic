@@ -37,3 +37,6 @@ priv/plts/
 # Local-only, NEVER tracked or published. CHARTER.md/AGENTS.md live at the repo
 # root (tracked); published guides + generated DSL docs live in documentation/.
 /docs/
+
+.forge/
+graphify-out/
