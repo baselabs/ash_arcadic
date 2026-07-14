@@ -24,7 +24,8 @@ defmodule AshArcadic.Query do
     aggregates: [],
     calculations: [],
     params: %{},
-    internal?: false
+    internal?: false,
+    vector_search: nil
   ]
 
   @type t :: %__MODULE__{
@@ -44,7 +45,23 @@ defmodule AshArcadic.Query do
           aggregates: [Ash.Query.Aggregate.t()],
           calculations: [{Ash.Query.Calculation.t(), Ash.Expr.t()}],
           params: map(),
-          internal?: boolean()
+          internal?: boolean(),
+          vector_search: nil | vector_search()
+        }
+
+  @typedoc """
+  A stashed vector search (set by `AshArcadic.Preparations.VectorSearch`, consumed by
+  `run_query/2`). `kind` selects the arcadic surface; `index` is the `vector_index` name
+  (resolved to type/property/similarity at run time); `opts` carries passthrough
+  `ef_search`/`max_distance`.
+  """
+  @type vector_search :: %{
+          kind: :dense | :sparse | :hybrid,
+          index: atom(),
+          query_vector: [number()],
+          k: pos_integer(),
+          allow_global?: boolean(),
+          opts: keyword()
         }
 
   @doc """

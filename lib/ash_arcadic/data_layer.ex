@@ -375,7 +375,8 @@ defmodule AshArcadic.DataLayer do
      %{
        query
        | tenant: get_in(context, [:private, :tenant]),
-         internal?: get_in(context, [:private, :internal?]) == true
+         internal?: get_in(context, [:private, :internal?]) == true,
+         vector_search: get_in(context, [:vector_search])
      }}
   end
 
