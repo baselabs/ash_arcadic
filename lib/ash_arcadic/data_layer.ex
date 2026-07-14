@@ -100,6 +100,31 @@ defmodule AshArcadic.DataLayer do
     ]
   }
 
+  @sparse_vector_index_entity %Spark.Dsl.Entity{
+    name: :sparse_vector_index,
+    describe:
+      "Declares a sparse vector index over a (tokens, weights) attribute pair (metadata only — the host creates the index).",
+    args: [:name],
+    target: AshArcadic.SparseVectorIndex,
+    schema: [
+      name: [
+        type: :atom,
+        required: true,
+        doc: "A logical index name (referenced by the vector-search preparation)."
+      ],
+      tokens: [
+        type: :atom,
+        required: true,
+        doc: "The integer-array attribute holding token ids (stored, non-sensitive)."
+      ],
+      weights: [
+        type: :atom,
+        required: true,
+        doc: "The float-array attribute holding the matching weights (stored, non-sensitive)."
+      ]
+    ]
+  }
+
   @arcade %Spark.Dsl.Section{
     name: :arcade,
     describe: "Configuration for the ArcadeDB data layer.",
@@ -138,7 +163,7 @@ defmodule AshArcadic.DataLayer do
             "`:context` tenant. Defaults to a built-in collision-free encoder."
       ]
     ],
-    entities: [@edge_entity, @vector_index_entity]
+    entities: [@edge_entity, @vector_index_entity, @sparse_vector_index_entity]
   }
 
   @behaviour Ash.DataLayer
@@ -154,7 +179,8 @@ defmodule AshArcadic.DataLayer do
       AshArcadic.DataLayer.Verifiers.ValidateMultitenancyAttr,
       AshArcadic.DataLayer.Verifiers.ValidateEdge,
       AshArcadic.DataLayer.Verifiers.ValidateRelationshipFk,
-      AshArcadic.DataLayer.Verifiers.ValidateVectorIndex
+      AshArcadic.DataLayer.Verifiers.ValidateVectorIndex,
+      AshArcadic.DataLayer.Verifiers.ValidateSparseVectorIndex
     ]
 
   # === Capability matrix (read + write + query-building) ===

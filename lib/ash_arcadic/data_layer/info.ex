@@ -41,6 +41,18 @@ defmodule AshArcadic.DataLayer.Info do
     resource |> vector_indexes() |> Enum.find(&(&1.name == name))
   end
 
+  @spec sparse_vector_indexes(Ash.Resource.t()) :: [AshArcadic.SparseVectorIndex.t()]
+  def sparse_vector_indexes(resource) do
+    resource
+    |> Extension.get_entities([:arcade])
+    |> Enum.filter(&match?(%AshArcadic.SparseVectorIndex{}, &1))
+  end
+
+  @spec sparse_vector_index(Ash.Resource.t(), atom()) :: AshArcadic.SparseVectorIndex.t() | nil
+  def sparse_vector_index(resource, name) when is_atom(name) do
+    resource |> sparse_vector_indexes() |> Enum.find(&(&1.name == name))
+  end
+
   @spec attribute_map(Ash.Resource.t()) :: %{atom() => String.t()}
   def attribute_map(resource) do
     skip = skip(resource)
