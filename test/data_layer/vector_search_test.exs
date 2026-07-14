@@ -18,6 +18,35 @@ defmodule AshArcadic.DataLayer.VectorSearchTest do
     opts: []
   }
 
+  @sparse %{
+    kind: :sparse,
+    index: :sparse_embedding,
+    tokens_property: :tokens,
+    weights_property: :weights,
+    query_tokens: [1, 2, 3],
+    query_weights: [0.9, 0.5, 0.2],
+    k: 3,
+    allow_global?: false,
+    opts: []
+  }
+
+  @hybrid %{
+    kind: :hybrid,
+    arms: [
+      %{kind: :dense, property: :embedding, query_vector: [1.0, 0.0, 0.0], k: 3},
+      %{
+        kind: :sparse,
+        tokens_property: :tokens,
+        weights_property: :weights,
+        query_tokens: [1, 2, 3],
+        query_weights: [0.9, 0.5, 0.2],
+        k: 3
+      }
+    ],
+    allow_global?: false,
+    opts: [fusion: :rrf, k: 3]
+  }
+
   defp vquery(overrides) do
     struct(
       %AshArcadic.Query{
@@ -41,10 +70,39 @@ defmodule AshArcadic.DataLayer.VectorSearchTest do
       assert message(result) =~ "combination"
     end
 
-    test "a non-dense kind fails closed (Plan-2 seam)" do
+    # S2 flip (Plan-2): Plan 1's fence rejected all non-dense kinds; Plan 2 accepts :sparse/:hybrid.
+    # A MIS-KINDED stash (sparse KIND with dense SHAPE, no tokens_property) must now be caught by the
+    # per-kind malformed guard as "malformed" — NOT dot-accessed into a KeyError that inspects+leaks
+    # the query vector (B1 plan-review). Kind+shape validate together.
+    test "a mis-kinded stash (sparse kind, dense shape) fails closed malformed, value-free (B1)" do
       result = run(vquery(vector_search: %{@dense | kind: :sparse}))
       assert {:error, _} = result
-      assert message(result) =~ "dense"
+      assert message(result) =~ "malformed"
+      # value-free: the query vector never appears in the error
+      refute message(result) =~ "1.0"
+    end
+
+    test "a malformed sparse stash (missing tokens_property) is malformed — the :sparse kind IS accepted" do
+      # message is "malformed" (the shape guard), NOT "unsupported kind" — proving vector_reject_kind
+      # accepts :sparse and the malformed guard catches the shape.
+      result = run(vquery(vector_search: Map.delete(@sparse, :tokens_property)))
+      assert message(result) =~ "malformed"
+    end
+
+    test "a non-boolean allow_global? on a sparse stash fails closed malformed (CV-2)" do
+      result = run(vquery(vector_search: %{@sparse | allow_global?: :yes}))
+      assert message(result) =~ "malformed"
+    end
+
+    test "a hybrid stash with fewer than 2 arms fails closed malformed" do
+      result = run(vquery(vector_search: %{@hybrid | arms: [hd(@hybrid.arms)]}))
+      assert message(result) =~ "malformed"
+    end
+
+    test "a hybrid stash with a malformed arm fails closed malformed" do
+      bad_arm = %{kind: :dense, property: :embedding}
+      result = run(vquery(vector_search: %{@hybrid | arms: [hd(@hybrid.arms), bad_arm]}))
+      assert message(result) =~ "malformed"
     end
 
     test "aggregates over a vector search fail closed" do
@@ -73,6 +131,18 @@ defmodule AshArcadic.DataLayer.VectorSearchTest do
   describe "scope decision (fail-closed short-circuits)" do
     test ":attribute + no tenant + allow_global? false fails closed with :tenant_required" do
       result = run(vquery(tenant: nil))
+      assert {:error, _} = result
+      assert message(result) =~ "tenant required"
+    end
+
+    test "a VALID sparse stash reaches scope_mode (kind+shape pass) → :tenant_required with no tenant" do
+      result = run(vquery(tenant: nil, vector_search: @sparse))
+      assert {:error, _} = result
+      assert message(result) =~ "tenant required"
+    end
+
+    test "a VALID hybrid stash reaches scope_mode (kind+shape pass) → :tenant_required with no tenant" do
+      result = run(vquery(tenant: nil, vector_search: @hybrid))
       assert {:error, _} = result
       assert message(result) =~ "tenant required"
     end

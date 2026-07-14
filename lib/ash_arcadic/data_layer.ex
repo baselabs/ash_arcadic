@@ -763,29 +763,82 @@ defmodule AshArcadic.DataLayer do
 
   defp vector_reject_combination(_), do: :ok
 
-  defp vector_reject_kind(%{kind: :dense}), do: :ok
+  defp vector_reject_kind(%{kind: kind}) when kind in [:dense, :sparse, :hybrid], do: :ok
 
   defp vector_reject_kind(_),
-    do: {:error, vector_failed("only dense vector search is supported")}
+    do: {:error, vector_failed("unsupported vector search kind")}
 
   # The stash comes from the query CONTEXT (public `Ash.Query.set_context`), so a caller can craft a
   # malformed one. Validate the SHAPE fail-closed value-free (CV-2/CV-3) — otherwise a missing key
   # later dot-accesses (KeyError inspecting `vs`, leaking the query vector — Rule 4), and a non-boolean
-  # `allow_global?` would pass the truthiness scope check and open a global kNN.
+  # `allow_global?` would pass the truthiness scope check and open a global kNN. Each head PINS its
+  # `kind` so kind+shape validate together (B1 plan-review — a `kind: _` wildcard would accept a
+  # mis-kinded stash whose dispatch then KeyError-leaks the query values).
+  # Non-empty-list keys use the `[_ | _]` PATTERN (asserts list-and-non-empty in one match, no
+  # `is_list … and … != []` guard pair).
   defp vector_reject_malformed(%{
-         kind: _,
+         kind: :dense,
          index: index,
-         query_vector: query_vector,
+         query_vector: [_ | _],
          k: k,
          allow_global?: allow_global?,
          opts: opts
        })
-       when is_atom(index) and is_list(query_vector) and query_vector != [] and
+       when is_atom(index) and is_integer(k) and k > 0 and is_boolean(allow_global?) and
+              is_list(opts),
+       do: :ok
+
+  defp vector_reject_malformed(%{
+         kind: :sparse,
+         index: index,
+         tokens_property: tp,
+         weights_property: wp,
+         query_tokens: [_ | _],
+         query_weights: [_ | _],
+         k: k,
+         allow_global?: allow_global?,
+         opts: opts
+       })
+       when is_atom(index) and is_atom(tp) and is_atom(wp) and
               is_integer(k) and k > 0 and is_boolean(allow_global?) and is_list(opts),
        do: :ok
 
+  # Hybrid: `arms` a list of length ≥ 2 (fuse requires ≥2 sources), each a valid per-kind arm map.
+  defp vector_reject_malformed(%{
+         kind: :hybrid,
+         arms: arms,
+         allow_global?: allow_global?,
+         opts: opts
+       })
+       when is_list(arms) and is_boolean(allow_global?) and is_list(opts) do
+    if length(arms) >= 2 and Enum.all?(arms, &valid_fuse_arm?/1),
+      do: :ok,
+      else: {:error, vector_failed("malformed vector search request")}
+  end
+
   defp vector_reject_malformed(_),
     do: {:error, vector_failed("malformed vector search request")}
+
+  defp valid_fuse_arm?(%{kind: :dense, property: p, query_vector: [_ | _], k: k})
+       when is_atom(p) and is_integer(k) and k > 0,
+       do: true
+
+  defp valid_fuse_arm?(%{
+         kind: :sparse,
+         tokens_property: tp,
+         weights_property: wp,
+         query_tokens: [_ | _],
+         query_weights: [_ | _],
+         k: k
+       })
+       when is_atom(tp) and is_atom(wp) and is_integer(k) and k > 0,
+       do: true
+
+  defp valid_fuse_arm?(%{kind: :fulltext, property: p, text_query: tq, k: k})
+       when is_atom(p) and is_binary(tq) and tq != "" and is_integer(k) and k > 0,
+       do: true
+
+  defp valid_fuse_arm?(_), do: false
 
   defp vector_reject_computed(%AshArcadic.Query{aggregates: [_ | _]}),
     do: {:error, vector_failed("aggregates over a vector search are not supported")}
@@ -835,10 +888,12 @@ defmodule AshArcadic.DataLayer do
 
   # :attribute scoped → SELF-INJECT the tenant predicate (never trust query.filters); always
   # candidate-set. Otherwise: unfiltered :context/:global → direct kNN; filtered → candidate-set
-  # (caller/policy filters via build_where; :context is DB-scoped, :global has no tenant).
+  # (caller/policy filters via build_where; :context is DB-scoped, :global has no tenant). The
+  # property/tokens/weights come from the (already malformed-guarded) stash PER-KIND inside
+  # `run_vector_kind` — `run_vector_search` never dot-accesses `vs.index` (a hybrid stash has none;
+  # S1 plan-review).
   defp run_vector_search(conn, query, resource, vs, mode) do
     type = to_string(Info.label(resource))
-    property = to_string(vs.index)
 
     tenant_pred =
       if mode == :scoped and strategy(resource) == :attribute,
@@ -846,13 +901,13 @@ defmodule AshArcadic.DataLayer do
         else: nil
 
     if query.filters == [] and is_nil(query.expression) and is_nil(tenant_pred) do
-      vector_neighbors(conn, type, property, vs, [])
+      run_vector_kind(conn, type, vs, [])
     else
-      vector_candidate_search(conn, query, type, property, vs, tenant_pred)
+      vector_candidate_search(conn, query, type, vs, tenant_pred)
     end
   end
 
-  defp vector_candidate_search(conn, query, type, property, vs, tenant_pred) do
+  defp vector_candidate_search(conn, query, type, vs, tenant_pred) do
     {cypher, params} = AshArcadic.Query.candidate_rid_cypher(query, tenant_pred)
 
     case Arcadic.query(conn, cypher, params) do
@@ -874,7 +929,7 @@ defmodule AshArcadic.DataLayer do
              vector_failed("scoped candidate set exceeds max_vector_candidates; narrow the read")}
 
           true ->
-            vector_neighbors(conn, type, property, vs, filter: rids)
+            run_vector_kind(conn, type, vs, filter: rids)
         end
 
       {:error, error} ->
@@ -882,21 +937,65 @@ defmodule AshArcadic.DataLayer do
     end
   end
 
+  # Runs the kind-appropriate arcadic search with the optional candidate-set `filter:` prepended.
   # `[filter: rids] ++ vs.opts` — NOT `filter: rids ++ vs.opts` (the latter concatenates opts onto
-  # the RID list and validate_rids! raises). vs.opts carries ef_search/max_distance.
-  defp vector_neighbors(conn, type, property, vs, filter_opts) do
-    case Arcadic.Vector.neighbors(
-           conn,
-           type,
-           property,
-           vs.query_vector,
-           vs.k,
-           filter_opts ++ vs.opts
-         ) do
-      {:ok, rows} -> {:ok, rows}
-      {:error, error} -> {:error, vector_failed(redact_db_error(error))}
-    end
+  # the RID list and validate_rids! raises). The malformed guard has already validated k/vectors/
+  # tokens/weights/arms, so the arcadic client-side raises (require_pos_int!, ≥2 sources) cannot fire.
+  defp run_vector_kind(conn, type, %{kind: :dense} = vs, filter_opts) do
+    conn
+    |> Arcadic.Vector.neighbors(
+      type,
+      to_string(vs.index),
+      vs.query_vector,
+      vs.k,
+      filter_opts ++ vs.opts
+    )
+    |> wrap_vector()
   end
+
+  defp run_vector_kind(conn, type, %{kind: :sparse} = vs, filter_opts) do
+    Arcadic.Vector.sparse_neighbors(
+      conn,
+      type,
+      to_string(vs.tokens_property),
+      to_string(vs.weights_property),
+      vs.query_tokens,
+      vs.query_weights,
+      vs.k,
+      filter_opts ++ vs.opts
+    )
+    |> wrap_vector()
+  end
+
+  defp run_vector_kind(conn, type, %{kind: :hybrid} = vs, filter_opts) do
+    specs = Enum.map(vs.arms, &fuse_arm_spec(type, &1))
+
+    conn
+    |> Arcadic.Vector.fuse(specs, filter_opts ++ vs.opts)
+    |> wrap_vector()
+  end
+
+  defp wrap_vector({:ok, rows}), do: {:ok, rows}
+  defp wrap_vector({:error, error}), do: {:error, vector_failed(redact_db_error(error))}
+
+  # S3 plan-review: the DENSE fuse arm is the UNTAGGED `{type, property, vec, k}` tuple — a tagged
+  # `{:dense, …}` falls to arcadic's raising fallback (`vector.ex:426`); type/property MUST be strings
+  # (`is_binary`-guarded). Sparse/fulltext arms are tagged.
+  defp fuse_arm_spec(type, %{kind: :dense, property: p, query_vector: qv, k: k}),
+    do: {type, to_string(p), qv, k}
+
+  defp fuse_arm_spec(type, %{
+         kind: :sparse,
+         tokens_property: tp,
+         weights_property: wp,
+         query_tokens: qt,
+         query_weights: qw,
+         k: k
+       }),
+       do: {:sparse, type, to_string(tp), to_string(wp), qt, qw, k}
+
+  defp fuse_arm_spec(type, %{kind: :fulltext, property: p, text_query: tq, k: k}),
+    do: {:fulltext, type, to_string(p), tq, k}
 
   # Composes `n.<attr> = $vtenant` from the resource's multitenancy attribute + the ToTenant-normalized
   # tenant (S9P2 CV-5), mirroring update_many_scope/3. The attribute NAME is identifier-validated;
