@@ -942,40 +942,54 @@ defmodule AshArcadic.DataLayer do
 
   # Runs the kind-appropriate arcadic search with the optional candidate-set `filter:` prepended.
   # `[filter: rids] ++ vs.opts` — NOT `filter: rids ++ vs.opts` (the latter concatenates opts onto
-  # the RID list and validate_rids! raises). The malformed guard has already validated k/vectors/
-  # tokens/weights/arms, so the arcadic client-side raises (require_pos_int!, ≥2 sources) cannot fire.
+  # the RID list and validate_rids! raises). The malformed guard validates the stash SHAPE, but a
+  # CRAFTED stash (public set_context) can still carry a non-encodable VALUE — a non-UTF8 binary in
+  # tokens/weights/text (a `Jason.EncodeError` on the wire echoes the offending BYTES → Rule-4 leak) —
+  # or a bad opt (`k: -1` → an arcadic `ArgumentError`). `safe_vector_call` rescues those to a
+  # value-free error (the redaction-fail-path class: a value-free wrapper on a new raising sink).
   defp run_vector_kind(conn, type, %{kind: :dense} = vs, filter_opts) do
-    conn
-    |> Arcadic.Vector.neighbors(
-      type,
-      to_string(vs.index),
-      vs.query_vector,
-      vs.k,
-      filter_opts ++ vs.opts
-    )
-    |> wrap_vector()
+    safe_vector_call(fn ->
+      Arcadic.Vector.neighbors(
+        conn,
+        type,
+        to_string(vs.index),
+        vs.query_vector,
+        vs.k,
+        filter_opts ++ vs.opts
+      )
+    end)
   end
 
   defp run_vector_kind(conn, type, %{kind: :sparse} = vs, filter_opts) do
-    Arcadic.Vector.sparse_neighbors(
-      conn,
-      type,
-      to_string(vs.tokens_property),
-      to_string(vs.weights_property),
-      vs.query_tokens,
-      vs.query_weights,
-      vs.k,
-      filter_opts ++ vs.opts
-    )
-    |> wrap_vector()
+    safe_vector_call(fn ->
+      Arcadic.Vector.sparse_neighbors(
+        conn,
+        type,
+        to_string(vs.tokens_property),
+        to_string(vs.weights_property),
+        vs.query_tokens,
+        vs.query_weights,
+        vs.k,
+        filter_opts ++ vs.opts
+      )
+    end)
   end
 
   defp run_vector_kind(conn, type, %{kind: :hybrid} = vs, filter_opts) do
     specs = Enum.map(vs.arms, &fuse_arm_spec(type, &1))
+    safe_vector_call(fn -> Arcadic.Vector.fuse(conn, specs, filter_opts ++ vs.opts) end)
+  end
 
-    conn
-    |> Arcadic.Vector.fuse(specs, filter_opts ++ vs.opts)
-    |> wrap_vector()
+  # Value-free redaction backstop: rescue the value-carrying / validation raises the arcadic client
+  # (or the wire encoder) can throw on a crafted value — a `Jason.EncodeError` carries the offending
+  # bytes; an `ArgumentError` from `require_pos_int!`/`require_number!` is an uncaught crash. Both
+  # become a value-free error rather than reaching Ash's generic handler (which would echo the
+  # message). Targeted (not a bare `rescue`) so a genuine ash_arcadic logic bug is NOT masked.
+  defp safe_vector_call(fun) do
+    wrap_vector(fun.())
+  rescue
+    _error in [ArgumentError, Jason.EncodeError, Protocol.UndefinedError] ->
+      {:error, vector_failed("vector search failed")}
   end
 
   defp wrap_vector({:ok, rows}), do: {:ok, rows}
@@ -1040,8 +1054,10 @@ defmodule AshArcadic.DataLayer do
 
   defp vector_error(_atom), do: vector_failed("vector search failed")
 
-  # Value-free telemetry tag: the vector-search kind (an atom, never row data), nil for a non-vector read.
-  defp vector_kind(%{kind: kind}), do: kind
+  # Value-free telemetry tag: the vector-search kind, constrained to a KNOWN atom (a crafted stash
+  # via set_context could otherwise put an arbitrary caller value in the `kind` slot and echo it into
+  # telemetry — value-free by construction). nil for a non-vector read or an unrecognized kind.
+  defp vector_kind(%{kind: kind}) when kind in [:dense, :sparse, :hybrid], do: kind
   defp vector_kind(_), do: nil
 
   # Decodes neighbors rows. Captures the rank metadata BEFORE decode_records strips undeclared keys:

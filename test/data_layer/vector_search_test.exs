@@ -94,6 +94,11 @@ defmodule AshArcadic.DataLayer.VectorSearchTest do
       assert message(result) =~ "malformed"
     end
 
+    test "a non-boolean allow_global? on a hybrid stash fails closed malformed (CV-2)" do
+      result = run(vquery(vector_search: %{@hybrid | allow_global?: :yes}))
+      assert message(result) =~ "malformed"
+    end
+
     test "a hybrid stash with fewer than 2 arms fails closed malformed" do
       result = run(vquery(vector_search: %{@hybrid | arms: [hd(@hybrid.arms)]}))
       assert message(result) =~ "malformed"

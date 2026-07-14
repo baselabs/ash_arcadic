@@ -152,4 +152,49 @@ defmodule AshArcadic.Integration.VectorSearchSparseHybridTest do
     assert Enum.all?(rows, &(&1.org == "a")),
            "FT-arm leak via :bypass: #{inspect(Enum.map(rows, & &1.org))}"
   end
+
+  # === Value-free redaction (closeout: cross-vendor Codex + closeout-lens finding) ===
+
+  test "T-valuefree: a crafted non-encodable token stash fails closed VALUE-FREE (no byte leak)" do
+    # A crafted stash (public set_context) puts a non-UTF8 binary in query_tokens — it passes the
+    # `[_ | _]` malformed guard but the wire encoder (Jason) would echo the offending BYTES. The
+    # safe_vector_call rescue converts it to a value-free error. RED-capable: without the rescue the
+    # canary bytes ("TOKCANARY…") appear in the surfaced Ash.Error.Unknown message.
+    poison = <<255, "TOKCANARY7719">>
+
+    {:error, error} =
+      VectorDoc
+      |> Ash.Query.for_read(:global_sparse_search, %{
+        query_tokens: [1],
+        query_weights: [1.0],
+        k: 2
+      })
+      |> Ash.Query.set_context(%{
+        vector_search: %{
+          kind: :sparse,
+          index: :sparse_embedding,
+          tokens_property: :tokens,
+          weights_property: :weights,
+          query_tokens: [poison],
+          query_weights: [1.0],
+          k: 2,
+          allow_global?: true,
+          opts: []
+        }
+      })
+      |> Ash.read(authorize?: false)
+
+    msg = Exception.message(error)
+    refute msg =~ "TOKCANARY7719", "poison value leaked into the error"
+    refute String.contains?(msg, <<255>>), "poison byte leaked into the error"
+  end
+
+  test "T-telemetry-kind: a valid sparse read tags the span with a value-free :sparse kind" do
+    ref = :telemetry_test.attach_event_handlers(self(), [[:ash_arcadic, :read, :stop]])
+    {:ok, _} = search(:sparse_search, %{query_tokens: @qt, query_weights: @qw, k: 2}, tenant: "a")
+
+    assert_receive {[:ash_arcadic, :read, :stop], ^ref, _measure, meta}
+    assert meta.vector_kind == :sparse
+    refute Map.has_key?(meta, :query_tokens)
+  end
 end
