@@ -51,18 +51,38 @@ defmodule AshArcadic.Query do
 
   @typedoc """
   A stashed vector search (set by `AshArcadic.Preparations.VectorSearch`, consumed by
-  `run_query/2`). `kind` selects the arcadic surface; `index` is the `vector_index` name
-  (resolved to type/property/similarity at run time); `opts` carries passthrough
-  `ef_search`/`max_distance`.
+  `run_query/2`). `kind` selects the arcadic surface; the run path's per-kind malformed guard
+  enforces the exact shape. `:dense` carries `index`/`query_vector`; `:sparse` carries the resolved
+  `tokens_property`/`weights_property` + `query_tokens`/`query_weights`; `:hybrid` carries `arms`
+  (a list of per-arm maps). `opts` carries passthrough options (dense: `ef_search`/`max_distance`;
+  sparse: `group_by`/`group_size`; hybrid: `fusion`/`weights`/`k`/`group_by`/`group_size`).
   """
-  @type vector_search :: %{
-          kind: :dense | :sparse | :hybrid,
-          index: atom(),
-          query_vector: [number()],
-          k: pos_integer(),
-          allow_global?: boolean(),
-          opts: keyword()
-        }
+  @type vector_search ::
+          %{
+            kind: :dense,
+            index: atom(),
+            query_vector: [number()],
+            k: pos_integer(),
+            allow_global?: boolean(),
+            opts: keyword()
+          }
+          | %{
+              kind: :sparse,
+              index: atom(),
+              tokens_property: atom(),
+              weights_property: atom(),
+              query_tokens: [integer()],
+              query_weights: [number()],
+              k: pos_integer(),
+              allow_global?: boolean(),
+              opts: keyword()
+            }
+          | %{
+              kind: :hybrid,
+              arms: [map()],
+              allow_global?: boolean(),
+              opts: keyword()
+            }
 
   @doc """
   Adds a parameter to the query, returning the updated query and a `$paramN`
