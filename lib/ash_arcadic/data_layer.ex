@@ -636,6 +636,28 @@ defmodule AshArcadic.DataLayer do
     end)
   end
 
+  # Vector search (dense kNN) — a SEPARATE ArcadeDB SQL path (Arcadic.Vector.neighbors), NOT the
+  # Cypher engine. Matched FIRST so a query carrying BOTH combination_of and vector_search fails
+  # closed here (vector_reject_combination), never silently one-or-the-other. Tenant scoping keys on
+  # strategy + tenant + allow_global? (NEVER filter-emptiness) and SELF-INJECTS the :attribute tenant
+  # predicate — a :bypass action yields non-empty filters WITHOUT a tenant predicate, so filter
+  # presence is not a safe scoping signal (Slice-10 plan-review #2). Scope-error atoms are wrapped
+  # value-free.
+  defp do_run_query(%AshArcadic.Query{vector_search: vs} = query, resource) when is_map(vs) do
+    with :ok <- vector_reject_combination(query),
+         :ok <- vector_reject_kind(vs),
+         :ok <- vector_reject_computed(query),
+         :ok <- vector_reject_paging(query),
+         {:ok, mode} <- vector_scope_mode(query, resource, vs),
+         {:ok, conn} <- read_conn(query, resource),
+         {:ok, rows} <- run_vector_search(conn, query, resource, vs, mode) do
+      {:ok, decode_records(resource, rows)}
+    else
+      {:error, atom} when is_atom(atom) -> {:error, vector_error(atom)}
+      {:error, other} -> {:error, other}
+    end
+  end
+
   # Aggregates/calculations OVER a combination are not supported this slice — fail closed value-free
   # rather than silently drop them. Ash runs add_aggregates/add_calculations on the combined
   # data_layer_query (deps/ash read.ex:1781-1789), so a combination read that loads a relationship
@@ -698,6 +720,144 @@ defmodule AshArcadic.DataLayer do
          )}
     end
   end
+
+  # === Vector search (dense kNN) — Slice 10 Plan 1 ===
+
+  @default_max_vector_candidates 10_000
+
+  defp vector_reject_combination(%AshArcadic.Query{combination_of: [_ | _]}),
+    do: {:error, vector_failed("combinations over a vector search are not supported")}
+
+  defp vector_reject_combination(_), do: :ok
+
+  defp vector_reject_kind(%{kind: :dense}), do: :ok
+
+  defp vector_reject_kind(_),
+    do: {:error, vector_failed("only dense vector search is supported")}
+
+  defp vector_reject_computed(%AshArcadic.Query{aggregates: [_ | _]}),
+    do: {:error, vector_failed("aggregates over a vector search are not supported")}
+
+  defp vector_reject_computed(%AshArcadic.Query{calculations: [_ | _]}),
+    do: {:error, vector_failed("calculations over a vector search are not supported")}
+
+  defp vector_reject_computed(_), do: :ok
+
+  # A set limit, or a non-spurious offset. Ash injects `offset: 0` spuriously on paginated reads
+  # (query.ex build_skip(0) → []), so treat 0 as unset — else every paginated action would reject.
+  defp vector_reject_paging(%AshArcadic.Query{limit: nil, offset: offset})
+       when offset in [nil, 0],
+       do: :ok
+
+  defp vector_reject_paging(_),
+    do:
+      {:error,
+       vector_failed("limit/offset are not supported on a vector search (k is the bound)")}
+
+  # Scope resolution — keyed on strategy + tenant + allow_global?, NEVER on filter-emptiness.
+  defp vector_scope_mode(query, resource, vs) do
+    case {strategy(resource), blank_tenant?(query.tenant)} do
+      {:attribute, false} ->
+        {:ok, :scoped}
+
+      {:attribute, true} ->
+        if(vs.allow_global?, do: {:ok, :global}, else: {:error, :tenant_required})
+
+      # :context blank tenant is caught by read_conn (:tenant_required); allow_global? is N/A.
+      {:context, _} ->
+        {:ok, :scoped}
+
+      # Non-multitenant: no tenancy to enforce — a global kNN is correct, not a crash/reject.
+      {nil, _} ->
+        {:ok, :global}
+    end
+  end
+
+  defp blank_tenant?(tenant), do: tenant in [nil, ""]
+
+  # :attribute scoped → SELF-INJECT the tenant predicate (never trust query.filters); always
+  # candidate-set. Otherwise: unfiltered :context/:global → direct kNN; filtered → candidate-set
+  # (caller/policy filters via build_where; :context is DB-scoped, :global has no tenant).
+  defp run_vector_search(conn, query, resource, vs, mode) do
+    type = to_string(Info.label(resource))
+    property = to_string(vs.index)
+
+    tenant_pred =
+      if mode == :scoped and strategy(resource) == :attribute,
+        do: vector_tenant_predicate(resource, query.tenant),
+        else: nil
+
+    if query.filters == [] and is_nil(query.expression) and is_nil(tenant_pred) do
+      vector_neighbors(conn, type, property, vs, [])
+    else
+      vector_candidate_search(conn, query, type, property, vs, tenant_pred)
+    end
+  end
+
+  defp vector_candidate_search(conn, query, type, property, vs, tenant_pred) do
+    {cypher, params} = AshArcadic.Query.candidate_rid_cypher(query, tenant_pred)
+
+    case Arcadic.query(conn, cypher, params) do
+      {:ok, rows} ->
+        rids = rows |> Enum.map(&Map.get(&1, "@rid")) |> Enum.reject(&is_nil/1)
+
+        cond do
+          rids == [] ->
+            # Fail-closed: an empty scoped candidate set means NO in-scope rows — never a global kNN.
+            {:ok, []}
+
+          length(rids) > max_vector_candidates() ->
+            # Reject, NEVER truncate — truncation would drop the true nearest neighbour silently.
+            {:error,
+             vector_failed("scoped candidate set exceeds max_vector_candidates; narrow the read")}
+
+          true ->
+            vector_neighbors(conn, type, property, vs, filter: rids)
+        end
+
+      {:error, error} ->
+        {:error, vector_failed(redact_db_error(error))}
+    end
+  end
+
+  # `[filter: rids] ++ vs.opts` — NOT `filter: rids ++ vs.opts` (the latter concatenates opts onto
+  # the RID list and validate_rids! raises). vs.opts carries ef_search/max_distance.
+  defp vector_neighbors(conn, type, property, vs, filter_opts) do
+    case Arcadic.Vector.neighbors(
+           conn,
+           type,
+           property,
+           vs.query_vector,
+           vs.k,
+           filter_opts ++ vs.opts
+         ) do
+      {:ok, rows} -> {:ok, rows}
+      {:error, error} -> {:error, vector_failed(redact_db_error(error))}
+    end
+  end
+
+  # Composes `n.<attr> = $vtenant` from the resource's multitenancy attribute + the ToTenant-normalized
+  # tenant (S9P2 CV-5), mirroring update_many_scope/3. The attribute NAME is identifier-validated;
+  # the tenant VALUE binds as $vtenant (params-only).
+  defp vector_tenant_predicate(resource, tenant) do
+    attr = Ash.Resource.Info.multitenancy_attribute(resource)
+    {m, f, a} = Ash.Resource.Info.multitenancy_parse_attribute(resource)
+    value = apply(m, f, [Ash.ToTenant.to_tenant(tenant, resource) | a])
+    attr_name = attr |> to_string() |> AshArcadic.Identifier.validate!()
+    {"n.#{attr_name} = $vtenant", %{"vtenant" => value}}
+  end
+
+  defp max_vector_candidates,
+    do: Application.get_env(:ash_arcadic, :max_vector_candidates, @default_max_vector_candidates)
+
+  defp vector_failed(reason),
+    do: QueryFailed.exception(query: "ArcadeDB vector search", reason: reason)
+
+  # Wraps a bare scope/conn error atom value-free (read_conn only yields :tenant_required here).
+  defp vector_error(:tenant_required),
+    do: vector_failed("multitenancy tenant required for a vector search")
+
+  defp vector_error(_atom), do: vector_failed("vector search failed")
 
   # Native (all union-family, no per-branch paging) → one CALL{UNION} statement via to_cypher. In-memory
   # (any intersect/except, OR any per-branch limit/offset) → run each branch, PK-fold, apply outer modifiers

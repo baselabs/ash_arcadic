@@ -107,6 +107,35 @@ defmodule AshArcadic.Query do
     {Enum.join(parts, " "), query.params}
   end
 
+  @doc """
+  Compiles the candidate-RID Cypher for the vector-search Phase 1 —
+  `MATCH (n:<label>) [WHERE <filters [AND extra]>] RETURN n`. Reuses the read path's
+  `build_where/1` (caller/policy filters) and appends the optional self-injected tenant
+  predicate `extra` (`{clause, params}` from the data layer). `RETURN n` yields flat rows
+  carrying `@rid`; the data layer reads `@rid` off each and passes them to
+  `Arcadic.Vector.neighbors(filter: rids)`. No ORDER/SKIP/LIMIT — the whole scoped set is
+  the candidate set (vector reads reject paging).
+  """
+  @spec candidate_rid_cypher(t(), nil | {String.t(), map()}) :: {String.t(), map()}
+  def candidate_rid_cypher(%__MODULE__{} = query, extra) do
+    label = AshArcadic.Identifier.validate!(query.label)
+    {where_parts, query} = build_where(query)
+
+    {where_parts, params} =
+      case extra do
+        nil -> {where_parts, query.params}
+        {clause, extra_params} -> {where_parts ++ [clause], Map.merge(query.params, extra_params)}
+      end
+
+    cypher =
+      ["MATCH (n:#{label})"]
+      |> Kernel.++(build_where_clause(where_parts))
+      |> Kernel.++(["RETURN n"])
+      |> Enum.join(" ")
+
+    {cypher, params}
+  end
+
   @doc false
   # The WHERE clause + params for a query, reusing the read path's `build_where/1` (which
   # renders `filters` and fail-closed-raises on an untranslatable lazy `:expression`). Returns
