@@ -36,6 +36,21 @@ defmodule AshArcadic.Integration.VectorSearchTest do
     end
 
     Arcadic.Vector.create_dense_index!(admin, "VectorDoc", "embedding", 3, similarity: :cosine)
+
+    # Non-multitenant sibling (F1/T-f): exercises the `nil`-strategy → :global scope branch.
+    sql.("CREATE VERTEX TYPE VectorPlainDoc")
+    sql.("CREATE PROPERTY VectorPlainDoc.id STRING")
+    sql.("CREATE PROPERTY VectorPlainDoc.name STRING")
+    sql.("CREATE PROPERTY VectorPlainDoc.embedding ARRAY_OF_FLOATS")
+
+    for {id, emb} <- [{"p1", "[1.0,0.0,0.0]"}, {"p2", "[0.0,1.0,0.0]"}, {"p3", "[0.0,0.0,1.0]"}] do
+      sql.("INSERT INTO VectorPlainDoc SET id='#{id}', name='#{id}', embedding=#{emb}")
+    end
+
+    Arcadic.Vector.create_dense_index!(admin, "VectorPlainDoc", "embedding", 3,
+      similarity: :cosine
+    )
+
     :ok
   end
 
@@ -77,6 +92,28 @@ defmodule AshArcadic.Integration.VectorSearchTest do
   test "T-d global opt-in runs a cross-tenant kNN (spans tenants, the intended global behavior)" do
     {:ok, rows} = search(:global_semantic_search, %{query_vector: @qv, k: 5}, [])
     assert rows |> Enum.map(& &1.org) |> Enum.uniq() |> Enum.sort() == ["a", "b"]
+  end
+
+  test "T-f non-multitenant: a global kNN runs (nil strategy → :global, no crash/reject)" do
+    {:ok, rows} =
+      AshArcadic.Test.VectorPlainDoc
+      |> Ash.Query.for_read(:semantic_search, %{query_vector: @qv, k: 2})
+      |> Ash.read(authorize?: false)
+
+    assert length(rows) == 2
+    assert hd(rows).name == "p1"
+    assert Enum.all?(rows, &is_number(&1.__metadata__[:vector_distance]))
+  end
+
+  test "candidate_count telemetry event fires value-free (count only) on a scoped read" do
+    ref =
+      :telemetry_test.attach_event_handlers(self(), [[:ash_arcadic, :vector, :candidate_count]])
+
+    {:ok, _} = search(:semantic_search, %{query_vector: @qv, k: 2}, tenant: "a")
+
+    assert_receive {[:ash_arcadic, :vector, :candidate_count], ^ref, %{count: count}, meta}
+    assert count == 3
+    assert meta == %{}
   end
 
   test "read span carries a value-free vector_search? tag" do

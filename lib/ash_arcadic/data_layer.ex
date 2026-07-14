@@ -767,7 +767,12 @@ defmodule AshArcadic.DataLayer do
         {:ok, :scoped}
 
       {:attribute, true} ->
-        if(vs.allow_global?, do: {:ok, :global}, else: {:error, :tenant_required})
+        # Map.get (not vs.allow_global?) — a dot-access KeyError on a malformed stash would inspect
+        # `vs`, leaking the query vector (Rule 4 / redaction_fail_path class). Value-free by default.
+        if(Map.get(vs, :allow_global?, false),
+          do: {:ok, :global},
+          else: {:error, :tenant_required}
+        )
 
       # :context blank tenant is caught by read_conn (:tenant_required); allow_global? is N/A.
       {:context, _} ->
@@ -806,6 +811,10 @@ defmodule AshArcadic.DataLayer do
     case Arcadic.query(conn, cypher, params) do
       {:ok, rows} ->
         rids = rows |> Enum.map(&Map.get(&1, "@rid")) |> Enum.reject(&is_nil/1)
+
+        # Value-free observability (count only, no row/tenant value) — lets an operator watch the
+        # candidate set approach max_vector_candidates before the R2 ceiling trips as a hard error.
+        :telemetry.execute([:ash_arcadic, :vector, :candidate_count], %{count: length(rids)}, %{})
 
         cond do
           rids == [] ->

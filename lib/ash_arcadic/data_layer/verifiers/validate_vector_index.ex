@@ -23,11 +23,12 @@ defmodule AshArcadic.DataLayer.Verifiers.ValidateVectorIndex do
 
   @impl true
   def verify(dsl_state) do
-    case Verifier.get_entities(dsl_state, [:arcade]) do
-      entities ->
-        indexes = Enum.filter(entities, &match?(%AshArcadic.VectorIndex{}, &1))
-        if indexes == [], do: :ok, else: do_verify(dsl_state, indexes)
-    end
+    indexes =
+      dsl_state
+      |> Verifier.get_entities([:arcade])
+      |> Enum.filter(&match?(%AshArcadic.VectorIndex{}, &1))
+
+    if indexes == [], do: :ok, else: do_verify(dsl_state, indexes)
   end
 
   defp do_verify(dsl_state, indexes) do
