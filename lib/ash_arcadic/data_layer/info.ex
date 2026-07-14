@@ -29,6 +29,18 @@ defmodule AshArcadic.DataLayer.Info do
     |> Enum.filter(&match?(%AshArcadic.Edge{}, &1))
   end
 
+  @spec vector_indexes(Ash.Resource.t()) :: [AshArcadic.VectorIndex.t()]
+  def vector_indexes(resource) do
+    resource
+    |> Extension.get_entities([:arcade])
+    |> Enum.filter(&match?(%AshArcadic.VectorIndex{}, &1))
+  end
+
+  @spec vector_index(Ash.Resource.t(), atom()) :: AshArcadic.VectorIndex.t() | nil
+  def vector_index(resource, name) when is_atom(name) do
+    resource |> vector_indexes() |> Enum.find(&(&1.name == name))
+  end
+
   @spec attribute_map(Ash.Resource.t()) :: %{atom() => String.t()}
   def attribute_map(resource) do
     skip = skip(resource)

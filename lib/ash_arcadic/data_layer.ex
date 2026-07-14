@@ -75,6 +75,31 @@ defmodule AshArcadic.DataLayer do
     ]
   }
 
+  @vector_index_entity %Spark.Dsl.Entity{
+    name: :vector_index,
+    describe:
+      "Declares a dense vector index on an attribute (metadata only — the host creates the index).",
+    args: [:name],
+    target: AshArcadic.VectorIndex,
+    schema: [
+      name: [
+        type: :atom,
+        required: true,
+        doc: "The vector attribute (a stored, non-sensitive, array-typed property)."
+      ],
+      dimensions: [
+        type: :pos_integer,
+        required: true,
+        doc: "Embedding dimensionality (must equal the search vector's length)."
+      ],
+      similarity: [
+        type: {:one_of, [:cosine, :dot_product, :euclidean]},
+        default: :cosine,
+        doc: "Distance metric — drives `distance`/`max_distance` semantics."
+      ]
+    ]
+  }
+
   @arcade %Spark.Dsl.Section{
     name: :arcade,
     describe: "Configuration for the ArcadeDB data layer.",
@@ -113,7 +138,7 @@ defmodule AshArcadic.DataLayer do
             "`:context` tenant. Defaults to a built-in collision-free encoder."
       ]
     ],
-    entities: [@edge_entity]
+    entities: [@edge_entity, @vector_index_entity]
   }
 
   @behaviour Ash.DataLayer
@@ -128,7 +153,8 @@ defmodule AshArcadic.DataLayer do
       AshArcadic.DataLayer.Verifiers.ValidateSkip,
       AshArcadic.DataLayer.Verifiers.ValidateMultitenancyAttr,
       AshArcadic.DataLayer.Verifiers.ValidateEdge,
-      AshArcadic.DataLayer.Verifiers.ValidateRelationshipFk
+      AshArcadic.DataLayer.Verifiers.ValidateRelationshipFk,
+      AshArcadic.DataLayer.Verifiers.ValidateVectorIndex
     ]
 
   # === Capability matrix (read + write + query-building) ===
