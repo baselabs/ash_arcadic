@@ -295,6 +295,36 @@ defmodule AshArcadic.Integration.KeysetPaginationTest do
            )
   end
 
+  # Cross-vendor F2: a COMPOSITE-typed sort (`:map` / `{:array, _}`) has no total order, so a keyset
+  # over it would SILENTLY truncate (page 1 returns, page 2 empty while rows remain). It must fail
+  # closed at the sort gate — UnsortableField — like binary/decimal, never silently mis-page.
+  test "fail-closed (sort gate): a keyset over a :map sort field is rejected UnsortableField (F2)" do
+    for {id, p} <- [{"x", %{"k" => 1}}, {"y", %{"k" => 2}}, {"z", %{"k" => 3}}],
+        do: seed(id, "org1", %{payload: p})
+
+    assert {:error, error} =
+             KeysetDoc
+             |> Ash.Query.sort(payload: :asc)
+             |> Ash.read(tenant: "org1", page: [limit: 1])
+
+    assert Enum.any?(
+             List.wrap(error) ++ List.wrap(Map.get(error, :errors)),
+             &match?(%Ash.Error.Query.UnsortableField{field: :payload}, &1)
+           )
+  end
+
+  test "fail-closed (sort gate): a keyset over an {:array, _} sort field is rejected UnsortableField (F2)" do
+    for {id, t} <- [{"x", ["a"]}, {"y", ["b"]}, {"z", ["c"]}], do: seed(id, "org1", %{tags: t})
+
+    assert {:error, error} =
+             KeysetDoc |> Ash.Query.sort(tags: :asc) |> Ash.read(tenant: "org1", page: [limit: 1])
+
+    assert Enum.any?(
+             List.wrap(error) ++ List.wrap(Map.get(error, :errors)),
+             &match?(%Ash.Error.Query.UnsortableField{field: :tags}, &1)
+           )
+  end
+
   test "fail-closed (filter gate): a keyset over a NON-STORED calc sort fails value-free on the cursor page (F5)" do
     for {id, s} <- [{"x", 3}, {"y", 1}, {"z", 2}, {"w", 1}], do: seed(id, "org1", %{score: s})
 

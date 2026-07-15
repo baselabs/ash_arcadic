@@ -26,6 +26,8 @@ defmodule AshArcadic.Test.TemporalDoc do
     # base :datetime/:time with precision usec, the forward-canonical form since UtcDatetime is deprecated).
     attribute :at_usec, :datetime, public?: true, constraints: [precision: :microsecond]
     attribute :at_time_usec, :time, public?: true, constraints: [precision: :microsecond]
+    # A boolean, so `if(flag, dt1, dt2)` stays a cleanly-translatable value-EXPRESSION (N-1 test).
+    attribute :flag, :boolean, public?: true
   end
 
   multitenancy do
@@ -34,7 +36,18 @@ defmodule AshArcadic.Test.TemporalDoc do
   end
 
   actions do
-    default_accept [:id, :org_id, :at, :naive_at, :on_date, :at_time, :at_usec, :at_time_usec]
+    default_accept [
+      :id,
+      :org_id,
+      :at,
+      :naive_at,
+      :on_date,
+      :at_time,
+      :at_usec,
+      :at_time_usec,
+      :flag
+    ]
+
     defaults [:read, :create]
   end
 end

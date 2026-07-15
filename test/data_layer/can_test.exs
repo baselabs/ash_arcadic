@@ -50,7 +50,8 @@ defmodule AshArcadic.DataLayer.CanTest do
 
   # Slice 11: :async_engine advertised (probe-verified pool-safe for CONCURRENT READS — parallel
   # independent relationship/aggregate loads; opt-in concurrent bulk writes (max_concurrency > 1)
-  # are MVCC-conflict-prone and fail LOUD — documented in usage-rules, not a silent hazard).
+  # need adequately-bucketed types on ArcadeDB and can return :partial_success — documented in
+  # usage-rules with the check-.status + BUCKETS guidance).
   test "advertises :async_engine (concurrent reads/loads; bulk-write concurrency documented)" do
     assert DL.can?(AshArcadic.Test.Basic, :async_engine)
   end
@@ -96,11 +97,15 @@ defmodule AshArcadic.DataLayer.CanTest do
     refute DL.can?(AshArcadic.Test.Basic, {:lateral_join, []})
   end
 
-  test "sort allowed except on binary and decimal storage (unorderable)" do
+  test "sort allowed except on binary/decimal and COMPOSITE (map/array) storage (unorderable)" do
     assert DL.can?(AshArcadic.Test.Basic, {:sort, :string})
     assert DL.can?(AshArcadic.Test.Basic, {:sort, :integer})
     refute DL.can?(AshArcadic.Test.Basic, {:sort, :binary})
     refute DL.can?(AshArcadic.Test.Basic, {:sort, :decimal})
+
+    # Cross-vendor F2: composite storage has no total order → keyset silently truncates → reject.
+    refute DL.can?(AshArcadic.Test.Basic, {:sort, :map})
+    refute DL.can?(AshArcadic.Test.Basic, {:sort, {:array, :string}})
   end
 
   test "filter_expr: supported operators + string-match + boolean/not + calc value-ops true; unknown false" do

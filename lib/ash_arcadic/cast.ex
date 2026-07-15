@@ -46,16 +46,22 @@ defmodule AshArcadic.Cast do
   def binary_storage?(type, constraints), do: Ash.Type.storage_type(type, constraints) == :binary
 
   @doc """
-  Whether an attribute's storage type supports a correct Cypher range comparison
-  (`gt/lt/gte/lte`). False for `:binary` (base64 is not byte-order-preserving) and
-  `:decimal` (D27 — stored as an exact string; ArcadeDB compares strings
-  lexicographically, so a numeric range would be silently wrong). Drives the
-  filter push-down guard: a range op on a non-comparable attr fails LOUD as
-  `UnsupportedFilter` rather than returning wrong rows.
+  Whether an attribute's storage type has a TOTAL ORDER ArcadeDB compares correctly for a range/keyset
+  op (`gt/lt/gte/lte`). False for the non-order-preserving scalars `:binary` (base64) and `:decimal`
+  (D27 — exact string, compared lexicographically → a numeric range would be silently wrong), AND for
+  the COMPOSITE storage types `:map` (also `:struct`/`:union`, which store as `:map`) and `{:array, _}`
+  — these have NO meaningful total order, so a range/keyset comparison on them silently returns
+  wrong/truncated results (a keyset walk mis-pages). Anything else (integer/float/boolean/string/uuid/
+  ci_string/temporal) is comparable. Drives the filter push-down + keyset-sort guard: a range/keyset
+  op on a non-comparable attr fails LOUD (`UnsupportedFilter`/`UnsortableField`), never wrong rows.
   """
   @spec range_comparable?(Ash.Type.t(), keyword()) :: boolean()
   def range_comparable?(type, constraints) do
-    Ash.Type.storage_type(type, constraints) not in [:binary, :decimal]
+    case Ash.Type.storage_type(type, constraints) do
+      s when s in [:binary, :decimal, :map] -> false
+      {:array, _} -> false
+      _ -> true
+    end
   end
 
   @doc """

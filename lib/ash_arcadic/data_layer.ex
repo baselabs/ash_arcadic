@@ -244,6 +244,13 @@ defmodule AshArcadic.DataLayer do
   # either returns a silently wrong order, so reject → Ash.Error.Query.UnsortableField.
   def can?(_, {:sort, :binary}), do: false
   def can?(_, {:sort, :decimal}), do: false
+
+  # Composite storage types (`:map` — also `:struct`/`:union`; and `{:array, _}`) have NO total order,
+  # so a keyset cursor / ORDER BY over them silently mis-pages / mis-orders — reject at the sort gate
+  # (mirrors Cast.range_comparable?; a keyset over such a sort would otherwise truncate silently, the
+  # cross-vendor F2 catch). Value comparisons keep working; only ordering is rejected.
+  def can?(_, {:sort, :map}), do: false
+  def can?(_, {:sort, {:array, _}}), do: false
   def can?(_, {:sort, _}), do: true
   # Ash 3.29 authorizes filters per predicate node via {:filter_expr, <struct>}
   # (deps/ash/lib/ash/filter/filter.ex:3532). {:filter_operator, _} is not a

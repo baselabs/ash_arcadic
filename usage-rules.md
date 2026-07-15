@@ -145,22 +145,37 @@ _An Ash DataLayer for ArcadeDB (native OpenCypher over HTTP)._
 - **Supported keyset-sort set.** Any **stored, comparable** sort attribute: `:integer`, `:float`,
   `:boolean`, `:string`, and the datetime/time family (`:utc_datetime`, `:naive_datetime`, `:time`,
   incl. `precision: :microsecond`). A duplicate-value sort resolves deterministically via the primary
-  key tiebreaker. **Fail-closed (never silently mis-page):** a `:binary`(sensitive)/`:decimal` sort
-  is rejected `UnsortableField` (the sort gate); a non-stored / calc / aggregate sort is rejected
+  key tiebreaker. **Fail-closed (never silently mis-page):** a `:binary`(sensitive)/`:decimal` sort,
+  and a COMPOSITE-typed sort (`:map`, `:struct`, `:union`, `{:array, _}` — no total order), are
+  rejected `UnsortableField` at the sort gate; a non-stored / calc / aggregate sort is rejected
   value-free `UnsupportedFilter` on the cursor page (the filter guard). Keyset over a **combination**
   query is supported (the cursor lands in the outer filter).
+- **Keyset limitations inherited from Ash core** (not data-layer-fixable): (a) if you provide an
+  `after:`/`before:` cursor whose shape doesn't match the query's sort, Ash's `InvalidKeyset` error
+  interpolates the (decodable) cursor — it echoes YOUR OWN prior-page sort values, not another
+  tenant's, but avoid logging that error verbatim; (b) a keyset sort over a field a non-admin actor
+  cannot read (field policy) breaks on page 2 — Ash computes the cursor from the redacted
+  `%Ash.ForbiddenField{}`. Sort keyset pages by a field the actor can read.
 - **Perf is bounded MEMORY, not bounded time.** Keyset's win here is streaming without an unbounded
   in-memory read; it is NOT necessarily faster than offset per page — AshArcadic has no sort-index
   DSL, so ArcadeDB full-scans + sorts each page over an unindexed sort field. Add a host-side index on
   the sort field if you need deep-pagination speed.
 - **`:async_engine` — concurrent reads/loads.** `can?(:async_engine)` is advertised (probe-verified
   pool-safe): Ash runs INDEPENDENT relationship/aggregate loads concurrently on a read (each its own
-  pooled connection; a transactional action still runs sync). **Caveat — opt-in concurrent bulk
-  writes:** advertising `:async_engine` also lets `Ash.bulk_*` run batches concurrently when you pass
-  `max_concurrency > 1`. ArcadeDB's MVCC raises `ConcurrentModificationException` (HTTP 503) under
-  concurrent writes to the same type, and because batches are separate transactions a mid-run failure
-  can leave PARTIAL application across batches (`:bulk_create_with_partial_success` is `false`). Keep
-  bulk writes SEQUENTIAL (the default `max_concurrency`) on ArcadeDB; concurrency is a reads/loads win.
+  pooled connection; a transactional action still runs sync). This is always safe and deterministic —
+  the marquee async value.
+- **Concurrent bulk writes need adequately-BUCKETED types.** Advertising `:async_engine` also lets
+  `Ash.bulk_*` run batches concurrently when you pass `max_concurrency > 1`. On ArcadeDB, concurrent
+  writes to the SAME vertex type contend on that type's **buckets** — a type with too few buckets (the
+  default when a type is auto-created on first write) throws `ConcurrentModificationException`
+  (HTTP 503) under concurrency, and since batches are separate transactions the result can be a
+  PARTIAL write returned as `:partial_success` (probe-verified). **Create the type with buckets ≥ your
+  `max_concurrency`** (`CREATE VERTEX TYPE X BUCKETS 32`, host-side per the transport/schema boundary —
+  ArcadeDB caps buckets around 32) and concurrent bulk writes converge with zero conflicts. Even so,
+  ArcadeDB's optimistic MVCC leaves a small residual at very high concurrency, so **always check
+  `result.status`/`.error_count` and re-drive failed rows** (a conflict commits nothing → re-driving
+  is idempotent). The default (`max_concurrency: 1`, sequential) is always safe. A robust
+  guaranteed-convergence path (per-type write serialization) is tracked as a follow-up slice.
 - **Read-path value-free redaction.** A non-encodable value in a read filter literal (a raw non-UTF8
   binary nested in a `:map`/`:list`) fails closed value-free — a `%QueryFailed{}` naming the failure
   CLASS, never the bytes — at every read wire site (flat, aggregate/count, combination, traversal,
@@ -249,7 +264,9 @@ _An Ash DataLayer for ArcadeDB (native OpenCypher over HTTP)._
   constructor (`datetime()` / `localtime()`) — equality, range (`gt/lt/gte/lte`) and `in` compare
   temporal-to-temporal, not string-to-coerced-value. `:date` needs no wrapper (ArcadeDB keeps
   date-only strings as strings). A **compound** temporal comparison (a temporal attr against a
-  value-expression / arithmetic RHS) is not yet wrapped — use a plain literal comparison.
+  value-EXPRESSION RHS — an `if/3`, arithmetic, fragment) is NOT wrapped on the expression path, so it
+  fails closed value-free (`UnsupportedFilter` naming the field) rather than silently mis-filtering —
+  use a plain literal comparison, which IS wrapped.
 - **Filtering a `sensitive` field is unsupported.** A value comparison (`==`/`!=`/`>`/`<`/`in`/
   `contains`/`string_starts_with`/`string_ends_with`) on a `sensitive` (app-side-encrypted
   binary) field fails closed value-free (`%UnsupportedFilter{}`); `is_nil`/`not is_nil`

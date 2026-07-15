@@ -94,4 +94,34 @@ defmodule AshArcadic.Integration.TemporalFilterTest do
     assert ids(Ash.Query.filter(TemporalDoc, on_date > ^~D[2023-12-31])) == ["a", "c"]
     assert ids(Ash.Query.filter(TemporalDoc, on_date == ^~D[2024-06-15])) == ["c"]
   end
+
+  # N-1 (cross-vendor follow-up): a COMPOUND temporal comparison (a temporal attr vs a value-EXPRESSION
+  # RHS, here an `if/3`) routes through compound_compare / Expression, which does NOT apply the
+  # datetime()/localtime() param wrapper — so it would emit `n.at = $isostring` that ArcadeDB silently
+  # returns [] for. It must fail closed value-free (UnsupportedFilter naming the field), not mis-filter.
+  test "N-1: a compound temporal comparison (temporal attr vs an expression) fails closed value-free" do
+    seed("a", %{at: ~U[2024-01-02 03:04:05Z], flag: true})
+
+    # `if(flag, dt1, dt2)` stays a cleanly-translatable value-EXPRESSION (the `flag` field prevents
+    # constant-folding), so it routes through compound_compare — where WITHOUT the N-1 guard it emits
+    # `n.at = (CASE WHEN n.flag THEN $isostring ELSE $isostring END)` and ArcadeDB silently returns []
+    # (mutation-proven). The guard rejects it value-free (UnsupportedFilter naming :at) instead.
+    dt1 = ~U[2024-01-02 03:04:05Z]
+    dt2 = ~U[2023-01-01 00:00:00Z]
+
+    # `if(flag, …)` below is the Ash filter DSL if/3 EXPRESSION, not a control-flow if — credo's
+    # ParenthesesInCondition check is a false positive here, disabled for the (one-line) filter below.
+    # credo:disable-for-next-line Credo.Check.Readability.ParenthesesInCondition
+    filtered = Ash.Query.filter(TemporalDoc, at == if(flag, ^dt1, ^dt2))
+
+    result = filtered |> Ash.Query.set_tenant("org1") |> Ash.read()
+
+    assert {:error, error} = result
+
+    assert Enum.any?(
+             List.wrap(error) ++ List.wrap(Map.get(error, :errors)),
+             &match?(%AshArcadic.Errors.UnsupportedFilter{field: :at}, &1)
+           ),
+           "expected a value-free UnsupportedFilter naming :at, got: #{inspect(result)}"
+  end
 end

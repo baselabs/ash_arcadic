@@ -92,7 +92,7 @@ defmodule AshArcadic.Query.Filter do
        )
        when is_map_key(@comparison_ops, mod) do
     if Ash.Resource.Calculation.has_expression?(cm) do
-      compound_compare(query, ref, right, Map.fetch!(@comparison_ops, mod))
+      compound_compare(query, ref, right, mod)
     else
       # Reject the ORIGINAL expr (a variable-module `%mod{}` cannot be RE-constructed — Elixir requires
       # a compile-time struct name); unsupported_shape/1 derives {operator, calc-name} value-free.
@@ -138,7 +138,7 @@ defmodule AshArcadic.Query.Filter do
   defp do_translate(%mod{left: %Ash.Query.Ref{} = ref, right: right}, query)
        when is_map_key(@comparison_ops, mod) and is_struct(right) and
               is_map_key(right, :__predicate__?) do
-    compound_compare(query, ref, right, Map.fetch!(@comparison_ops, mod))
+    compound_compare(query, ref, right, mod)
   end
 
   defp do_translate(
@@ -275,7 +275,7 @@ defmodule AshArcadic.Query.Filter do
   # fast paths and the Ref-to-Ref guard, so only NON-plain-Ref (value-expression) lefts reach here.
   defp do_translate(%mod{left: left, right: right}, query)
        when is_map_key(@comparison_ops, mod) do
-    compound_compare(query, left, right, Map.fetch!(@comparison_ops, mod))
+    compound_compare(query, left, right, mod)
   end
 
   # Catch-all: unsupported. Surface operator/function module + field only.
@@ -285,12 +285,45 @@ defmodule AshArcadic.Query.Filter do
 
   # Both operands through Expression (which handles Ref → guarded n.field, calc-Ref → expand,
   # value-expression → recurse, literal → bound $param). An unsupported node fails closed value-free.
-  defp compound_compare(query, left, right, cypher_op) do
-    with {:ok, query, lc} <- Expression.translate(left, query),
-         {:ok, query, rc} <- Expression.translate(right, query) do
-      {:ok, query, "(#{lc} #{cypher_op} #{rc})"}
+  #
+  # N-1 (cross-vendor follow-up): a compound comparison with a TEMPORAL plain-attr Ref operand
+  # (`at OP <expression>` / `<expression> OP at`) is rejected value-free FIRST. The temporal param
+  # wrapper (`datetime()`/`localtime()`) only applies on the plain scalar/IN path (binary_op/in_clause);
+  # the Expression path emits a bare `n.<t> OP $isostring`, which ArcadeDB — having coerced the stored
+  # ISO8601 to its native temporal type — silently returns `[]` for. Fail LOUD rather than mis-filter;
+  # use a plain literal comparison (which IS temporal-wrapped). (A calc-Ref that EXPANDS to a temporal
+  # is not caught here — a documented residual; the common `temporal_attr OP expr` case is.)
+  defp compound_compare(query, left, right, mod) do
+    if temporal_ref?(left) or temporal_ref?(right) do
+      {:error,
+       UnsupportedFilter.exception(
+         operator: mod,
+         field: temporal_ref_name(left) || temporal_ref_name(right)
+       )}
+    else
+      cypher_op = Map.fetch!(@comparison_ops, mod)
+
+      with {:ok, query, lc} <- Expression.translate(left, query),
+           {:ok, query, rc} <- Expression.translate(right, query) do
+        {:ok, query, "(#{lc} #{cypher_op} #{rc})"}
+      end
     end
   end
+
+  # A plain-attribute Ref whose storage type is a COERCED temporal (`datetime`/`time`, incl. usec) —
+  # the class whose bare-param comparison silently returns []. A calc/aggregate Ref or a non-temporal
+  # attr is not a match (nil wrapper). Value-free: reads only the type/constraints, never a value.
+  defp temporal_ref?(%Ash.Query.Ref{
+         attribute: %Ash.Resource.Attribute{type: type, constraints: c}
+       }),
+       do: not is_nil(Cast.temporal_cypher_fn(type, c || []))
+
+  defp temporal_ref?(_), do: false
+
+  defp temporal_ref_name(%Ash.Query.Ref{attribute: %Ash.Resource.Attribute{name: name}} = ref),
+    do: if(temporal_ref?(ref), do: name)
+
+  defp temporal_ref_name(_), do: nil
 
   defp binary_op(query, attr, cypher_op, value, operator) do
     if filterable_field?(query, attr) do

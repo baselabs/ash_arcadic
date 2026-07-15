@@ -80,6 +80,26 @@ defmodule AshArcadic.Integration.ReadEncodeGateTest do
     assert_value_free(msg)
   end
 
+  test "in-memory combination branch: a poisoned :map filter fails closed value-free (run_branch, paged)" do
+    # A PAGED combination routes to the in-memory path (run_inmemory_combination -> run_branch), a
+    # DISTINCT gated wire site from the native combination above (gate-integrity F-info). The poison
+    # rides the branch's to_cypher params.
+    poison = @poison
+
+    msg =
+      read_error_message(fn ->
+        ReadEncodeDoc
+        |> Ash.Query.for_read(:read)
+        |> Ash.Query.combination_of([
+          Combination.base(filter: Ash.Expr.expr(data == ^poison)),
+          Combination.union(filter: Ash.Expr.expr(id == "never"))
+        ])
+        |> Ash.read(tenant: "org1", page: [limit: 1])
+      end)
+
+    assert_value_free(msg)
+  end
+
   test "keyset page: a poisoned :map filter on a keyset-paginated read fails closed value-free" do
     # A keyset page routes through do_run_query (same gate as the flat read); the poison rides the
     # cursor/filter params. Also covers a CRAFTED cursor carrying a non-encodable value.

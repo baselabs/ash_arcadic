@@ -30,6 +30,11 @@ defmodule AshArcadic.Test.KeysetDoc do
     # exact lexicographic string — both rejected at the SORT gate (can?({:sort, :binary/:decimal})).
     attribute :blob, :binary, public?: true
     attribute :amount, :decimal, public?: true
+
+    # COMPOSITE sort types (cross-vendor F2): no total order → a keyset over them silently truncates,
+    # so both are rejected at the SORT gate (can?({:sort, :map/{:array,_}})).
+    attribute :payload, :map, public?: true
+    attribute :tags, {:array, :string}, public?: true
   end
 
   multitenancy do
@@ -54,7 +59,9 @@ defmodule AshArcadic.Test.KeysetDoc do
       :created,
       :created_usec,
       :blob,
-      :amount
+      :amount,
+      :payload,
+      :tags
     ]
 
     defaults [:create]

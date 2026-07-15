@@ -18,10 +18,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   closed value-free `UnsupportedFilter`. Perf guarantee is bounded MEMORY (streaming), not bounded
   time — no sort-index DSL, so add a host-side index for deep-pagination speed.
 - **`:async_engine` — concurrent reads/loads (Slice 11).** Probe-verified pool-safe: Ash runs
-  independent relationship/aggregate loads concurrently on a read (transactional actions stay sync).
-  Opt-in concurrent bulk writes (`max_concurrency > 1`) are MVCC-conflict-prone on ArcadeDB (loud 503,
-  possible partial application across batches) — keep bulk writes sequential; concurrency is a
-  reads/loads win.
+  independent relationship/aggregate loads concurrently on a read (transactional actions stay sync) —
+  always safe/deterministic. Opt-in concurrent bulk writes (`max_concurrency > 1`) require the vertex
+  type to have adequate **buckets** (`CREATE VERTEX TYPE X BUCKETS N`, N ≥ max_concurrency, host-side)
+  — the default bucket count contends on ArcadeDB's MVCC and returns `:partial_success`. With
+  adequate buckets they converge; a small residual remains at very high concurrency, so check
+  `.status`/`.error_count` and re-drive failed rows. See usage-rules.
 
 ### Fixed
 
@@ -29,7 +31,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   auto-coerces stored ISO8601 datetime/time strings to native temporal types; AshArcadic now wraps the
   bound comparison param in the matching Cypher constructor (`datetime()` for `:utc_datetime`/
   `:naive_datetime`/usec, `localtime()` for `:time`/usec) so `:datetime`/`:time` filters and keyset
-  cursors compare correctly. `:date` is unaffected (kept a string).
+  cursors compare correctly. `:date` is unaffected (kept a string). A COMPOUND temporal comparison
+  (temporal attr vs a value-expression) now fails closed value-free (`UnsupportedFilter`) instead of
+  silently returning `[]`.
+- **Composite-typed sorts fail closed (Slice 11).** A keyset/`ORDER BY` over a `:map`/`:struct`/
+  `:union`/`{:array, _}` attribute (no total order) is now rejected `UnsortableField` instead of
+  silently mis-paging/mis-ordering.
 
 ### Security
 
