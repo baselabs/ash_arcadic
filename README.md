@@ -1,5 +1,9 @@
 # AshArcadic
 
+[![Hex.pm](https://img.shields.io/hexpm/v/ash_arcadic.svg)](https://hex.pm/packages/ash_arcadic)
+[![Documentation](https://img.shields.io/badge/hex-docs-8e5ea2.svg)](https://hexdocs.pm/ash_arcadic)
+[![License: MIT](https://img.shields.io/hexpm/l/ash_arcadic.svg)](LICENSE)
+
 An [Ash Framework](https://ash-hq.org) `DataLayer` for
 [ArcadeDB](https://arcadedb.com) — native OpenCypher over the HTTP command API.
 
@@ -9,17 +13,21 @@ enforced **Ash-natively**. It executes through the
 [`arcadic`](https://github.com/baselabs/arcadic) client (the transport — the
 "`postgrex` of ArcadeDB").
 
-> **Status: feature-complete for 0.1.0, pre-publish.** The full remaining-capabilities
-> roadmap has shipped (11 slices, 692 tests incl. live-ArcadeDB integration, dialyzer
-> clean). Working rules for contributors are in
+> **Status: released.** `v0.1.0` is on Hex — `{:ash_arcadic, "~> 0.1.0"}`. The full
+> capabilities roadmap has shipped (11 slices, 692 tests incl. live-ArcadeDB integration,
+> dialyzer clean). Working rules for contributors are in
 > [`AGENTS.md`](https://github.com/baselabs/ash_arcadic/blob/main/AGENTS.md); consumer
 > usage rules (the fine print per feature) are in [`usage-rules.md`](usage-rules.md).
 
-**Try it in 5 minutes:**
-[`livebooks/tour.livemd`](https://github.com/baselabs/ash_arcadic/blob/main/livebooks/tour.livemd) — a
-runnable Livebook tour of the whole surface (CRUD → queries → keyset streaming →
-concurrent bulk → multitenancy → vector search → graph traversal) against a
-throwaway database. Every cell is verified against a live ArcadeDB.
+## Try it in 5 minutes
+
+[![Run in Livebook](https://livebook.dev/badge/v1/blue.svg)](https://livebook.dev/run?url=https%3A%2F%2Fgithub.com%2Fbaselabs%2Fash_arcadic%2Fblob%2Fmain%2Flivebooks%2Ftour.livemd)
+
+[`livebooks/tour.livemd`](https://github.com/baselabs/ash_arcadic/blob/main/livebooks/tour.livemd)
+is a runnable Livebook tour of the whole surface (CRUD → queries → keyset streaming →
+concurrent bulk → multitenancy → vector search → graph traversal) against a throwaway
+database. Every cell is verified against a live ArcadeDB. Click the badge (needs a running
+[Livebook](https://livebook.dev)), or open the file from a local clone.
 
 ## What it supports
 
