@@ -97,7 +97,7 @@ defmodule AshArcadic.Changes.DestroyEdge do
   # Count-decode: [_|_] echoes `<deleted>` per removed edge (E3) → :ok; [] → the
   # WHERE matched nothing → StaleRecord (fail-closed). Never row_to_attrs the echo.
   defp run_destroy(conn, cypher, params, resource, edge, src_key, dest_id) do
-    case Arcadic.command(conn, cypher, params) do
+    case DataLayer.write_command(conn, cypher, params) do
       {:ok, [_ | _]} ->
         {:ok, :destroyed}
 

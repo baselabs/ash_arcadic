@@ -116,7 +116,7 @@ defmodule AshArcadic.Changes.CreateEdge do
          )}
 
       :ok ->
-        case Arcadic.command(conn, cypher, params) do
+        case DataLayer.write_command(conn, cypher, params) do
           {:ok, [_ | _]} ->
             # A non-empty MATCH bound the tenant-scoped endpoints and applied the
             # MERGE/CREATE; endpoint-PK uniqueness is a host-app index concern

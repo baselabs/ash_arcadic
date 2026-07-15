@@ -164,18 +164,23 @@ _An Ash DataLayer for ArcadeDB (native OpenCypher over HTTP)._
   pool-safe): Ash runs INDEPENDENT relationship/aggregate loads concurrently on a read (each its own
   pooled connection; a transactional action still runs sync). This is always safe and deterministic —
   the marquee async value.
-- **Concurrent bulk writes need adequately-BUCKETED types.** Advertising `:async_engine` also lets
-  `Ash.bulk_*` run batches concurrently when you pass `max_concurrency > 1`. On ArcadeDB, concurrent
-  writes to the SAME vertex type contend on that type's **buckets** — a type with too few buckets (the
-  default when a type is auto-created on first write) throws `ConcurrentModificationException`
-  (HTTP 503) under concurrency, and since batches are separate transactions the result can be a
-  PARTIAL write returned as `:partial_success` (probe-verified). **Create the type with buckets ≥ your
-  `max_concurrency`** (`CREATE VERTEX TYPE X BUCKETS 32`, host-side per the transport/schema boundary —
-  ArcadeDB caps buckets around 32) and concurrent bulk writes converge with zero conflicts. Even so,
-  ArcadeDB's optimistic MVCC leaves a small residual at very high concurrency, so **always check
-  `result.status`/`.error_count` and re-drive failed rows** (a conflict commits nothing → re-driving
-  is idempotent). The default (`max_concurrency: 1`, sequential) is always safe. A robust
-  guaranteed-convergence path (per-type write serialization) is tracked as a follow-up slice.
+- **Concurrent bulk writes: use `transaction: false` — they CONVERGE.** Advertising `:async_engine`
+  also lets `Ash.bulk_*` run batches concurrently when you pass `max_concurrency > 1`. On ArcadeDB,
+  concurrent writes to one vertex type contend on that type's **buckets** (optimistic-lock
+  `ConcurrentModificationException`). Every AshArcadic AUTOCOMMIT write statement retries the
+  conflict at TWO levels — ArcadeDB's server-side statement retry (arcadic's `retries:` body param)
+  plus a client-side jittered-backoff retry — both idempotency-safe by construction (an autocommit
+  statement is all-or-nothing; nothing was applied on the failed attempt) and Ash hooks are NEVER
+  re-fired (the retry lives below the data layer, around one HTTP command). So
+  `Ash.bulk_create(rows, R, :create, transaction: false, max_concurrency: 8)` converges fully even
+  on a default-bucket type (probe-verified: deterministic 80/80 across 10 runs; each batch is ONE
+  `UNWIND` statement, so `transaction: false` costs no atomicity vs a single-statement session).
+  **The default `transaction: :batch` opens a session per batch**, whose conflicts surface at COMMIT
+  where no statement retry is safe (re-running would re-fire hooks) — under concurrency it can
+  return `:partial_success`: there, pre-create hot types with buckets ≥ concurrency
+  (`CREATE VERTEX TYPE X BUCKETS 32`, host-side; ArcadeDB caps ~32) and check
+  `result.status`/`.error_count`. Retry knob: `config :ash_arcadic, :write_conflict_retries, N`
+  (client attempts, default 5; 1 disables the client layer).
 - **Read-path value-free redaction.** A non-encodable value in a read filter literal (a raw non-UTF8
   binary nested in a `:map`/`:list`) fails closed value-free — a `%QueryFailed{}` naming the failure
   CLASS, never the bytes — at every read wire site (flat, aggregate/count, combination, traversal,

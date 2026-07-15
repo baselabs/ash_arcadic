@@ -1915,7 +1915,7 @@ defmodule AshArcadic.DataLayer do
         cypher = "CREATE (n:#{label} $props)#{atomic_set} RETURN n"
         params = Map.merge(atomic_params, %{"props" => props})
 
-        case Arcadic.command(conn, cypher, params) do
+        case write_command(conn, cypher, params) do
           {:ok, [row]} ->
             {:ok,
              struct(
@@ -2025,7 +2025,7 @@ defmodule AshArcadic.DataLayer do
       cypher = "UNWIND $rows AS row CREATE (n:#{label}) SET n += row#{atomic_set} RETURN n"
 
       conn
-      |> Arcadic.command(cypher, Map.merge(atomic_params, %{"rows" => rows}))
+      |> write_command(cypher, Map.merge(atomic_params, %{"rows" => rows}))
       |> decode_bulk_result(resource, entries, return_records?)
     else
       # A sensitive/non-stored/discriminator atomic target normalizes to value-free CreateFailed
@@ -2094,7 +2094,7 @@ defmodule AshArcadic.DataLayer do
           "ON CREATE SET n += r.__arcadic_all__#{create_set} ON MATCH SET n += r.__arcadic_set__#{match_set} RETURN n"
 
       conn
-      |> Arcadic.command(cypher, Map.merge(params, %{"rows" => rows}))
+      |> write_command(cypher, Map.merge(params, %{"rows" => rows}))
       |> decode_bulk_result(resource, entries, return_records?)
     else
       # A sensitive/non-stored/discriminator atomic target normalizes to value-free
@@ -2297,7 +2297,7 @@ defmodule AshArcadic.DataLayer do
           |> Map.merge(%{"props" => props, "on_match" => on_match})
           |> Map.merge(params)
 
-        case Arcadic.command(conn, cypher, params) do
+        case write_command(conn, cypher, params) do
           {:ok, [row]} ->
             {:ok,
              struct(
@@ -2423,7 +2423,7 @@ defmodule AshArcadic.DataLayer do
             decode_update_result(
               resource,
               redacted_filter(pk),
-              Arcadic.command(conn, cypher, params)
+              write_command(conn, cypher, params)
             )
 
           {:error, _} ->
@@ -2496,7 +2496,7 @@ defmodule AshArcadic.DataLayer do
       return? = Map.get(opts, :return_records?, false)
       cypher = "MATCH (n:#{label}) #{where} SET #{set_clause}#{return_suffix(return?)}"
 
-      decode_query_write(resource, return?, Arcadic.command(conn, cypher, params))
+      decode_query_write(resource, return?, write_command(conn, cypher, params))
     else
       {:error, %AshArcadic.Errors.UnsupportedFilter{}} ->
         {:error,
@@ -2615,7 +2615,7 @@ defmodule AshArcadic.DataLayer do
             decode_destroy_result(
               resource,
               redacted_filter(pk),
-              Arcadic.command(conn, cypher, params)
+              write_command(conn, cypher, params)
             )
 
           {:error, _} ->
@@ -2713,7 +2713,7 @@ defmodule AshArcadic.DataLayer do
           "MATCH (n:#{label}) #{where} DETACH DELETE n"
         end
 
-      decode_destroy_query(resource, return?, Arcadic.command(conn, cypher, params))
+      decode_destroy_query(resource, return?, write_command(conn, cypher, params))
     else
       # The encode gate already returns a value-free %QueryFailed{} — pass it through.
       {:error, %QueryFailed{}} = err ->
@@ -3034,7 +3034,7 @@ defmodule AshArcadic.DataLayer do
     case encode_gate(resource, params, UpdateFailed) do
       :ok ->
         resource
-        |> decode_query_write(true, Arcadic.command(conn, cypher, params))
+        |> decode_query_write(true, write_command(conn, cypher, params))
         |> guard_update_many_cardinality(resource)
 
       {:error, _} = err ->
@@ -3142,6 +3142,72 @@ defmodule AshArcadic.DataLayer do
     with :ok <- read_encode_gate(params) do
       Arcadic.query(conn, cypher, params)
     end
+  end
+
+  # Client-side conflict-retry attempts (1 initial + retries), the per-attempt server-side
+  # `retries:` budget, and the client backoff cap. Config: `config :ash_arcadic,
+  # :write_conflict_retries, N` sets the CLIENT attempts (default 5; 1 disables the client retry —
+  # the server-side `retries: 10` still rides every autocommit write).
+  @write_conflict_attempts 5
+  @write_server_retries 10
+  @write_backoff_cap_ms 100
+
+  # The shared WRITE wire helper (cross-vendor F1, fixed at the transport layer): a write statement
+  # conflicting on an optimistic lock (`ConcurrentModificationException` — concurrent writes
+  # contending on one type's buckets) is retried at TWO levels, both idempotency-safe BY
+  # CONSTRUCTION for an AUTOCOMMIT statement (all-or-nothing: nothing was applied on the failed
+  # attempt), and Ash hooks are NEVER re-fired — the retry lives below the data layer, around one
+  # HTTP command:
+  #   1. server-side (`retries:` body param) — the server re-executes the statement (fast, but no
+  #      backoff, so synchronized contenders can exhaust it);
+  #   2. client-side — jittered exponential backoff de-correlates the herd, bounded attempts.
+  # A SESSION conn passes through untouched: its conflicts surface at COMMIT (where no statement
+  # retry is safe — re-running would re-fire Ash hooks), keeping the documented buckets +
+  # check-`.status` guidance for transactional batches. A timeout/lost response is deliberately
+  # NOT retried (post-send ambiguity — a committed-but-unacked write would duplicate). This makes
+  # concurrent autocommit writes (Ash.bulk_* with `transaction: false` + `max_concurrency > 1`)
+  # CONVERGE instead of partial-failing. Wired at EVERY write `Arcadic.command` site (9 in this
+  # module + the two edge changes).
+  def write_command(conn, cypher, params) do
+    if is_binary(conn.session_id) do
+      Arcadic.command(conn, cypher, params)
+    else
+      autocommit_write(conn, cypher, params, 1)
+    end
+  end
+
+  # Retriable autocommit-write classes: `:concurrent_modification` (the MVCC bucket-contention
+  # conflict) and `:server_error` — arcadic's catch-all REMAINDER after the deterministic classes
+  # get their own atoms (:parse_error/:duplicate_key/:not_idempotent/:unauthorized/
+  # :database_not_found/:timeout). Probed 2026-07-15: concurrent FIRST writes to a brand-new type
+  # race its auto-creation and throw `CommandExecutionException` → :server_error (cold-start
+  # stampede) — transient, converges on retry. A deterministic :server_error merely re-fails with
+  # bounded extra latency (autocommit is all-or-nothing, so re-running is always SAFE); :timeout is
+  # deliberately NOT retriable (post-send ambiguity — a committed-but-unacked write would duplicate).
+  @autocommit_retriable [:concurrent_modification, :server_error]
+
+  defp autocommit_write(conn, cypher, params, attempt) do
+    case Arcadic.command(conn, cypher, params, retries: @write_server_retries) do
+      {:error, %Arcadic.Error{reason: reason}} = error when reason in @autocommit_retriable ->
+        if attempt < write_conflict_attempts() do
+          Process.sleep(write_backoff_ms(attempt))
+          autocommit_write(conn, cypher, params, attempt + 1)
+        else
+          error
+        end
+
+      other ->
+        other
+    end
+  end
+
+  defp write_conflict_attempts do
+    Application.get_env(:ash_arcadic, :write_conflict_retries, @write_conflict_attempts)
+  end
+
+  # Exponential base + FULL jitter, capped — de-correlates concurrent retriers (thundering herd).
+  defp write_backoff_ms(attempt) do
+    :rand.uniform(min(5 * Bitwise.bsl(1, attempt), @write_backoff_cap_ms))
   end
 
   # Value-free encode gate for READ params (build_where/to_cypher-derived, so caller-poisonable). A

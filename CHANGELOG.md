@@ -19,11 +19,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   time — no sort-index DSL, so add a host-side index for deep-pagination speed.
 - **`:async_engine` — concurrent reads/loads (Slice 11).** Probe-verified pool-safe: Ash runs
   independent relationship/aggregate loads concurrently on a read (transactional actions stay sync) —
-  always safe/deterministic. Opt-in concurrent bulk writes (`max_concurrency > 1`) require the vertex
-  type to have adequate **buckets** (`CREATE VERTEX TYPE X BUCKETS N`, N ≥ max_concurrency, host-side)
-  — the default bucket count contends on ArcadeDB's MVCC and returns `:partial_success`. With
-  adequate buckets they converge; a small residual remains at very high concurrency, so check
-  `.status`/`.error_count` and re-drive failed rows. See usage-rules.
+  always safe/deterministic.
+- **Concurrent bulk writes converge (Slice 11).** Every autocommit write statement retries an
+  optimistic-lock conflict (`ConcurrentModificationException` — bucket contention) at two levels:
+  ArcadeDB's server-side statement retry (arcadic `retries:`) + a client-side jittered-backoff retry —
+  both idempotency-safe by construction (autocommit is all-or-nothing) and Ash hooks are never
+  re-fired. `Ash.bulk_*` with `transaction: false, max_concurrency: N` converges fully even on a
+  default-bucket type (deterministic 80/80 × 10 runs; a batch is one `UNWIND` statement, so
+  `transaction: false` costs no atomicity). The default `transaction: :batch` (session per batch)
+  conflicts at COMMIT where no statement retry is safe — pre-create hot types with buckets ≥
+  concurrency and check `.status` there. Knob: `config :ash_arcadic, :write_conflict_retries, N`.
 
 ### Fixed
 
