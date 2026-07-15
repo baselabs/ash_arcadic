@@ -34,6 +34,12 @@ defmodule AshArcadic.Test.KeysetDoc do
     attribute :org_id
   end
 
+  calculations do
+    # A NON-STORED expression calc — sorting a keyset by it makes Ash build a cursor filter over a
+    # computed (unstored) Ref, which the S6 filter guard rejects (Task 3 fail-closed path 2).
+    calculate :bumped_score, :integer, expr(score + 1)
+  end
+
   actions do
     default_accept [:id, :org_id, :score, :title, :rank, :active, :created, :blob, :amount]
     defaults [:create]

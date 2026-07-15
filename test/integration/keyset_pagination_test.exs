@@ -13,7 +13,9 @@ defmodule AshArcadic.Integration.KeysetPaginationTest do
   """
   use AshArcadic.Test.IntegrationCase
   require Ash.Query
+  require Ash.Expr
 
+  alias Ash.Query.Combination
   alias AshArcadic.Test.KeysetDoc
 
   setup %{admin: admin} do
@@ -124,5 +126,149 @@ defmodule AshArcadic.Integration.KeysetPaginationTest do
     assert streamed == ground_truth(query, "org1")
     assert streamed == Enum.uniq(streamed)
     assert length(streamed) == 10
+  end
+
+  # === Task 3: per-type correctness (F4). Each admitted stored sortable type — the keyset walk
+  # reproduces Ash's full-read order across DUPLICATE values (pk tiebreaker). integer is Task 2;
+  # utc_datetime rides the T3a temporal-comparison fix (datetime() param wrapper). ===
+
+  test "STRING sort: keyset walk == full-read order (collation, duplicate titles)" do
+    for {id, t} <- [
+          {"s1", "Ann"},
+          {"s2", "Bo"},
+          {"s3", "Ann"},
+          {"s4", "Cy"},
+          {"s5", "Bo"},
+          {"s6", "Ann"}
+        ],
+        do: seed(id, "org1", %{title: t})
+
+    query = KeysetDoc |> Ash.Query.sort(title: :asc)
+    walked = keyset_walk(query, "org1", 2)
+    assert walked == ground_truth(query, "org1")
+    assert length(walked) == 6
+  end
+
+  test "FLOAT sort: keyset walk == full-read order (duplicate + negative ranks)" do
+    for {id, r} <- [
+          {"f1", 1.5},
+          {"f2", 0.5},
+          {"f3", 1.5},
+          {"f4", 2.25},
+          {"f5", 0.5},
+          {"f6", -3.0}
+        ],
+        do: seed(id, "org1", %{rank: r})
+
+    query = KeysetDoc |> Ash.Query.sort(rank: :asc)
+    walked = keyset_walk(query, "org1", 2)
+    assert walked == ground_truth(query, "org1")
+    assert length(walked) == 6
+  end
+
+  test "BOOLEAN sort: keyset walk == full-read order (many true/false + pk tiebreaker)" do
+    for {id, a} <- [
+          {"b1", true},
+          {"b2", false},
+          {"b3", true},
+          {"b4", false},
+          {"b5", true},
+          {"b6", false}
+        ],
+        do: seed(id, "org1", %{active: a})
+
+    query = KeysetDoc |> Ash.Query.sort(active: :asc)
+    walked = keyset_walk(query, "org1", 2)
+    assert walked == ground_truth(query, "org1")
+    assert length(walked) == 6
+  end
+
+  test "UTC_DATETIME sort: keyset walk == full-read order (T3a temporal fix; duplicate timestamps)" do
+    for {id, ts} <- [
+          {"t1", ~U[2024-01-02 03:04:05Z]},
+          {"t2", ~U[2023-12-31 23:59:59Z]},
+          {"t3", ~U[2024-01-02 03:04:05Z]},
+          {"t4", ~U[2024-06-15 12:00:00Z]},
+          {"t5", ~U[2023-12-31 23:59:59Z]}
+        ],
+        do: seed(id, "org1", %{created: ts})
+
+    query = KeysetDoc |> Ash.Query.sort(created: :asc)
+    walked = keyset_walk(query, "org1", 2)
+    assert walked == ground_truth(query, "org1")
+
+    # Non-vacuity: the FULL 5-row walk. Pre-T3a-fix the datetime cursor comparison returned [] and the
+    # walk silently truncated to 2 — this length assertion is the tripwire for that silent-skip class.
+    assert length(walked) == 5
+  end
+
+  # === Task 3: fail-closed paths (F3) — TWO mechanisms, TWO error types (a single "S6 rejects all
+  # three" test would be vacuous for binary/decimal, which are stopped EARLIER at the sort gate). ===
+
+  test "fail-closed (sort gate): a keyset over a :binary sort field is rejected UnsortableField" do
+    seed("x", "org1", %{score: 1})
+
+    assert {:error, error} =
+             KeysetDoc |> Ash.Query.sort(blob: :asc) |> Ash.read(tenant: "org1", page: [limit: 2])
+
+    assert Enum.any?(
+             List.wrap(error) ++ List.wrap(Map.get(error, :errors)),
+             &match?(%Ash.Error.Query.UnsortableField{field: :blob}, &1)
+           )
+  end
+
+  test "fail-closed (sort gate): a keyset over a :decimal sort field is rejected UnsortableField" do
+    seed("x", "org1", %{score: 1})
+
+    assert {:error, error} =
+             KeysetDoc
+             |> Ash.Query.sort(amount: :asc)
+             |> Ash.read(tenant: "org1", page: [limit: 2])
+
+    assert Enum.any?(
+             List.wrap(error) ++ List.wrap(Map.get(error, :errors)),
+             &match?(%Ash.Error.Query.UnsortableField{field: :amount}, &1)
+           )
+  end
+
+  test "fail-closed (filter gate): a keyset over a NON-STORED calc sort fails value-free on the cursor page (F5)" do
+    for {id, s} <- [{"x", 3}, {"y", 1}, {"z", 2}, {"w", 1}], do: seed(id, "org1", %{score: s})
+
+    query = KeysetDoc |> Ash.Query.sort(bumped_score: :asc)
+
+    # Page 1 (no cursor) succeeds; the CURSOR page builds a keyset filter over the non-stored calc Ref
+    # (:__calc__0), which the S6 filter guard rejects value-free (UnsupportedFilter) — a LOUD fail, not
+    # a silent mis-page. (bumped_score = score + 1 over the STORED score expands to a translatable
+    # expression on the first page, but the cursor's IS NULL / comparison arm references the calc Ref.)
+    p1 = Ash.read!(query, tenant: "org1", page: [limit: 1])
+    cursor = List.last(p1.results).__metadata__.keyset
+
+    assert {:error, error} = Ash.read(query, tenant: "org1", page: [limit: 1, after: cursor])
+
+    assert Enum.any?(
+             List.wrap(error) ++ List.wrap(Map.get(error, :errors)),
+             &match?(%AshArcadic.Errors.UnsupportedFilter{}, &1)
+           )
+  end
+
+  # === Task 3 / F5: keyset over a COMBINATION query is SUPPORTED — the cursor lands in the outer
+  # filter of the combination path and pages correctly (defined behavior, not a silent skip). ===
+
+  test "keyset over a COMBINATION query pages correctly (cursor in the outer filter)" do
+    for {id, s} <- [{"x", 3}, {"y", 1}, {"z", 2}], do: seed(id, "org1", %{score: s})
+
+    combo =
+      KeysetDoc
+      |> Ash.Query.for_read(:read)
+      |> Ash.Query.combination_of([
+        Combination.base(filter: Ash.Expr.expr(score == 1)),
+        Combination.union(filter: Ash.Expr.expr(score == 2))
+      ])
+      |> Ash.Query.sort(score: :asc)
+
+    # base(score==1)=y, union(score==2)=z → sorted keyset walk = [y, z], each once, no gap.
+    walked = keyset_walk(combo, "org1", 1)
+    assert walked == ground_truth(combo, "org1")
+    assert walked == ["y", "z"]
   end
 end
