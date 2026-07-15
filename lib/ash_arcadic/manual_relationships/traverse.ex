@@ -399,7 +399,11 @@ defmodule AshArcadic.ManualRelationships.Traverse do
 
       {cypher, params} = build_traverse(spec)
 
-      case Arcadic.query(conn, cypher, params) do
+      # Value-free read encode-gate (F2), shared with the flat/aggregate/combination read sites via
+      # DataLayer.gated_query/3. The $ids are already checked at check_ids_encodable/1 above; this
+      # backstops the FULL params map ($tenant included) before the wire — a non-encodable value
+      # returns a value-free %QueryFailed{}, never a Jason.EncodeError echoing the bytes.
+      case DataLayer.gated_query(conn, cypher, params) do
         {:ok, rows} ->
           reach_spec = %{
             src_pkey: src_pkey,
@@ -419,6 +423,9 @@ defmodule AshArcadic.ManualRelationships.Traverse do
              per_source_limit,
              per_source_offset
            ), length(rows)}
+
+        {:error, %QueryFailed{} = gate_error} ->
+          {{:error, gate_error}, 0}
 
         {:error, error} ->
           {{:error, wrap_traverse_error(error)}, 0}

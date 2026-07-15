@@ -18,6 +18,11 @@ defmodule AshArcadic.Test.VectorDoc do
     attribute :tokens, {:array, :integer}, public?: true
     attribute :weights, {:array, :float}, public?: true
     attribute :body, :string, public?: true
+
+    # A :map attribute — the vehicle for the read-path encode-gate tripwire on the vector candidate
+    # query (Slice 11 T5): a caller filter `meta == ^%{nested non-UTF8 binary}` rides into
+    # candidate_rid_cypher's params and must fail closed value-free before the wire.
+    attribute :meta, :map, public?: true
   end
 
   multitenancy do
@@ -26,7 +31,7 @@ defmodule AshArcadic.Test.VectorDoc do
   end
 
   actions do
-    default_accept [:id, :org, :name, :status, :embedding, :tokens, :weights, :body]
+    default_accept [:id, :org, :name, :status, :embedding, :tokens, :weights, :body, :meta]
     defaults [:create, :update, :destroy]
 
     read :read do

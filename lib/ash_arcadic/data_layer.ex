@@ -758,10 +758,13 @@ defmodule AshArcadic.DataLayer do
       {:ok, conn} ->
         {cypher, params} = AshArcadic.Query.to_cypher(query)
 
-        case Arcadic.query(conn, cypher, params) do
+        case gated_query(conn, cypher, params) do
           {:ok, rows} ->
             records = decode_records(resource, rows)
             attach_computed(records, aggs, query.calculations, resource)
+
+          {:error, %QueryFailed{} = gate_error} ->
+            {:error, gate_error}
 
           {:error, error} ->
             {:error,
@@ -937,7 +940,7 @@ defmodule AshArcadic.DataLayer do
   defp vector_candidate_search(conn, query, type, vs, tenant_pred) do
     {cypher, params} = AshArcadic.Query.candidate_rid_cypher(query, tenant_pred)
 
-    case Arcadic.query(conn, cypher, params) do
+    case gated_query(conn, cypher, params) do
       {:ok, rows} ->
         rids = rows |> Enum.map(&Map.get(&1, "@rid")) |> Enum.reject(&is_nil/1)
 
@@ -958,6 +961,9 @@ defmodule AshArcadic.DataLayer do
           true ->
             run_vector_kind(conn, type, vs, filter: rids)
         end
+
+      {:error, %QueryFailed{} = gate_error} ->
+        {:error, gate_error}
 
       {:error, error} ->
         {:error, vector_failed(redact_db_error(error))}
@@ -1179,9 +1185,12 @@ defmodule AshArcadic.DataLayer do
   defp run_native_combination(conn, query, resource) do
     {cypher, params} = AshArcadic.Query.to_cypher(query)
 
-    case Arcadic.query(conn, cypher, params) do
+    case gated_query(conn, cypher, params) do
       {:ok, rows} ->
         {:ok, decode_records(resource, rows)}
+
+      {:error, %QueryFailed{} = gate_error} ->
+        {:error, gate_error}
 
       {:error, error} ->
         {:error,
@@ -1237,9 +1246,12 @@ defmodule AshArcadic.DataLayer do
 
     {cypher, params} = AshArcadic.Query.to_cypher(branch2)
 
-    case Arcadic.query(conn, cypher, params) do
+    case gated_query(conn, cypher, params) do
       {:ok, rows} ->
         {:ok, decode_records(resource, rows)}
+
+      {:error, %QueryFailed{} = gate_error} ->
+        {:error, gate_error}
 
       {:error, error} ->
         {:error,
@@ -1771,9 +1783,12 @@ defmodule AshArcadic.DataLayer do
   defp validate_agg_sort(_agg, _resource), do: :ok
 
   defp run_aggregate_statement(conn, cypher, params, agg, attr_types) do
-    case Arcadic.query(conn, cypher, params) do
+    case gated_query(conn, cypher, params) do
       {:ok, rows} ->
         {:ok, AshArcadic.Aggregate.decode(rows, agg, attr_types)}
+
+      {:error, %QueryFailed{} = gate_error} ->
+        {:error, gate_error}
 
       {:error, error} ->
         {:error,
@@ -3111,6 +3126,41 @@ defmodule AshArcadic.DataLayer do
     "attribute #{inspect(key)} is not JSON-encodable " <>
       "(raw binary nested in a :map/:list value? encode it app-side, e.g. Base.encode64, " <>
       "or use a :binary-typed attribute)"
+  end
+
+  # The shared read wire helper (F2): value-free encode-gate the READ params, then run the query.
+  # Wired at EVERY read `Arcadic.query(conn, cypher, params)` site (5 in this module + traverse.ex).
+  # Returns `{:ok, rows}` | `{:error, %QueryFailed{}}` (the gate — a non-encodable param, value-free)
+  # | `{:error, raw}` (an arcadic/db error the CALLER redacts). The two error shapes are distinct: the
+  # gate's %QueryFailed{} is ash_arcadic's own struct, never what Arcadic.query returns — so each site
+  # passes the gate error through and redacts only the raw db error.
+  def gated_query(conn, cypher, params) do
+    with :ok <- read_encode_gate(params) do
+      Arcadic.query(conn, cypher, params)
+    end
+  end
+
+  # Value-free encode gate for READ params (build_where/to_cypher-derived, so caller-poisonable). A
+  # non-UTF8 binary nested in a `:map`/`:list` filter literal is not base64'd by serialize_value →
+  # reaches the wire, where Req/Jason raises `Jason.EncodeError` with the bytes in its message
+  # (AGENTS.md Rule 4) AND an uncaught crash crosses the callback boundary. This catches it BEFORE the
+  # wire and returns a value-free %QueryFailed{}. Read params are POSITIONAL ($paramN), so the reason
+  # names the failure CLASS, never an attribute or value (encode_error_reason/1's "attribute $paramN…"
+  # would be value-free but semantically wrong for a read).
+  defp read_encode_gate(params) do
+    case encode_check(params) do
+      :ok ->
+        :ok
+
+      {:error, _key} ->
+        {:error,
+         QueryFailed.exception(query: "ArcadeDB read query", reason: read_encode_error_reason())}
+    end
+  end
+
+  defp read_encode_error_reason do
+    "a read filter value is not JSON-encodable " <>
+      "(a raw non-UTF8 binary in a filter literal? encode it app-side, e.g. Base.encode64)"
   end
 
   defp validated_label(resource),
