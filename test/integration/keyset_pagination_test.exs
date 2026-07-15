@@ -122,6 +122,31 @@ defmodule AshArcadic.Integration.KeysetPaginationTest do
     assert length(walked) == 10
   end
 
+  test "keyset before: (backward) pagination returns the preceding page (operator flips to <)" do
+    seed_integer_dataset()
+    query = KeysetDoc |> Ash.Query.sort(score: :asc)
+
+    p1 = Ash.read!(query, tenant: "org1", page: [limit: 3])
+
+    p2 =
+      Ash.read!(query,
+        tenant: "org1",
+        page: [limit: 3, after: List.last(p1.results).__metadata__.keyset]
+      )
+
+    # before: the FIRST row of page 2 walks BACKWARD to exactly page 1's three rows (the cursor
+    # operator flips to <). Non-vacuity: p1 is the ground-truth first three (proves it's not an
+    # accidental full read).
+    before_page =
+      Ash.read!(query,
+        tenant: "org1",
+        page: [limit: 3, before: List.first(p2.results).__metadata__.keyset]
+      )
+
+    assert Enum.map(before_page.results, & &1.id) == Enum.map(p1.results, & &1.id)
+    assert Enum.map(p1.results, & &1.id) == Enum.take(ground_truth(query, "org1"), 3)
+  end
+
   test "the NULL-score row appears exactly once and in the same slot as the full-read order" do
     seed_integer_dataset()
     query = KeysetDoc |> Ash.Query.sort(score: :asc)
