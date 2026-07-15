@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`upsert_condition` support (single-row + bulk).** Previously the condition was silently ignored —
+  every conditional upsert clobbered the matched row. Now: condition true → update applies; false →
+  skipped (single-row `StaleRecord`, or the existing row flagged `upsert_skipped` under
+  `return_skipped_upsert?: true`; bulk omits skipped rows from returned records per Ash semantics);
+  no match → plain create. Conditional upserts run a tenant-scoped three-step flow (conditional
+  UPDATE → existence probe → CREATE), atomic under the action's transaction; condition literals are
+  encode-gated value-free. Cross-tenant isolation mutation-proven.
+
 - **Keyset pagination + `Ash.stream!` (Slice 11).** `can?(:keyset)` advertised (with the required
   `data_layer_keyset_by_default?/0 → false` callback): `page: [after:/before: cursor, limit:, count:]`
   and `Ash.stream!` use efficient cursor pagination over any stored comparable sort attribute

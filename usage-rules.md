@@ -248,6 +248,17 @@ _An Ash DataLayer for ArcadeDB (native OpenCypher over HTTP)._
   re-runs. ArcadeDB enforces no identity uniqueness, so two CONCURRENT bulk upserts of the SAME NEW
   identity can each MATCH nothing and both CREATE — duplicate rows. This is the same limitation as the
   single-row upsert; add a unique index or serialize writers if you need a hard guarantee.
+- **`upsert_condition` is honored (single-row AND bulk).** The condition gates the ON-MATCH update
+  against the EXISTING row's values: condition true → update applies; condition false → the update is
+  SKIPPED — single-row default raises `StaleRecord`, `return_skipped_upsert?: true` returns the
+  existing row flagged `__metadata__.upsert_skipped`; in bulk (without `return_skipped_upsert?`) a
+  skipped row is OMITTED from the returned records (Ash's own bulk semantics), never an error. No
+  matched row → plain CREATE (the condition gates ON MATCH only). Mechanics: a conditional upsert runs
+  the Ash-reference three-step flow (conditional UPDATE through the tenant-scoped identity → existence
+  probe → CREATE) instead of one MERGE — atomic under the action's transaction (Ash creates default
+  `transaction?: true`); a conditional BULK upsert routes per-row through that flow (one statement per
+  row, not one UNWIND). Tenancy holds: another tenant's same-PK row is never evaluated or mutated
+  (mutation-proven). The condition's literals are encode-gated value-free like every write param.
 
 ## Query & filter push-down (Plan 2)
 

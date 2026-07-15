@@ -2001,7 +2001,10 @@ defmodule AshArcadic.DataLayer do
          reason: "bulk upsert requires a non-empty identity (no primary key or upsert keys)"
        )}
     else
-      run_bulk_upsert(resource, entries, options, identity_keys)
+      case Map.get(options, :upsert_condition) do
+        nil -> run_bulk_upsert(resource, entries, options, identity_keys)
+        condition -> run_conditional_bulk_upsert(resource, entries, options, condition)
+      end
     end
   end
 
@@ -2015,6 +2018,38 @@ defmodule AshArcadic.DataLayer do
 
       key ->
         {:error, CreateFailed.exception(resource: resource, reason: encode_error_reason(key))}
+    end
+  end
+
+  # A bulk upsert carrying an upsert_condition cannot ride the single UNWIND MERGE (Cypher has no
+  # per-row conditional ON MATCH + skip signal), so each row routes through the single-row
+  # conditional flow. Skip semantics mirror Ash's own bulk fallback (create/bulk.ex): a
+  # condition-rejected row is OMITTED from the returned records — never an error. The
+  # `return_skipped_upsert?: true` variant never reaches this callback: Ash falls back to
+  # single-row upserts unless `:bulk_upsert_return_skipped` is advertised (it is not), and the
+  # single-row flow flags those records itself. Ash groups a batch by {atomics, filter}, so
+  # threading the shared condition onto each changeset (Ash.Changeset.filter/2 — exactly what
+  # Ash's handle_upsert does on the single-row path) is uniform across the batch.
+  defp run_conditional_bulk_upsert(resource, entries, options, condition) do
+    keys = options.upsert_keys || Ash.Resource.Info.primary_key(resource)
+    return_records? = Map.get(options, :return_records?, false)
+
+    entries
+    |> Enum.reduce_while({:ok, []}, fn {changeset, _props}, {:ok, acc} ->
+      case do_upsert(resource, Ash.Changeset.filter(changeset, condition), keys) do
+        {:ok, %{__metadata__: %{upsert_skipped: true}}} ->
+          {:cont, {:ok, acc}}
+
+        {:ok, record} ->
+          {:cont, {:ok, [BulkHelpers.put_metadata(record, changeset) | acc]}}
+
+        {:error, _} = err ->
+          {:halt, err}
+      end
+    end)
+    |> case do
+      {:ok, records} -> if return_records?, do: {:ok, Enum.reverse(records)}, else: :ok
+      {:error, _} = err -> err
     end
   end
 
@@ -2293,39 +2328,27 @@ defmodule AshArcadic.DataLayer do
        ) do
     case write_conn(resource, changeset) do
       {:ok, conn} ->
-        label = validated_label(resource)
         {match_pattern, match_params} = merge_identity(resource, changeset, identity_keys)
 
-        cypher =
-          "MERGE (n:#{label} #{match_pattern}) " <>
-            "ON CREATE SET n += $props#{create_set} ON MATCH SET n += $on_match#{match_set} RETURN n"
+        spec = %{
+          conn: conn,
+          label: validated_label(resource),
+          match_pattern: match_pattern,
+          match_params: match_params,
+          props: props,
+          on_match: on_match,
+          match_set: match_set,
+          create_set: create_set,
+          atomic_params: params
+        }
 
-        params =
-          match_params
-          |> Map.merge(%{"props" => props, "on_match" => on_match})
-          |> Map.merge(params)
-
-        case write_command(conn, cypher, params) do
-          {:ok, [row]} ->
-            {:ok,
-             struct(
-               resource,
-               Cast.row_to_attrs(
-                 row,
-                 Info.attribute_map(resource),
-                 Info.attribute_types(resource)
-               )
-             )}
-
-          {:ok, rows} ->
-            {:error,
-             CreateFailed.exception(
-               resource: resource,
-               reason: "upsert matched #{length(rows)} rows (duplicate identity in graph?)"
-             )}
-
-          {:error, error} ->
-            {:error, CreateFailed.exception(resource: resource, reason: redact_db_error(error))}
+        # An upsert_condition arrives as changeset.filter (Ash's handle_upsert stashes it there;
+        # bulk threads it via Ash.Changeset.filter/2). Unconditional upserts keep the original
+        # single-statement MERGE unchanged.
+        if is_nil(changeset.filter) do
+          merge_upsert(resource, spec)
+        else
+          conditional_upsert(resource, changeset, spec)
         end
 
       {:error, reason} ->
@@ -2335,6 +2358,135 @@ defmodule AshArcadic.DataLayer do
            reason: conn_error_reason(reason)
          )}
     end
+  end
+
+  # The unconditional upsert — one MERGE statement (pre-upsert_condition behavior, unchanged).
+  defp merge_upsert(resource, spec) do
+    cypher =
+      "MERGE (n:#{spec.label} #{spec.match_pattern}) " <>
+        "ON CREATE SET n += $props#{spec.create_set} " <>
+        "ON MATCH SET n += $on_match#{spec.match_set} RETURN n"
+
+    params =
+      spec.match_params
+      |> Map.merge(%{"props" => spec.props, "on_match" => spec.on_match})
+      |> Map.merge(spec.atomic_params)
+
+    spec.conn
+    |> write_command(cypher, params)
+    |> decode_upsert_result(resource)
+  end
+
+  # upsert_condition: the ON MATCH update applies ONLY when the condition holds on the EXISTING
+  # row. Cypher's MERGE cannot express a conditional ON MATCH plus a skip signal in one statement,
+  # so this is the Ash-reference (ETS) shape in three steps — atomic under the action's transaction
+  # (Ash create actions default `transaction?: true`); outside one it carries the same
+  # read-then-write window as the reference implementation:
+  #   1. conditional UPDATE through the TENANT-SCOPED identity pattern (merge_identity — another
+  #      tenant's same-PK row is never matched, evaluated, or mutated), WHERE = the translated
+  #      condition (changeset_where, fail-closed on an untranslatable condition);
+  #   2. zero rows → existence probe: an existing row = SKIPPED — returned flagged
+  #      `:upsert_skipped` (Ash maps it to StaleRecord, or returns it under
+  #      `return_skipped_upsert?: true`);
+  #   3. no row at all → plain CREATE (the condition gates ON MATCH only).
+  # The condition's filter literals are caller-poisonable → encode-gated before any DB touch
+  # (Rule 4); the params thread off the atomic accumulator so $paramN never collide.
+  defp conditional_upsert(resource, changeset, spec) do
+    case changeset_where(changeset, "", spec.atomic_params) do
+      {:ok, "", _params} ->
+        # A condition that translates to no clause (vacuously true) is the unconditional upsert.
+        merge_upsert(resource, spec)
+
+      {:ok, where_clause, params} ->
+        conditional_update(resource, spec, where_clause, params)
+
+      # changeset_where's COMPLETE error union (Filter.translate fails closed as
+      # UnsupportedFilter). Value-free normalization (sibling parity with the atomic-fold
+      # rejection): a raw filter-flavored error escaping an upsert callback would be misleading.
+      {:error, %AshArcadic.Errors.UnsupportedFilter{}} ->
+        {:error,
+         CreateFailed.exception(resource: resource, reason: "unsupported upsert condition")}
+    end
+  end
+
+  # Step 1 of the conditional flow: the ON-MATCH update as a conditional UPDATE through the
+  # tenant-scoped identity pattern. Zero rows → step 2 (skip-or-create disambiguation).
+  defp conditional_update(resource, spec, where_clause, params) do
+    with :ok <- encode_gate(resource, params, CreateFailed) do
+      cypher =
+        "MATCH (n:#{spec.label} #{spec.match_pattern}) WHERE #{where_clause} " <>
+          "SET n += $on_match#{spec.match_set} RETURN n"
+
+      update_params =
+        spec.match_params |> Map.put("on_match", spec.on_match) |> Map.merge(params)
+
+      case write_command(spec.conn, cypher, update_params) do
+        {:ok, []} -> conditional_upsert_miss(resource, spec)
+        other -> decode_upsert_result(other, resource)
+      end
+    end
+  end
+
+  # The conditional UPDATE matched nothing: either the row exists but failed the condition
+  # (SKIPPED) or it does not exist (CREATE). The existence probe reads through the same
+  # tenant-scoped identity; its params are the already-gated identity values.
+  defp conditional_upsert_miss(resource, spec) do
+    probe = "MATCH (n:#{spec.label} #{spec.match_pattern}) RETURN n"
+
+    case gated_query(spec.conn, probe, spec.match_params) do
+      {:ok, [row]} ->
+        {:ok, Ash.Resource.put_metadata(decode_upsert_row(resource, row), :upsert_skipped, true)}
+
+      {:ok, []} ->
+        cypher = "CREATE (n:#{spec.label}) SET n += $props#{spec.create_set} RETURN n"
+        params = Map.merge(spec.atomic_params, %{"props" => spec.props})
+
+        spec.conn
+        |> write_command(cypher, params)
+        |> decode_upsert_result(resource)
+
+      {:ok, rows} ->
+        {:error,
+         CreateFailed.exception(
+           resource: resource,
+           reason: "upsert matched #{length(rows)} rows (duplicate identity in graph?)"
+         )}
+
+      {:error, %QueryFailed{} = gate_error} ->
+        {:error, gate_error}
+
+      {:error, error} ->
+        {:error, CreateFailed.exception(resource: resource, reason: redact_db_error(error))}
+    end
+  end
+
+  defp decode_upsert_result({:ok, [row]}, resource), do: {:ok, decode_upsert_row(resource, row)}
+
+  # Defensive: MERGE/CREATE always return their row; a bare [] here is a substrate anomaly,
+  # not a duplicate — name it distinctly (value-free).
+  defp decode_upsert_result({:ok, []}, resource) do
+    {:error, CreateFailed.exception(resource: resource, reason: "upsert returned no row")}
+  end
+
+  # ArcadeDB enforces no PK uniqueness → a MERGE/conditional-update can match 2+ rows.
+  # Fail closed value-free; never silently pick one.
+  defp decode_upsert_result({:ok, rows}, resource) do
+    {:error,
+     CreateFailed.exception(
+       resource: resource,
+       reason: "upsert matched #{length(rows)} rows (duplicate identity in graph?)"
+     )}
+  end
+
+  defp decode_upsert_result({:error, error}, resource) do
+    {:error, CreateFailed.exception(resource: resource, reason: redact_db_error(error))}
+  end
+
+  defp decode_upsert_row(resource, row) do
+    struct(
+      resource,
+      Cast.row_to_attrs(row, Info.attribute_map(resource), Info.attribute_types(resource))
+    )
   end
 
   # Scopes the MERGE identity by the tenant discriminator for `:attribute`

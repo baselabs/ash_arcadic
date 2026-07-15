@@ -10,10 +10,12 @@ defmodule AshArcadic.Test.UpsertThing do
   attributes do
     attribute :code, :string, primary_key?: true, allow_nil?: false, public?: true
     attribute :name, :string, public?: true
+    # Drives upsert_condition tests (a condition over the EXISTING row's value).
+    attribute :version, :integer, public?: true
   end
 
   actions do
-    default_accept [:code, :name]
+    default_accept [:code, :name, :version]
     defaults [:read, :create]
 
     create :upsert do
