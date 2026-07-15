@@ -53,6 +53,9 @@ defmodule AshArcadic.DataLayer.SkeletonTest do
     assert AshArcadic.DataLayer.can?(AshArcadic.Test.Basic, :destroy_query)
     assert AshArcadic.DataLayer.can?(AshArcadic.Test.Basic, :update_many)
 
+    # Slice 11: concurrency capability (probe-verified pool-safe for concurrent reads/loads).
+    assert AshArcadic.DataLayer.can?(AshArcadic.Test.Basic, :async_engine)
+
     assert AshArcadic.DataLayer.can?(AshArcadic.Test.Basic, :vector_search)
     assert AshArcadic.DataLayer.can?(AshArcadic.Test.Basic, {:vector_search, :dense})
     assert AshArcadic.DataLayer.can?(AshArcadic.Test.Basic, {:vector_search, :sparse})

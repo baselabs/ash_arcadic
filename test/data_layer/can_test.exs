@@ -47,6 +47,13 @@ defmodule AshArcadic.DataLayer.CanTest do
     assert AshArcadic.DataLayer.can?(AshArcadic.Test.CrudPerson, :update_many)
   end
 
+  # Slice 11: :async_engine advertised (probe-verified pool-safe for CONCURRENT READS — parallel
+  # independent relationship/aggregate loads; opt-in concurrent bulk writes (max_concurrency > 1)
+  # are MVCC-conflict-prone and fail LOUD — documented in usage-rules, not a silent hazard).
+  test "advertises :async_engine (concurrent reads/loads; bulk-write concurrency documented)" do
+    assert DL.can?(AshArcadic.Test.Basic, :async_engine)
+  end
+
   test ":bulk_create_with_partial_success reflects the D9 probe (default false — whole-batch atomic)" do
     refute AshArcadic.DataLayer.can?(
              AshArcadic.Test.CrudPerson,

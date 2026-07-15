@@ -350,6 +350,15 @@ defmodule AshArcadic.DataLayer do
   def can?(_, {:vector_search, :sparse}), do: true
   def can?(_, {:vector_search, :hybrid}), do: true
 
+  # Slice 11: concurrency. Advertising :async_engine lets Ash run INDEPENDENT relationship/aggregate
+  # loads concurrently on a read (async_limiter.ex:32, gated on !in_transaction? — a transactional
+  # action still runs sync) — probe-verified pool-safe: 200 concurrent tenant-scoped reads returned
+  # each caller ONLY its own tenant's rows, zero cross-talk (scratchpad/probe_async.exs). The flip
+  # ALSO unlocks OPT-IN concurrent bulk writes (create/bulk.ex:917, only when a caller passes
+  # max_concurrency > 1); those race on ArcadeDB's MVCC (ConcurrentModificationException / HTTP 503)
+  # — a LOUD, non-silent failure documented in usage-rules (default bulk writes stay sequential).
+  def can?(_, :async_engine), do: true
+
   def can?(_, _), do: false
 
   # Slice 5 (fail-closed): true when the filter destination carries ANY authorizer. Used by
