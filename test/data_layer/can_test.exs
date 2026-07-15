@@ -97,15 +97,37 @@ defmodule AshArcadic.DataLayer.CanTest do
     refute DL.can?(AshArcadic.Test.Basic, {:lateral_join, []})
   end
 
-  test "sort allowed except on binary/decimal and COMPOSITE (map/array) storage (unorderable)" do
-    assert DL.can?(AshArcadic.Test.Basic, {:sort, :string})
-    assert DL.can?(AshArcadic.Test.Basic, {:sort, :integer})
+  test "sort is an ALLOWLIST of orderable storage; binary/decimal/composites/vector/unknown fail closed" do
+    # The orderable scalars + date + the temporal family are sortable…
+    for s <- [
+          :string,
+          :integer,
+          :float,
+          :boolean,
+          :ci_string,
+          :uuid,
+          :date,
+          :utc_datetime,
+          :utc_datetime_usec,
+          :naive_datetime,
+          :time,
+          :time_usec
+        ] do
+      assert DL.can?(AshArcadic.Test.Basic, {:sort, s}), "expected {:sort, #{inspect(s)}}"
+    end
+
     refute DL.can?(AshArcadic.Test.Basic, {:sort, :binary})
     refute DL.can?(AshArcadic.Test.Basic, {:sort, :decimal})
 
     # Cross-vendor F2: composite storage has no total order → keyset silently truncates → reject.
     refute DL.can?(AshArcadic.Test.Basic, {:sort, :map})
     refute DL.can?(AshArcadic.Test.Basic, {:sort, {:array, :string}})
+
+    # Delta-review: the gate is an ALLOWLIST — :vector (order by DISTANCE, never the raw vector),
+    # :duration, and any unknown/custom storage fail closed rather than silently mis-ordering.
+    refute DL.can?(AshArcadic.Test.Basic, {:sort, :vector})
+    refute DL.can?(AshArcadic.Test.Basic, {:sort, :duration})
+    refute DL.can?(AshArcadic.Test.Basic, {:sort, :some_future_storage})
   end
 
   test "filter_expr: supported operators + string-match + boolean/not + calc value-ops true; unknown false" do

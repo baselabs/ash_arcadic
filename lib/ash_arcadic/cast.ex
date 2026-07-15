@@ -45,23 +45,47 @@ defmodule AshArcadic.Cast do
   @spec binary_storage?(Ash.Type.t(), keyword()) :: boolean()
   def binary_storage?(type, constraints), do: Ash.Type.storage_type(type, constraints) == :binary
 
+  # The ALLOWLIST of storage types with a total order ArcadeDB compares correctly (a range/keyset op
+  # over anything else is silently wrong): the ordered scalars + `:date` (stored an ISO string —
+  # lexicographic == chronological) + the coerced temporal family. NOT included, deliberately:
+  # `:binary` (base64 not byte-order-preserving), `:decimal` (exact string, lexicographic ≠ numeric),
+  # `:map`/`{:array,_}` (composites — `:struct`/`:union`/`:keyword`/`:tuple` store as `:map`),
+  # `:vector` (a float list, no total order — order by DISTANCE via vector search, never the raw
+  # vector), `:duration`, and ANY unknown/custom storage — unknown fails CLOSED (the delta-review
+  # catch: a denylist here silently admits every future non-orderable storage).
+  @orderable_storage [
+    :integer,
+    :float,
+    :boolean,
+    :string,
+    :ci_string,
+    :uuid,
+    :date,
+    :utc_datetime,
+    :utc_datetime_usec,
+    :naive_datetime,
+    :naive_datetime_usec,
+    :time,
+    :time_usec
+  ]
+
+  @doc """
+  Whether a STORAGE type has a total order ArcadeDB compares correctly — the allowlist above; any
+  storage NOT on it (binary/decimal/map/array/vector/duration/custom) fails CLOSED. Shared by the
+  `can?({:sort, storage})` gate and `range_comparable?/2` so sort and range stay symmetric.
+  """
+  @spec orderable_storage?(term()) :: boolean()
+  def orderable_storage?(storage), do: storage in @orderable_storage
+
   @doc """
   Whether an attribute's storage type has a TOTAL ORDER ArcadeDB compares correctly for a range/keyset
-  op (`gt/lt/gte/lte`). False for the non-order-preserving scalars `:binary` (base64) and `:decimal`
-  (D27 — exact string, compared lexicographically → a numeric range would be silently wrong), AND for
-  the COMPOSITE storage types `:map` (also `:struct`/`:union`, which store as `:map`) and `{:array, _}`
-  — these have NO meaningful total order, so a range/keyset comparison on them silently returns
-  wrong/truncated results (a keyset walk mis-pages). Anything else (integer/float/boolean/string/uuid/
-  ci_string/temporal) is comparable. Drives the filter push-down + keyset-sort guard: a range/keyset
-  op on a non-comparable attr fails LOUD (`UnsupportedFilter`/`UnsortableField`), never wrong rows.
+  op (`gt/lt/gte/lte`) — `orderable_storage?/1` over the attribute's resolved storage type. An
+  ALLOWLIST (fail-closed): a range/keyset op on a non-orderable attr fails LOUD
+  (`UnsupportedFilter`/`UnsortableField`), never silently wrong/truncated rows.
   """
   @spec range_comparable?(Ash.Type.t(), keyword()) :: boolean()
   def range_comparable?(type, constraints) do
-    case Ash.Type.storage_type(type, constraints) do
-      s when s in [:binary, :decimal, :map] -> false
-      {:array, _} -> false
-      _ -> true
-    end
+    orderable_storage?(Ash.Type.storage_type(type, constraints))
   end
 
   @doc """

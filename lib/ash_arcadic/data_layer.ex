@@ -239,19 +239,16 @@ defmodule AshArcadic.DataLayer do
     do: true
 
   def can?(_, {:combine, _}), do: false
-  # Ash asks {:sort, Ash.Type.storage_type(type)}. Binary is base64 (not
-  # byte-order-preserving); :decimal is an exact string (lexicographic) — sorting
-  # either returns a silently wrong order, so reject → Ash.Error.Query.UnsortableField.
-  def can?(_, {:sort, :binary}), do: false
-  def can?(_, {:sort, :decimal}), do: false
 
-  # Composite storage types (`:map` — also `:struct`/`:union`; and `{:array, _}`) have NO total order,
-  # so a keyset cursor / ORDER BY over them silently mis-pages / mis-orders — reject at the sort gate
-  # (mirrors Cast.range_comparable?; a keyset over such a sort would otherwise truncate silently, the
-  # cross-vendor F2 catch). Value comparisons keep working; only ordering is rejected.
-  def can?(_, {:sort, :map}), do: false
-  def can?(_, {:sort, {:array, _}}), do: false
-  def can?(_, {:sort, _}), do: true
+  # Ash asks {:sort, Ash.Type.storage_type(type)}. Sortability is an ALLOWLIST of storage types with
+  # a total order ArcadeDB compares correctly (Cast.orderable_storage?/1 — shared with the range/keyset
+  # filter guard, so sort and range stay symmetric). Everything else fails CLOSED →
+  # Ash.Error.Query.UnsortableField: :binary (base64 not byte-order-preserving), :decimal (exact
+  # string, lexicographic ≠ numeric), the composites :map/{:array,_} (no total order — a keyset over
+  # one silently TRUNCATES, the cross-vendor F2 catch), :vector (order by DISTANCE via vector search,
+  # never the raw vector), :duration, and ANY unknown/custom storage (the delta-review catch — a
+  # denylist here would silently admit every future non-orderable storage).
+  def can?(_, {:sort, storage}), do: Cast.orderable_storage?(storage)
   # Ash 3.29 authorizes filters per predicate node via {:filter_expr, <struct>}
   # (deps/ash/lib/ash/filter/filter.ex:3532). {:filter_operator, _} is not a
   # current capability query (absent from the feature() type), so it is omitted.
