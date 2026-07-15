@@ -14,6 +14,11 @@ enforced **Ash-natively**. It executes through the
 > clean). Working rules for contributors are in [`AGENTS.md`](AGENTS.md); consumer
 > usage rules (the fine print per feature) are in [`usage-rules.md`](usage-rules.md).
 
+**Try it in 5 minutes:** [`livebooks/tour.livemd`](livebooks/tour.livemd) — a
+runnable Livebook tour of the whole surface (CRUD → queries → keyset streaming →
+concurrent bulk → multitenancy → vector search → graph traversal) against a
+throwaway database. Every cell is verified against a live ArcadeDB.
+
 ## What it supports
 
 | Area | Capabilities |

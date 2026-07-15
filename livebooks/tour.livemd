@@ -1,0 +1,369 @@
+<!-- livebook:{"persist_outputs":true} -->
+
+# AshArcadic tour — Ash on ArcadeDB
+
+```elixir
+# Pre-publish: path-install from a checkout that has ../arcadic beside it.
+# After the hex release this becomes: Mix.install([{:ash_arcadic, "~> 0.1"}])
+Mix.install([
+  {:ash_arcadic, path: Path.join(__DIR__, "..")}
+])
+```
+
+## What this is
+
+A runnable tour of **AshArcadic** — the Ash `DataLayer` for
+[ArcadeDB](https://arcadedb.com). It walks the full surface against a real
+ArcadeDB: CRUD + upserts, query push-down, keyset streaming, concurrent bulk
+writes, fail-closed multitenancy, vector search, and graph traversal over edges.
+
+**You need a running ArcadeDB.** One docker command:
+
+```bash
+docker run --rm -d --name arcadedb-tour -p 2480:2480 \
+  -e JAVA_OPTS="-Darcadedb.server.rootPassword=playwithdata" \
+  arcadedata/arcadedb:latest
+```
+
+Then set the two environment variables below (Livebook: use the Secrets panel or
+export them before `livebook server`). The tour creates a **throwaway database**
+and drops it at the end — it never touches existing data.
+
+## Connect
+
+```elixir
+url = System.get_env("ARCADEDB_URL", "http://localhost:2480")
+password = System.get_env("ARCADEDB_PASSWORD", "playwithdata")
+
+# A throwaway database for this tour (dropped in the last cell).
+db = "tour_" <> Base.encode16(:crypto.strong_rand_bytes(3), case: :lower)
+
+admin = Arcadic.connect(url, db, auth: {"root", password})
+:ok = Arcadic.Server.create_database!(admin, db)
+
+# The data layer asks the HOST for its connection through one small behaviour —
+# the `repo` analog. Stash the tour's database name where the client can read it.
+Application.put_env(:ash_arcadic_tour, :database, db)
+
+defmodule Tour.ArcadicClient do
+  @behaviour AshArcadic.Client
+
+  @impl true
+  def conn do
+    url = System.get_env("ARCADEDB_URL", "http://localhost:2480")
+    password = System.get_env("ARCADEDB_PASSWORD", "playwithdata")
+    db = Application.fetch_env!(:ash_arcadic_tour, :database)
+    Arcadic.connect(url, db, auth: {"root", password})
+  end
+end
+
+{:ok, true} = Arcadic.Server.health?(admin)
+```
+
+## Define resources
+
+One document resource (CRUD, queries, keyset, bulk, vector) and one person
+resource (edges + graph traversal). Both are **multitenant** — AshArcadic's
+flagship posture: every read, write, traversal, vector search, and keyset cursor
+is fail-closed tenant-scoped.
+
+```elixir
+defmodule Tour.Domain do
+  use Ash.Domain, validate_config_inclusion?: false
+
+  resources do
+    allow_unregistered? true
+  end
+end
+
+defmodule Tour.Doc do
+  use Ash.Resource, domain: Tour.Domain, data_layer: AshArcadic.DataLayer
+
+  arcade do
+    client Tour.ArcadicClient
+    label :Doc
+    vector_index :embedding, dimensions: 3, similarity: :cosine
+  end
+
+  attributes do
+    attribute :id, :string, primary_key?: true, allow_nil?: false, public?: true
+    attribute :org_id, :string, public?: true
+    attribute :title, :string, public?: true
+    attribute :score, :integer, public?: true
+    attribute :published_at, :utc_datetime, public?: true
+    attribute :embedding, {:array, :float}, public?: true
+  end
+
+  multitenancy do
+    strategy :attribute
+    attribute :org_id
+  end
+
+  actions do
+    default_accept [:id, :org_id, :title, :score, :published_at, :embedding]
+    defaults [:create, :update, :destroy]
+
+    read :read do
+      primary? true
+      pagination keyset?: true, offset?: true, countable: true, required?: false
+    end
+
+    create :upsert do
+      upsert? true
+    end
+
+    read :semantic_search do
+      argument :query_vector, {:array, :float}, allow_nil?: false
+      argument :k, :integer, allow_nil?: false
+      prepare {AshArcadic.Preparations.VectorSearch, index: :embedding}
+    end
+  end
+end
+
+defmodule Tour.Person do
+  use Ash.Resource, domain: Tour.Domain, data_layer: AshArcadic.DataLayer
+
+  arcade do
+    client Tour.ArcadicClient
+    label :Person
+
+    edge :knows do
+      label :KNOWS
+      direction :outgoing
+      destination Tour.Person
+      properties [:since]
+    end
+  end
+
+  attributes do
+    attribute :id, :string, primary_key?: true, allow_nil?: false, public?: true
+    attribute :org_id, :string, public?: true
+    attribute :name, :string, public?: true
+  end
+
+  multitenancy do
+    strategy :attribute
+    attribute :org_id
+  end
+
+  relationships do
+    # Graph traversal AS an Ash relationship: everyone reachable over :KNOWS
+    # within 1..2 hops — per-hop tenant-scoped (every node AND edge on the path).
+    has_many :network, __MODULE__ do
+      manual(
+        {AshArcadic.ManualRelationships.Traverse,
+         edge_label: :KNOWS, direction: :outgoing, min_depth: 1, max_depth: 2}
+      )
+    end
+  end
+
+  actions do
+    default_accept [:id, :org_id, :name]
+    defaults [:read, :create]
+
+    update :befriend do
+      require_atomic? false
+      argument :to, {:array, :string}
+      argument :since, :string
+      change {AshArcadic.Changes.CreateEdge, edge: :knows, to: :to}
+    end
+  end
+end
+```
+
+## CRUD & upsert
+
+Plain Ash. The `MERGE`-based upsert is idempotent — run the cell twice, still one
+row.
+
+```elixir
+require Ash.Query
+
+Ash.create!(Tour.Doc, %{id: "d1", title: "Graphs", score: 10}, tenant: "org1")
+Ash.create!(Tour.Doc, %{id: "d2", title: "Vectors", score: 30}, tenant: "org1")
+
+# Upsert: first call creates, second call (same id) updates in place.
+Tour.Doc
+|> Ash.Changeset.for_create(:upsert, %{id: "d3", title: "Cypher", score: 20}, tenant: "org1")
+|> Ash.create!()
+
+Tour.Doc
+|> Ash.Changeset.for_create(:upsert, %{id: "d3", title: "OpenCypher", score: 25}, tenant: "org1")
+|> Ash.create!()
+
+docs = Tour.Doc |> Ash.Query.sort(score: :asc) |> Ash.read!(tenant: "org1")
+Enum.map(docs, &{&1.id, &1.title, &1.score})
+```
+
+## Query push-down
+
+Filters, sorts, and counts compile to parameterized Cypher — including temporal
+comparisons (AshArcadic wraps datetime/time params in ArcadeDB's native temporal
+constructors, so they compare temporal-to-temporal, not string-to-native).
+
+```elixir
+Ash.update!(Ash.get!(Tour.Doc, "d1", tenant: "org1"), %{
+  published_at: ~U[2024-06-15 12:00:00Z]
+})
+
+Ash.update!(Ash.get!(Tour.Doc, "d2", tenant: "org1"), %{
+  published_at: ~U[2023-12-31 23:59:59Z]
+})
+
+high_scores =
+  Tour.Doc
+  |> Ash.Query.filter(score > 15 and title != "nope")
+  |> Ash.Query.sort(score: :desc)
+  |> Ash.read!(tenant: "org1")
+
+recent =
+  Tour.Doc
+  |> Ash.Query.filter(published_at > ^~U[2024-01-01 00:00:00Z])
+  |> Ash.read!(tenant: "org1")
+
+page = Ash.read!(Tour.Doc, tenant: "org1", page: [limit: 2, count: true])
+
+%{
+  high_scores: Enum.map(high_scores, &{&1.id, &1.score}),
+  recent: Enum.map(recent, & &1.id),
+  total: page.count
+}
+```
+
+## Keyset streaming
+
+`can?(:keyset)` powers cursor pagination and `Ash.stream!` — bounded memory over
+any result size, correct across duplicate sort values (primary-key tiebreaker).
+
+```elixir
+for i <- 1..25 do
+  Ash.create!(
+    Tour.Doc,
+    %{id: "s#{String.pad_leading(to_string(i), 2, "0")}", title: "Doc #{i}", score: rem(i, 5)},
+    tenant: "org1"
+  )
+end
+
+# Cursor pagination: walk a page, then ask for what follows it.
+page1 = Tour.Doc |> Ash.Query.sort(score: :asc) |> Ash.read!(tenant: "org1", page: [limit: 5])
+cursor = List.last(page1.results).__metadata__.keyset
+
+page2 =
+  Tour.Doc
+  |> Ash.Query.sort(score: :asc)
+  |> Ash.read!(tenant: "org1", page: [limit: 5, after: cursor])
+
+# Or just stream the whole set — keyset batches under the hood.
+streamed =
+  Tour.Doc
+  |> Ash.Query.sort(score: :asc)
+  |> Ash.stream!(tenant: "org1", batch_size: 10)
+  |> Enum.count()
+
+%{page1: length(page1.results), page2: length(page2.results), streamed_total: streamed}
+```
+
+## Concurrent bulk writes
+
+With `transaction: false` each batch is one autocommit `UNWIND` statement, and
+AshArcadic retries optimistic-lock conflicts at two levels (ArcadeDB's server-side
+statement retry + client jittered backoff) — so concurrent bulk **converges**, even
+on a freshly auto-created type.
+
+```elixir
+rows = for i <- 1..200, do: %{id: "b#{i}", title: "Bulk #{i}", score: rem(i, 10)}
+
+result =
+  Ash.bulk_create(rows, Tour.Doc, :create,
+    tenant: "org1",
+    transaction: false,
+    max_concurrency: 8,
+    batch_size: 25,
+    return_errors?: true
+  )
+
+count = Tour.Doc |> Ash.Query.filter(contains(id, "b")) |> Ash.count!(tenant: "org1")
+%{status: result.status, persisted: count}
+```
+
+## Multitenancy is fail-closed
+
+Same database, different tenant — none of org1's rows are reachable. The
+discriminator is injected by the data layer on every path (reads, writes, bulk,
+traversal, vector, keyset cursors); a missing tenant on a tenant-strategy resource
+is an error, never a global read.
+
+```elixir
+org2_sees = Ash.read!(Tour.Doc, tenant: "org2")
+org1_count = Ash.count!(Tour.Doc, tenant: "org1")
+%{org2_sees: length(org2_sees), org1_count: org1_count}
+```
+
+## Vector search
+
+Declare the index in the `arcade` block (compile-checked metadata); the host
+creates the physical index once (no migration machinery). Results come back
+ranked, with the distance in record metadata — tenant-scoped like everything
+else.
+
+```elixir
+# One-time host-side schema (pairs with the index): declare the vector property's
+# physical type, write the embeddings, then build the index.
+Arcadic.command!(admin, "CREATE PROPERTY Doc.embedding ARRAY_OF_FLOATS", %{}, language: "sql")
+
+Ash.update!(Ash.get!(Tour.Doc, "d1", tenant: "org1"), %{embedding: [1.0, 0.0, 0.0]})
+Ash.update!(Ash.get!(Tour.Doc, "d2", tenant: "org1"), %{embedding: [0.0, 1.0, 0.0]})
+Ash.update!(Ash.get!(Tour.Doc, "d3", tenant: "org1"), %{embedding: [0.9, 0.1, 0.0]})
+
+Arcadic.Vector.create_dense_index!(admin, "Doc", "embedding", 3, similarity: :cosine)
+
+nearest =
+  Tour.Doc
+  |> Ash.Query.for_read(:semantic_search, %{query_vector: [1.0, 0.0, 0.0], k: 2})
+  |> Ash.read!(tenant: "org1", authorize?: false)
+
+Enum.map(nearest, &{&1.id, &1.__metadata__[:vector_distance]})
+```
+
+## Graph: edges & traversal
+
+Edges are first-class writes (`CreateEdge`/`DestroyEdge` changes); traversal is an
+Ash **relationship**, so it composes with loading, aggregates, and policies. The
+traversal predicate scopes **every node and edge on the path** to the tenant.
+
+```elixir
+for {id, name} <- [{"ann", "Ann"}, {"bo", "Bo"}, {"cy", "Cy"}] do
+  Ash.create!(Tour.Person, %{id: id, name: name}, tenant: "org1")
+end
+
+# ann -> bo -> cy over :KNOWS edges (edge writes ride an update action).
+Tour.Person
+|> Ash.get!("ann", tenant: "org1")
+|> Ash.Changeset.for_update(:befriend, %{to: ["bo"], since: "2024"}, tenant: "org1")
+|> Ash.update!()
+
+Tour.Person
+|> Ash.get!("bo", tenant: "org1")
+|> Ash.Changeset.for_update(:befriend, %{to: ["cy"], since: "2025"}, tenant: "org1")
+|> Ash.update!()
+
+# ann's 1..2-hop network: bo (direct) AND cy (through bo).
+ann = Tour.Person |> Ash.get!("ann", tenant: "org1") |> Ash.load!(:network, tenant: "org1")
+ann.network |> Enum.map(& &1.name) |> Enum.sort()
+```
+
+## Cleanup
+
+```elixir
+Arcadic.Server.drop_database(admin, db)
+```
+
+## Where next
+
+* [`usage-rules.md`](../usage-rules.md) — the per-feature fine print: supported
+  operators, sortable types, vector scoping rules, bulk-write concurrency,
+  documented limitations.
+* [`README.md`](../README.md) — capability matrix and connection setup.
+* Sparse + hybrid vector search, traversal aggregates, combinations, atomics,
+  `update_many` — all live; see the test suite for working examples of every
+  capability.
