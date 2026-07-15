@@ -9,6 +9,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Keyset pagination + `Ash.stream!` (Slice 11).** `can?(:keyset)` advertised (with the required
+  `data_layer_keyset_by_default?/0 → false` callback): `page: [after:/before: cursor, limit:, count:]`
+  and `Ash.stream!` use efficient cursor pagination over any stored comparable sort attribute
+  (`:integer`/`:float`/`:boolean`/`:string`/datetime/time incl. microsecond), with the primary key as
+  tiebreaker. Cross-tenant isolated on both strategies; `page: [count: true]` tenant-scoped. A
+  `:binary`/`:decimal` sort fails closed `UnsortableField`; a non-stored/calc/aggregate sort fails
+  closed value-free `UnsupportedFilter`. Perf guarantee is bounded MEMORY (streaming), not bounded
+  time — no sort-index DSL, so add a host-side index for deep-pagination speed.
+- **`:async_engine` — concurrent reads/loads (Slice 11).** Probe-verified pool-safe: Ash runs
+  independent relationship/aggregate loads concurrently on a read (transactional actions stay sync).
+  Opt-in concurrent bulk writes (`max_concurrency > 1`) are MVCC-conflict-prone on ArcadeDB (loud 503,
+  possible partial application across batches) — keep bulk writes sequential; concurrency is a
+  reads/loads win.
+
+### Fixed
+
+- **Temporal range/eq/`in` comparisons no longer silently return `[]` (Slice 11).** ArcadeDB
+  auto-coerces stored ISO8601 datetime/time strings to native temporal types; AshArcadic now wraps the
+  bound comparison param in the matching Cypher constructor (`datetime()` for `:utc_datetime`/
+  `:naive_datetime`/usec, `localtime()` for `:time`/usec) so `:datetime`/`:time` filters and keyset
+  cursors compare correctly. `:date` is unaffected (kept a string).
+
+### Security
+
+- **Read-path value-free encode-gate (Slice 11).** A non-encodable value in a read filter literal (a
+  raw non-UTF8 binary nested in a `:map`/`:list`) now fails closed value-free (`%QueryFailed{}` naming
+  the failure class, never the bytes) at every read wire site (flat, aggregate/count, combination,
+  traversal, vector-candidate) — closing the last surface of the `Jason.EncodeError` byte-leak class
+  (AGENTS.md Rule 4) on the read path.
+
 - **Vector search — dense kNN (Slice 10, Plan 1).** ArcadeDB dense vector similarity search is
   first-class: declare `vector_index :embedding, dimensions:, similarity:` in the `arcade` block
   (metadata + compile validation — the host creates the index via `Arcadic.Vector.create_dense_index`;

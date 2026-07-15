@@ -133,6 +133,39 @@ _An Ash DataLayer for ArcadeDB (native OpenCypher over HTTP)._
   value-free `vector_search?` + `vector_kind` tags). A malformed stash (crafted via `set_context`)
   fails closed value-free — never a leak.
 
+## Keyset pagination, `:async_engine` & read-path redaction (Slice 11)
+
+- **Keyset pagination + `Ash.stream!`.** `can?(:keyset)` is advertised, so `Ash.read(query, page:
+  [after: cursor, limit: n])` / `page: [before: cursor, …]` and `Ash.stream!` use efficient cursor
+  pagination instead of offset re-scans. Ash builds the compound cursor filter itself (`(sort > $c)
+  OR (sort = $c AND pk > $i)`) — a normal filter AshArcadic already translates — and computes each
+  record's cursor from its sort-field values; the data layer just advertises the capability and
+  implements `data_layer_keyset_by_default?/0 → false` (the callback that routes to Ash's fallback
+  cursor path). `page: [count: true]` returns the tenant-scoped total.
+- **Supported keyset-sort set.** Any **stored, comparable** sort attribute: `:integer`, `:float`,
+  `:boolean`, `:string`, and the datetime/time family (`:utc_datetime`, `:naive_datetime`, `:time`,
+  incl. `precision: :microsecond`). A duplicate-value sort resolves deterministically via the primary
+  key tiebreaker. **Fail-closed (never silently mis-page):** a `:binary`(sensitive)/`:decimal` sort
+  is rejected `UnsortableField` (the sort gate); a non-stored / calc / aggregate sort is rejected
+  value-free `UnsupportedFilter` on the cursor page (the filter guard). Keyset over a **combination**
+  query is supported (the cursor lands in the outer filter).
+- **Perf is bounded MEMORY, not bounded time.** Keyset's win here is streaming without an unbounded
+  in-memory read; it is NOT necessarily faster than offset per page — AshArcadic has no sort-index
+  DSL, so ArcadeDB full-scans + sorts each page over an unindexed sort field. Add a host-side index on
+  the sort field if you need deep-pagination speed.
+- **`:async_engine` — concurrent reads/loads.** `can?(:async_engine)` is advertised (probe-verified
+  pool-safe): Ash runs INDEPENDENT relationship/aggregate loads concurrently on a read (each its own
+  pooled connection; a transactional action still runs sync). **Caveat — opt-in concurrent bulk
+  writes:** advertising `:async_engine` also lets `Ash.bulk_*` run batches concurrently when you pass
+  `max_concurrency > 1`. ArcadeDB's MVCC raises `ConcurrentModificationException` (HTTP 503) under
+  concurrent writes to the same type, and because batches are separate transactions a mid-run failure
+  can leave PARTIAL application across batches (`:bulk_create_with_partial_success` is `false`). Keep
+  bulk writes SEQUENTIAL (the default `max_concurrency`) on ArcadeDB; concurrency is a reads/loads win.
+- **Read-path value-free redaction.** A non-encodable value in a read filter literal (a raw non-UTF8
+  binary nested in a `:map`/`:list`) fails closed value-free — a `%QueryFailed{}` naming the failure
+  CLASS, never the bytes — at every read wire site (flat, aggregate/count, combination, traversal,
+  vector-candidate). Encode such values app-side (e.g. `Base.encode64`) or use a `:binary` attribute.
+
 ## Query-scoped bulk writes + atomics (Slice 9, Plan 1)
 
 - **Query-scoped bulk update/destroy push down to ONE statement.** `Ash.bulk_update`/`Ash.bulk_destroy`
@@ -210,6 +243,13 @@ _An Ash DataLayer for ArcadeDB (native OpenCypher over HTTP)._
   numeric range/order. **Model money as integer minor units** when you need range
   filtering or sorting. (`:binary` attributes are likewise unrangeable/unsortable —
   base64 is not byte-order-preserving.)
+- **Datetime/time comparisons work (`:utc_datetime`, `:naive_datetime`, `:time`, incl.
+  `precision: :microsecond`).** ArcadeDB auto-coerces stored ISO8601 datetime/time strings to its
+  native temporal types, so AshArcadic wraps the bound comparison param in the matching Cypher
+  constructor (`datetime()` / `localtime()`) — equality, range (`gt/lt/gte/lte`) and `in` compare
+  temporal-to-temporal, not string-to-coerced-value. `:date` needs no wrapper (ArcadeDB keeps
+  date-only strings as strings). A **compound** temporal comparison (a temporal attr against a
+  value-expression / arithmetic RHS) is not yet wrapped — use a plain literal comparison.
 - **Filtering a `sensitive` field is unsupported.** A value comparison (`==`/`!=`/`>`/`<`/`in`/
   `contains`/`string_starts_with`/`string_ends_with`) on a `sensitive` (app-side-encrypted
   binary) field fails closed value-free (`%UnsupportedFilter{}`); `is_nil`/`not is_nil`
