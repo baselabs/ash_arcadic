@@ -21,7 +21,8 @@ defmodule AshArcadic.DataLayer.CanTest do
           :changeset_filter,
           :distinct,
           :distinct_sort,
-          :vector_search
+          :vector_search,
+          :keyset
         ] do
       assert DL.can?(AshArcadic.Test.Basic, feature), "expected can?(#{feature})"
     end

@@ -359,7 +359,22 @@ defmodule AshArcadic.DataLayer do
   # — a LOUD, non-silent failure documented in usage-rules (default bulk writes stay sequential).
   def can?(_, :async_engine), do: true
 
+  # Slice 11: keyset pagination. Advertising :keyset lets Ash.stream! prefer keyset over offset and
+  # powers `page: [after: cursor]`. REQUIRES data_layer_keyset_by_default?/0 → false below (F1): the
+  # bare flip crashes (that optional callback is called unconditionally at read.ex:3082); false routes
+  # to Ash's fallback cursor-filter path (a normal or/and/comparison/is_nil filter we already translate).
+  def can?(_, :keyset), do: true
+
   def can?(_, _), do: false
+
+  # Slice 11 (F1): the Ash.DataLayer keyset callback. It is an OPTIONAL callback but Ash calls it
+  # UNCONDITIONALLY once :keyset is advertised (read.ex:3082, no function_exported? guard) — ash_arcadic
+  # only `@behaviour Ash.DataLayer` (no `use` macro to default it), so absent → UndefinedFunctionError
+  # on EVERY read of a keyset-enabled action. `false` makes use_data_layer_keyset? false → Ash builds
+  # the cursor filter itself (Ash.Page.Keyset fallback — the probe-validated path); `true` would stash
+  # keyset_opts and expect us to page ourselves → the cursor would be SILENTLY dropped. So: false.
+  @impl true
+  def data_layer_keyset_by_default?, do: false
 
   # Slice 5 (fail-closed): true when the filter destination carries ANY authorizer. Used by
   # can?({:filter_relationship, rel}) to reject a source-on-related filter to an authorizer-bearing

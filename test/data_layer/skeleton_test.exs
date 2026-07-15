@@ -55,6 +55,8 @@ defmodule AshArcadic.DataLayer.SkeletonTest do
 
     # Slice 11: concurrency capability (probe-verified pool-safe for concurrent reads/loads).
     assert AshArcadic.DataLayer.can?(AshArcadic.Test.Basic, :async_engine)
+    # Slice 11: keyset pagination (requires data_layer_keyset_by_default?/0 → false, F1).
+    assert AshArcadic.DataLayer.can?(AshArcadic.Test.Basic, :keyset)
 
     assert AshArcadic.DataLayer.can?(AshArcadic.Test.Basic, :vector_search)
     assert AshArcadic.DataLayer.can?(AshArcadic.Test.Basic, {:vector_search, :dense})
