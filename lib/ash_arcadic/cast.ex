@@ -63,16 +63,22 @@ defmodule AshArcadic.Cast do
   attribute, or `nil`. ArcadeDB auto-coerces stored ISO8601 datetime/time strings to its native
   temporal types on write, so a `prop OP $stringparam` comparison silently matched NOTHING (the
   string param never equals a coerced temporal value — probe-verified). Wrapping the param —
-  `datetime($p)` for `:utc_datetime`/`:naive_datetime`, `localtime($p)` for `:time` — makes ArcadeDB
-  compare temporal-to-temporal. `:date` is the exception: ArcadeDB does NOT coerce date-only strings,
-  so it stays a string and compares correctly UNWRAPPED (`nil`).
+  `datetime($p)` for datetime storage, `localtime($p)` for time storage — makes ArcadeDB compare
+  temporal-to-temporal (probe-verified for fractional-second/usec values too). The `_usec` storage
+  classes are covered SYMMETRICALLY with the decode side (`classify/1`) — omitting them reintroduces
+  the silent-`[]` mis-page for a `:datetime`/`:time` attr declared `precision: :microsecond` (storage
+  `:utc_datetime_usec`/`:time_usec`). `:date` is the exception: ArcadeDB does NOT coerce date-only
+  strings, so it stays a string and compares correctly UNWRAPPED (`nil`).
   """
   @spec temporal_cypher_fn(Ash.Type.t(), keyword()) :: String.t() | nil
   def temporal_cypher_fn(type, constraints) do
     case Ash.Type.storage_type(type, constraints) do
       :utc_datetime -> "datetime"
+      :utc_datetime_usec -> "datetime"
       :naive_datetime -> "datetime"
+      :naive_datetime_usec -> "datetime"
       :time -> "localtime"
+      :time_usec -> "localtime"
       _ -> nil
     end
   end
@@ -171,6 +177,10 @@ defmodule AshArcadic.Cast do
   defp classify(:naive_datetime), do: :naive_datetime
   defp classify(:naive_datetime_usec), do: :naive_datetime
   defp classify(:time), do: :time
+
+  # :time_usec decodes like :time (Time.from_iso8601 parses fractional seconds) — symmetric with the
+  # temporal_cypher_fn wrapper, so a usec time round-trips AND compares correctly.
+  defp classify(:time_usec), do: :time
   defp classify(:decimal), do: :decimal
   defp classify(:binary), do: :binary
   defp classify(_other), do: :other

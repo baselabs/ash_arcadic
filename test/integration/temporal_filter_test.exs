@@ -67,6 +67,25 @@ defmodule AshArcadic.Integration.TemporalFilterTest do
     assert ids(Ash.Query.filter(TemporalDoc, at_time < ^~T[12:00:00])) == ["a"]
   end
 
+  test "usec datetime/time comparisons work (storage :utc_datetime_usec / :time_usec — F-1)" do
+    seed("a", %{at_usec: ~U[2024-01-02 03:04:05.123456Z], at_time_usec: ~T[03:04:05.5]})
+    seed("b", %{at_usec: ~U[2023-12-31 23:59:59.000001Z], at_time_usec: ~T[23:59:59.9]})
+    seed("c", %{at_usec: ~U[2024-06-15 12:00:00.999999Z], at_time_usec: ~T[12:00:00.0]})
+
+    # Microsecond datetime range/eq — RED pre-fix (temporal_cypher_fn returned nil → silent []).
+    assert ids(Ash.Query.filter(TemporalDoc, at_usec > ^~U[2023-12-31 23:59:59.000001Z])) == [
+             "a",
+             "c"
+           ]
+
+    assert ids(Ash.Query.filter(TemporalDoc, at_usec == ^~U[2024-06-15 12:00:00.999999Z])) == [
+             "c"
+           ]
+
+    # Microsecond time range: a=03:04, c=12:00 are < 13:00; b=23:59 is not.
+    assert ids(Ash.Query.filter(TemporalDoc, at_time_usec < ^~T[13:00:00.0])) == ["a", "c"]
+  end
+
   test "date range comparison works unwrapped (ArcadeDB keeps date-only strings as strings)" do
     seed("a", %{on_date: ~D[2024-01-02]})
     seed("b", %{on_date: ~D[2023-12-31]})

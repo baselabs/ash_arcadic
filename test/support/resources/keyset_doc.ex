@@ -23,6 +23,9 @@ defmodule AshArcadic.Test.KeysetDoc do
     attribute :rank, :float, public?: true
     attribute :active, :boolean, public?: true
     attribute :created, :utc_datetime, public?: true
+
+    # Microsecond-precision datetime — storage :utc_datetime_usec (the F-1 keyset silent-mispage gap).
+    attribute :created_usec, :datetime, public?: true, constraints: [precision: :microsecond]
     # Fail-closed sort types (Task 3): base64 binary is not byte-order-preserving; :decimal is an
     # exact lexicographic string — both rejected at the SORT gate (can?({:sort, :binary/:decimal})).
     attribute :blob, :binary, public?: true
@@ -41,7 +44,19 @@ defmodule AshArcadic.Test.KeysetDoc do
   end
 
   actions do
-    default_accept [:id, :org_id, :score, :title, :rank, :active, :created, :blob, :amount]
+    default_accept [
+      :id,
+      :org_id,
+      :score,
+      :title,
+      :rank,
+      :active,
+      :created,
+      :created_usec,
+      :blob,
+      :amount
+    ]
+
     defaults [:create]
 
     read :read do

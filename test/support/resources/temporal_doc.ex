@@ -21,6 +21,11 @@ defmodule AshArcadic.Test.TemporalDoc do
     attribute :naive_at, :naive_datetime, public?: true
     attribute :on_date, :date, public?: true
     attribute :at_time, :time, public?: true
+
+    # Microsecond-precision datetime/time — storage :utc_datetime_usec / :time_usec (the F-1 gap: a
+    # base :datetime/:time with precision usec, the forward-canonical form since UtcDatetime is deprecated).
+    attribute :at_usec, :datetime, public?: true, constraints: [precision: :microsecond]
+    attribute :at_time_usec, :time, public?: true, constraints: [precision: :microsecond]
   end
 
   multitenancy do
@@ -29,7 +34,7 @@ defmodule AshArcadic.Test.TemporalDoc do
   end
 
   actions do
-    default_accept [:id, :org_id, :at, :naive_at, :on_date, :at_time]
+    default_accept [:id, :org_id, :at, :naive_at, :on_date, :at_time, :at_usec, :at_time_usec]
     defaults [:read, :create]
   end
 end

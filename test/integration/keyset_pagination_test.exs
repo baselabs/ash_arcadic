@@ -223,6 +223,24 @@ defmodule AshArcadic.Integration.KeysetPaginationTest do
     assert length(walked) == 5
   end
 
+  test "USEC_DATETIME sort: keyset walk == full-read order (storage :utc_datetime_usec — F-1)" do
+    for {id, ts} <- [
+          {"u1", ~U[2024-01-02 03:04:05.123456Z]},
+          {"u2", ~U[2023-12-31 23:59:59.000001Z]},
+          {"u3", ~U[2024-01-02 03:04:05.123456Z]},
+          {"u4", ~U[2024-06-15 12:00:00.999999Z]},
+          {"u5", ~U[2023-12-31 23:59:59.000001Z]}
+        ],
+        do: seed(id, "org1", %{created_usec: ts})
+
+    query = KeysetDoc |> Ash.Query.sort(created_usec: :asc)
+    walked = keyset_walk(query, "org1", 2)
+    assert walked == ground_truth(query, "org1")
+    # Tripwire for the F-1 usec silent-mispage: without the :utc_datetime_usec wrapper the cursor
+    # comparison returns [] and the walk truncates to 2.
+    assert length(walked) == 5
+  end
+
   # === Task 3: fail-closed paths (F3) — TWO mechanisms, TWO error types (a single "S6 rejects all
   # three" test would be vacuous for binary/decimal, which are stopped EARLIER at the sort gate). ===
 
