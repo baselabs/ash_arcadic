@@ -2,9 +2,12 @@
 
 _An Ash DataLayer for ArcadeDB (native OpenCypher over HTTP)._
 
-> Slice 1 (Plans 1–4) landed: the `arcade do ... end` DSL section, query
-> compilation, CRUD, the multitenancy write path, transactions, and bounded
-> traversal are live. The binding facts:
+> The full 0.1.0 surface is live: the `arcade do ... end` DSL section, query
+> compilation (filter/sort/distinct/combinations), CRUD + upserts + atomics,
+> bulk writes, offset + keyset pagination, aggregates, calculations,
+> relationships + traversal + edge writes, vector search (dense/sparse/hybrid),
+> transactions, `:async_engine`, and telemetry — all fail-closed multitenant.
+> The binding facts, per feature:
 
 ## What ash_arcadic owns (and what it does not)
 
