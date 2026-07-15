@@ -16,11 +16,32 @@ defmodule AshArcadic.Integration.KeysetPaginationTest do
   require Ash.Expr
 
   alias Ash.Query.Combination
-  alias AshArcadic.Test.KeysetDoc
+  alias AshArcadic.Multitenancy
+  alias AshArcadic.Test.{KeysetCtxDoc, KeysetDoc}
 
   setup %{admin: admin} do
     on_exit(fn -> Arcadic.command!(admin, "MATCH (n:KeysetDoc) DETACH DELETE n") end)
     :ok
+  end
+
+  # Provision two randomized :context tenant DBs for KeysetCtxDoc and drop them on exit (mirrors the
+  # relationship_test pattern). The default encoder maps a bare tenant string to `t_<tenant>`.
+  defp provision_context(admin, resource) do
+    t1 = "korg1_" <> Base.encode16(:crypto.strong_rand_bytes(3), case: :lower)
+    t2 = "korg2_" <> Base.encode16(:crypto.strong_rand_bytes(3), case: :lower)
+    dbs = Enum.uniq(for org <- [t1, t2], do: Multitenancy.database_name(resource, org))
+    for db <- dbs, do: Arcadic.Server.create_database!(admin, db)
+    on_exit(fn -> for db <- dbs, do: Arcadic.Server.drop_database(admin, db) end)
+    {t1, t2}
+  end
+
+  defp ctx_seed(id, tenant, score) do
+    {:ok, d} =
+      KeysetCtxDoc
+      |> Ash.Changeset.for_create(:create, %{id: id, score: score}, tenant: tenant)
+      |> Ash.create()
+
+    d
   end
 
   # === Keyset walk helpers (shared across Tasks 2–4). ===
@@ -270,5 +291,71 @@ defmodule AshArcadic.Integration.KeysetPaginationTest do
     walked = keyset_walk(combo, "org1", 1)
     assert walked == ground_truth(combo, "org1")
     assert walked == ["y", "z"]
+  end
+
+  # === Task 4: cross-tenant isolation across the FULL keyset walk, BOTH strategies (R2). The cursor
+  # is a filter value; the tenant predicate must AND independently so no page ever leaks another
+  # tenant's rows. Attacker rows seeded FIRST (feedback_adversarial_test_fixture_ordering_defeats_
+  # nonvacuity): a scope-then-limit bug (unscoped LIMIT filling from the first-seeded tenant) surfaces. ===
+
+  test "isolation :attribute: a keyset walk under one tenant leaks NO other-tenant row across any page" do
+    # Attacker (org2) seeded FIRST; its scores INTERLEAVE org1's (5,15,25,35 vs 10,20,30,40), so an
+    # unscoped cursor walk would splice z-rows between the a-rows.
+    for {id, s} <- [{"z1", 5}, {"z2", 15}, {"z3", 25}, {"z4", 35}],
+        do: seed(id, "org2", %{score: s})
+
+    for {id, s} <- [{"a1", 10}, {"a2", 20}, {"a3", 30}, {"a4", 40}],
+        do: seed(id, "org1", %{score: s})
+
+    query = KeysetDoc |> Ash.Query.sort(score: :asc)
+    # page size 1 exercises the cursor at EVERY boundary (max chance for a leak).
+    walked = keyset_walk(query, "org1", 1)
+
+    assert walked == ["a1", "a2", "a3", "a4"]
+    refute Enum.any?(walked, &String.starts_with?(&1, "z")), "cursor walk leaked an org2 row"
+
+    # MUTATION-PROOF: KeysetDoc's `multitenancy attribute :org_id` injects `org_id == "org1"` and ANDs
+    # with the cursor filter; strip that block and the interleaved z-rows would appear across the pages.
+  end
+
+  test "isolation :context: a keyset walk resolves the tenant DB only; base-DB + other-tenant rows unreachable",
+       %{admin: admin, database: base_db} do
+    {t1, t2} = provision_context(admin, KeysetCtxDoc)
+
+    # Attacker tenant (t2) + the BASE integration DB seeded FIRST with same-id rows.
+    for {id, s} <- [{"a1", 99}, {"a2", 99}], do: ctx_seed(id, t2, s)
+
+    base_conn = Arcadic.with_database(admin, base_db)
+    Arcadic.command!(base_conn, "CREATE (n:KeysetCtxDoc {id: 'a1', score: 1})")
+
+    for {id, s} <- [{"a1", 10}, {"a2", 20}, {"a3", 30}], do: ctx_seed(id, t1, s)
+
+    query = KeysetCtxDoc |> Ash.Query.sort(score: :asc)
+    walked = keyset_walk(query, t1, 1)
+
+    # Only t1's three rows, in order — never t2's (separate DB) nor the base-DB 'a1'. MUTATION-PROOF:
+    # strip `strategy :context` and the walk would fall to the base DB (reaching base 'a1' score 1).
+    assert walked == ["a1", "a2", "a3"]
+    # And each row is t1's, not the base row: t1's a1 has score 10, base's has score 1.
+    {:ok, [%{score: 10}]} =
+      KeysetCtxDoc |> Ash.Query.filter(id == "a1") |> Ash.read(tenant: t1)
+  end
+
+  # === Task 4: page:[count:true] via run_aggregate_statement — the total is tenant-scoped. ===
+
+  test "page:[count:true] returns the correct tenant-scoped total (not the cross-tenant total)" do
+    for {id, s} <- [{"a1", 10}, {"a2", 20}, {"a3", 30}], do: seed(id, "org1", %{score: s})
+
+    for {id, s} <- [{"z1", 5}, {"z2", 15}, {"z3", 25}, {"z4", 35}, {"z5", 45}],
+        do: seed(id, "org2", %{score: s})
+
+    page =
+      KeysetDoc
+      |> Ash.Query.sort(score: :asc)
+      |> Ash.read!(tenant: "org1", page: [limit: 2, count: true])
+
+    # count is org1's 3 (NOT the 8 rows across both tenants); the first page carries 2 of them.
+    assert page.count == 3
+    assert length(page.results) == 2
   end
 end
