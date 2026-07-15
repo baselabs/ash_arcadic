@@ -59,6 +59,25 @@ defmodule AshArcadic.Cast do
   end
 
   @doc """
+  The Cypher temporal constructor a bound comparison param must be wrapped in for a temporal
+  attribute, or `nil`. ArcadeDB auto-coerces stored ISO8601 datetime/time strings to its native
+  temporal types on write, so a `prop OP $stringparam` comparison silently matched NOTHING (the
+  string param never equals a coerced temporal value — probe-verified). Wrapping the param —
+  `datetime($p)` for `:utc_datetime`/`:naive_datetime`, `localtime($p)` for `:time` — makes ArcadeDB
+  compare temporal-to-temporal. `:date` is the exception: ArcadeDB does NOT coerce date-only strings,
+  so it stays a string and compares correctly UNWRAPPED (`nil`).
+  """
+  @spec temporal_cypher_fn(Ash.Type.t(), keyword()) :: String.t() | nil
+  def temporal_cypher_fn(type, constraints) do
+    case Ash.Type.storage_type(type, constraints) do
+      :utc_datetime -> "datetime"
+      :naive_datetime -> "datetime"
+      :time -> "localtime"
+      _ -> nil
+    end
+  end
+
+  @doc """
   Whether an attribute's storage type is numerically summable/averageable
   (`:integer`/`:float`). False for `:decimal` (stored as an exact string, so ArcadeDB
   `sum`/`avg` would concatenate/error, D27) and every non-numeric class. Drives the

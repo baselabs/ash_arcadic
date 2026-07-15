@@ -209,9 +209,7 @@ defmodule AshArcadic.Query.Filter do
          UnsupportedFilter.exception(operator: Ash.Query.Operator.In, field: attr_name(attr))}
 
       true ->
-        field = identifier(attr)
-        {query, ref} = Query.add_param(query, Enum.map(values, &cast_value(&1, attr)))
-        {:ok, query, "n.#{field} IN #{ref}"}
+        in_clause(query, attr, values)
     end
   end
 
@@ -298,9 +296,42 @@ defmodule AshArcadic.Query.Filter do
     if filterable_field?(query, attr) do
       field = identifier(attr)
       {query, ref} = Query.add_param(query, cast_value(value, attr))
-      {:ok, query, "n.#{field} #{cypher_op} #{ref}"}
+      {:ok, query, "n.#{field} #{cypher_op} #{temporal_wrap(ref, attr)}"}
     else
       {:error, UnsupportedFilter.exception(operator: operator, field: attr_name(attr))}
+    end
+  end
+
+  # Wrap a bound comparison param in the attribute's Cypher temporal constructor
+  # (`datetime($p)`/`localtime($p)`) so ArcadeDB compares temporal-to-temporal — a bare string param
+  # against a coerced temporal property silently matches nothing (Cast.temporal_cypher_fn/2). A
+  # non-temporal (or `:date`) attr returns the ref unchanged.
+  defp temporal_wrap(ref, attr) do
+    case Cast.temporal_cypher_fn(attr_type(attr), attr_constraints(attr)) do
+      nil -> ref
+      fun -> "#{fun}(#{ref})"
+    end
+  end
+
+  # `field IN [...]`. A NON-temporal attr binds the whole list as one param (`IN $p`). A coerced
+  # temporal attr binds each element separately and wraps it (`IN [datetime($p1), datetime($p2)]`) —
+  # a bare string list never matches coerced temporal values (same silent-[] bug as scalar compare).
+  defp in_clause(query, attr, values) do
+    field = identifier(attr)
+
+    case Cast.temporal_cypher_fn(attr_type(attr), attr_constraints(attr)) do
+      nil ->
+        {query, ref} = Query.add_param(query, Enum.map(values, &cast_value(&1, attr)))
+        {:ok, query, "n.#{field} IN #{ref}"}
+
+      fun ->
+        {query, wrapped} =
+          Enum.reduce(values, {query, []}, fn value, {q, acc} ->
+            {q, ref} = Query.add_param(q, cast_value(value, attr))
+            {q, ["#{fun}(#{ref})" | acc]}
+          end)
+
+        {:ok, query, "n.#{field} IN [#{wrapped |> Enum.reverse() |> Enum.join(", ")}]"}
     end
   end
 
