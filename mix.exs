@@ -46,7 +46,7 @@ defmodule AshArcadic.MixProject do
       {:ash, "~> 3.11"},
       {:spark, ">= 2.3.3 and < 3.0.0-0"},
       {:splode, "~> 0.3"},
-      {:arcadic, path: "../arcadic"},
+      {:arcadic, "~> 0.7.1"},
       {:jason, "~> 1.4"},
       {:telemetry, "~> 1.0"},
       # SAT solver required by Ash.Policy.Authorizer (Ash lists it as an optional dep;
@@ -86,9 +86,13 @@ defmodule AshArcadic.MixProject do
       extras: [
         "README.md",
         "usage-rules.md",
+        "documentation/dsls/DSL-AshArcadic.DataLayer.md",
         "CHANGELOG.md",
         "CONTRIBUTING.md",
         "LICENSE"
+      ],
+      groups_for_extras: [
+        "DSL Reference": ~r"documentation/dsls/.*"
       ]
     ]
   end
@@ -96,10 +100,10 @@ defmodule AshArcadic.MixProject do
   defp aliases do
     [
       quality: ["format --check-formatted", "credo --strict", "dialyzer"],
-      "deps.audit": ["deps.unlock --check-unused", "hex.audit", "mix_audit"]
-      # Once AshArcadic.DataLayer defines its `arcade do ... end` section, add a
-      # `docs` alias that generates the DSL cheat sheet first:
-      #   docs: ["spark.cheat_sheets --extensions AshArcadic.DataLayer", "docs"]
+      "deps.audit": ["deps.unlock --check-unused", "hex.audit", "mix_audit"],
+      # Regenerate the `arcade do … end` DSL cheat sheet before building docs so
+      # hexdocs always ships the current DSL reference.
+      docs: ["spark.cheat_sheets --extensions AshArcadic.DataLayer", "docs"]
     ]
   end
 end

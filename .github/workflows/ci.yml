@@ -1,0 +1,106 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Cancel superseded runs on the same ref.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: test (elixir ${{ matrix.elixir }} / otp ${{ matrix.otp }})
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Supported floor (mix.exs requires elixir ~> 1.15).
+          - elixir: "1.16.3"
+            otp: "26.2"
+          # Current — dialyzer runs on this one only.
+          - elixir: "1.18.3"
+            otp: "27.3"
+            dialyzer: true
+
+    services:
+      arcadedb:
+        # Matches the locally-verified image (reports 26.8.1). Pin to a stable
+        # ArcadeDB tag once one is standardized for the project.
+        image: arcadedata/arcadedb:latest
+        ports:
+          - 2480:2480
+        env:
+          JAVA_OPTS: >-
+            -Darcadedb.server.rootPassword=arcadedb_dev_password
+            -Darcadedb.server.mode=development
+
+    env:
+      MIX_ENV: test
+      ARCADIC_TEST_URL: http://localhost:2480
+      ARCADIC_TEST_PASSWORD: arcadedb_dev_password
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Elixir/OTP
+        uses: erlef/setup-beam@v1
+        with:
+          elixir-version: ${{ matrix.elixir }}
+          otp-version: ${{ matrix.otp }}
+
+      - name: Cache deps and _build
+        uses: actions/cache@v4
+        with:
+          path: |
+            deps
+            _build
+          key: ${{ runner.os }}-mix-${{ matrix.otp }}-${{ matrix.elixir }}-${{ hashFiles('**/mix.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-mix-${{ matrix.otp }}-${{ matrix.elixir }}-
+
+      - name: Install dependencies
+        run: mix deps.get
+
+      - name: Check formatting
+        run: mix format --check-formatted
+
+      - name: Compile (warnings as errors)
+        run: mix compile --warnings-as-errors
+
+      - name: Credo
+        run: mix credo --strict
+
+      - name: Wait for ArcadeDB to be ready
+        run: |
+          for i in $(seq 1 60); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' -u root:arcadedb_dev_password http://localhost:2480/api/v1/ready || true)
+            if [ "$code" = "204" ]; then echo "ArcadeDB ready"; exit 0; fi
+            echo "waiting for ArcadeDB ($i)... last=$code"; sleep 2
+          done
+          echo "ArcadeDB did not become ready in time" >&2
+          exit 1
+
+      - name: Test (unit + integration)
+        run: mix test --include integration
+
+      - name: Cache PLT
+        if: matrix.dialyzer
+        uses: actions/cache@v4
+        with:
+          path: priv/plts
+          key: ${{ runner.os }}-plt-${{ matrix.otp }}-${{ matrix.elixir }}-${{ hashFiles('**/mix.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-plt-${{ matrix.otp }}-${{ matrix.elixir }}-
+
+      - name: Dialyzer
+        if: matrix.dialyzer
+        run: mix dialyzer

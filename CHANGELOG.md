@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-07-15
+
+First public release: the Ash Framework `DataLayer` for ArcadeDB, executing native
+OpenCypher over the HTTP command API via the `arcadic` transport. Everything below is
+the initial surface.
+
 ### Added
 
 - **`upsert_condition` support (single-row + bulk).** Previously the condition was silently ignored —
@@ -434,3 +440,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   database names are operator-visible (use `tenant_database` to hash a classified
   tenant space). ArcadeDB `CONTAINS`/`STARTS WITH`/`ENDS WITH` are case-sensitive (a
   `:ci_string` attribute's case-insensitive semantics are not preserved).
+
+[Unreleased]: https://github.com/baselabs/ash_arcadic/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/baselabs/ash_arcadic/releases/tag/v0.1.0

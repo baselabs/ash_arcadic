@@ -18,8 +18,16 @@ section and implements the `Ash.DataLayer` behaviour.
       # tenant_database {MyApp.Tenancy, :db_for, []}  # :context override
     end
 
-Capabilities light up across the build: this foundation advertises
-`:multitenancy`; CRUD/query/upsert/transact/traversal land in later plans.
+Advertised capabilities (see `can?/2` for the authoritative matrix): CRUD +
+`MERGE` upserts + atomic `SET`, bulk writes (`bulk_create`, multi-row bulk
+upsert, heterogeneous `update_many`, query-scoped `update_query`/
+`destroy_query`), filter/sort/distinct/combinations push-down, offset +
+keyset pagination (`Ash.stream!`), query + relationship aggregates,
+expression calculations, standard relationships + `Traverse` manual
+traversal + edge writes, dense/sparse/hybrid vector search, transactions,
+`:async_engine`, telemetry. Multitenancy (`:attribute` + `:context`) is
+fail-closed on every path; errors are value-free (no value, tenant, or byte
+in a message). Per-feature fine print: `usage-rules.md`.
 
 
 ## arcade

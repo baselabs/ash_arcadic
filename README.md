@@ -10,11 +10,13 @@ enforced **Ash-natively**. It executes through the
 "`postgrex` of ArcadeDB").
 
 > **Status: feature-complete for 0.1.0, pre-publish.** The full remaining-capabilities
-> roadmap has shipped (11 slices, 685 tests incl. live-ArcadeDB integration, dialyzer
-> clean). Working rules for contributors are in [`AGENTS.md`](AGENTS.md); consumer
+> roadmap has shipped (11 slices, 692 tests incl. live-ArcadeDB integration, dialyzer
+> clean). Working rules for contributors are in
+> [`AGENTS.md`](https://github.com/baselabs/ash_arcadic/blob/main/AGENTS.md); consumer
 > usage rules (the fine print per feature) are in [`usage-rules.md`](usage-rules.md).
 
-**Try it in 5 minutes:** [`livebooks/tour.livemd`](livebooks/tour.livemd) — a
+**Try it in 5 minutes:**
+[`livebooks/tour.livemd`](https://github.com/baselabs/ash_arcadic/blob/main/livebooks/tour.livemd) — a
 runnable Livebook tour of the whole surface (CRUD → queries → keyset streaming →
 concurrent bulk → multitenancy → vector search → graph traversal) against a
 throwaway database. Every cell is verified against a live ArcadeDB.

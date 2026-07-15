@@ -3,6 +3,10 @@ _build/
 erl_crash.dump
 *.beam
 *.ez
+*.tar
+
+# Scratch
+/scratchpad/
 
 # Dependencies
 deps/
