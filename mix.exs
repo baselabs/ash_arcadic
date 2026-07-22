@@ -47,6 +47,10 @@ defmodule AshArcadic.MixProject do
       {:spark, ">= 2.3.3 and < 3.0.0-0"},
       {:splode, "~> 0.3"},
       {:arcadic, "~> 0.7.1"},
+      # `replicant` is not published to hex; the sibling checkout is a path dep (dev/CI
+      # only — not a release concern this slice; see T1 closeout for the future-hex-release
+      # gap and the CI checkout gap this leaves).
+      {:replicant, path: "../replicant", optional: true},
       {:jason, "~> 1.4"},
       {:telemetry, "~> 1.0"},
       # SAT solver required by Ash.Policy.Authorizer (Ash lists it as an optional dep;
@@ -101,9 +105,9 @@ defmodule AshArcadic.MixProject do
     [
       quality: ["format --check-formatted", "credo --strict", "dialyzer"],
       "deps.audit": ["deps.unlock --check-unused", "hex.audit", "mix_audit"],
-      # Regenerate the `arcade do … end` DSL cheat sheet before building docs so
-      # hexdocs always ships the current DSL reference.
-      docs: ["spark.cheat_sheets --extensions AshArcadic.DataLayer", "docs"]
+      # Regenerate the `arcade do … end` / `replicant do … end` DSL cheat sheets before
+      # building docs so hexdocs always ships the current DSL reference.
+      docs: ["spark.cheat_sheets --extensions AshArcadic.DataLayer,AshArcadic.Replicant", "docs"]
     ]
   end
 end
