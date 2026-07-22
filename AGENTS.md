@@ -64,7 +64,7 @@ here — read it there.
 `run_query/2`, `create/2`, `update/2`, `destroy/2`, `bulk_create/3`,
 `set_tenant/3`, and transaction callbacks — each compiling to parameterized
 Cypher run via `Arcadic`. Traversal ships as an Ash manual relationship. Generate
-DSL docs with `mix spark.cheat_sheets --extensions AshArcadic.DataLayer`.
+DSL docs with `mix spark.cheat_sheets --extensions AshArcadic.DataLayer,AshArcadic.Replicant`.
 
 ## Development workflow
 

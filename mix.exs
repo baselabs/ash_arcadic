@@ -91,6 +91,7 @@ defmodule AshArcadic.MixProject do
         "README.md",
         "usage-rules.md",
         "documentation/dsls/DSL-AshArcadic.DataLayer.md",
+        "documentation/dsls/DSL-AshArcadic.Replicant.md",
         "CHANGELOG.md",
         "CONTRIBUTING.md",
         "LICENSE"

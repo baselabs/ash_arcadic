@@ -47,6 +47,7 @@ database. Every cell is verified against a live ArcadeDB. Click the badge (needs
 | **Transactions** | session transactions (`Ash.DataLayer.transaction`), lazy session open, rollback-safe |
 | **Concurrency** | `:async_engine` — Ash runs independent loads/aggregates concurrently (pool-proven safe) |
 | **Observability** | `:telemetry` spans for reads/writes/traversals/vector with value-free metadata |
+| **CDC mirror** *(optional)* | Postgres→ArcadeDB **effect-once** replication sink (`AshArcadic.Replicant.*`, on the `replicant` transport): declare a mirror resource, wire a sink + integer-LSN watermark + supervised pipeline; watermark advances in the same `Ash.transaction` as the data (atomic, replay = no-op). Fail-closed by verifier + runtime guard (single-database `:attribute`/none, write-action seam-lock, non-sensitive PK, skip-or-halt on sensitive targets, empty-index) |
 
 Deliberate non-goals: `{:lateral_join}` (Ash bypasses it for manual traversal rels),
 window-function inline aggregates, transport concerns (pooling, gRPC — those live in

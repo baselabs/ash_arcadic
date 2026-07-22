@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Postgres→ArcadeDB effect-once CDC sink (`AshArcadic.Replicant.*`).** An optional module
+  mirroring a Postgres logical-replication stream into an ArcadeDB graph projection exactly once,
+  built on the sibling `replicant` CDC transport. A host graph resource declares itself a mirror
+  target with the new `AshArcadic.Replicant` extension (`replicant do source_table "orders";
+  source_schema "public"; tenant_attribute :org_id; skip [...]; on_truncate :halt|:mirror end`); the
+  host wires a sink (`use AshArcadic.ReplicantSink, domains:, checkpoint_resource:, slot_name:` → a
+  `Replicant.Sink` impl with `checkpoint/0`, `handle_transaction/1`, `sink_kind :state_mirror`, and
+  snapshot bootstrap callbacks), an ArcadeDB-resident integer-LSN watermark
+  (`use AshArcadic.ReplicantCheckpoint, domain:, client:`), and a supervised pipeline
+  (`AshArcadic.Replicant.Pipeline` — snapshot-on-empty-checkpoint vs resume). **Effect-once** holds
+  because the watermark advance rides the SAME `Ash.transaction` (one ArcadeDB session) as the
+  mirrored writes: a replayed `commit_lsn` is a no-op via the integer `<=` gate (a nil/never-applied
+  checkpoint APPLIES), and a crash mid-apply commits neither the data nor the watermark. The
+  library ships the fail-closed contract, not the consumer: a compile verifier rejects `:context`
+  multitenancy (which shatters effect-once across databases), rejects a mirror write action with no
+  authorizer (the seam-lock precondition), and rejects a `sensitive` primary key; the resolver HALTS
+  value-free on a non-skipped source column mapped to a `sensitive` target; a sink whose domains
+  hold no mirror resource fails closed `:empty_index` (never a silent watermark advance); an upstream
+  TRUNCATE is `:halt` (default) or a tenant-blind `:mirror` delete. Value-free CDC telemetry
+  (`[:ash_arcadic, :replicant, :transaction, :apply|:skip]`, metadata `slot`/`commit_lsn` only — never
+  a row value). `replicant` is an `optional: true` dep; a host that uses the CDC sink must add
+  `replicant` to its own deps (the sink subtree hard-references `%Replicant.*{}` structs at compile),
+  a host that doesn't never touches these modules. See `usage-rules.md` for the full consumer contract.
+
 ## [0.1.0] - 2026-07-15
 
 First public release: the Ash Framework `DataLayer` for ArcadeDB, executing native

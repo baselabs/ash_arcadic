@@ -36,6 +36,173 @@ _An Ash DataLayer for ArcadeDB (native OpenCypher over HTTP)._
 - **`MERGE` is used** for idempotent upsert (ArcadeDB-verified) — unlike the
   `ash_age` sibling. Do not import AGE's "never MERGE" rule.
 
+## CDC mirror — Postgres→ArcadeDB effect-once sink (`AshArcadic.Replicant.*`)
+
+An **optional** subsystem that mirrors a Postgres logical-replication stream into an
+ArcadeDB graph projection **exactly once**, over the sibling `replicant` CDC transport. Opt-in
+— a host that does not use CDC never references these modules. `replicant` is an `optional: true`
+dep, but the whole `AshArcadic.Replicant.*` subtree hard-references `%Replicant.*{}` structs at
+compile, so **a host that uses the CDC sink MUST add `replicant` to its own deps** (a host that
+does not never compiles it).
+
+- **Declare a mirror resource** with the `AshArcadic.Replicant` extension. `source_table` is
+  required (no reflection — a graph resource's `arcade` label is not its Postgres table);
+  `source_schema` defaults to `"public"`; `tenant_attribute` names the SOURCE column carrying the
+  tenant (resolved per row, passed as `tenant:` to the mirror write); `skip` names **source**
+  (Postgres) columns excluded from the mirror (distinct from `arcade do skip … end`, which names
+  target attributes); `on_truncate` is `:halt` (default) or `:mirror`.
+
+      defmodule MyGraph.Order do
+        use Ash.Resource,
+          domain: MyGraph.Domain,
+          data_layer: AshArcadic.DataLayer,
+          extensions: [AshArcadic.Replicant],
+          authorizers: [Ash.Policy.Authorizer]
+
+        arcade do
+          client MyGraph.ArcadicClient
+          label :Order
+        end
+
+        replicant do
+          source_table "orders"
+          # source_schema "public"      # default
+          tenant_attribute :org_id
+          skip [:internal_notes]        # source columns excluded from the mirror write
+          on_truncate :halt             # default (fail-closed); or :mirror
+        end
+
+        attributes do
+          attribute :id, :string, primary_key?: true, allow_nil?: false
+          attribute :org_id, :string
+          attribute :title, :string
+          # ...
+        end
+
+        multitenancy do
+          strategy :attribute           # NEVER :context (see the single-database rule)
+          attribute :org_id
+        end
+
+        actions do
+          # The sink calls the resource's PRIMARY create + destroy. A defaults-generated
+          # :destroy is primary; a custom create must be marked primary? true.
+          defaults [:read, :destroy]
+
+          create :upsert do
+            primary? true
+            upsert? true
+            accept [:id, :org_id, :title]
+          end
+        end
+
+        # The seam-lock: forbid ordinary writes so only the sink writes (bypassing with
+        # authorize?: false). A resource with write actions and NO authorizer fails to compile.
+        policies do
+          policy always() do
+            forbid_if always()
+          end
+        end
+      end
+
+- **Wire the checkpoint, sink, and pipeline.** The checkpoint is an ArcadeDB-resident watermark
+  vertex (one row per slot); the sink is a `Replicant.Sink` impl baked with the host's config; the
+  pipeline is a supervision child that starts `replicant` with the correct start-mode.
+
+      defmodule MyGraph.Checkpoint do
+        # The watermark vertex (label :ReplicantCheckpoint, integer last_commit_lsn). Its
+        # `client:` MUST target the SAME ArcadeDB database as the mirror resources.
+        use AshArcadic.ReplicantCheckpoint,
+          domain: MyGraph.Domain,
+          client: MyGraph.ArcadicClient
+      end
+
+      defmodule MyGraph.ReplicantSink do
+        use AshArcadic.ReplicantSink,
+          domains: [MyGraph.Domain],
+          checkpoint_resource: MyGraph.Checkpoint,
+          slot_name: "mygraph_orders"
+      end
+
+      # In your supervision tree:
+      children = [
+        {AshArcadic.Replicant.Pipeline,
+         connection: [hostname: "standby.internal", port: 5432, username: "u",
+                      password: "p", database: "evidence", ssl: true],
+         publication: "orders_pub",
+         sink: MyGraph.ReplicantSink}
+      ]
+
+  The `:sink` carries `slot_name` + `domains` + checkpoint (the single source of truth); the host
+  supplies only `:connection` and `:publication`. On an **empty** checkpoint the pipeline runs a
+  full **snapshot** bootstrap (the rebuildable-projection premise — forward-only replay would lose
+  every pre-slot row); on a durable watermark it **resumes**. A mis-mapped mirror (duplicate/missing
+  `source_table`) fails the host's boot loud, never silently starts. Postgres logical-replication
+  setup (`wal_level=logical`, the slot, the publication) is the host's operational concern.
+
+**The seven fail-closed contracts a consumer MUST honor** (verifier-enforced or runtime-halted):
+
+1. **Single-database (compile verifier).** A mirror resource must be `:attribute` multitenancy or
+   non-multitenant — **never `:context`**. Effect-once needs every tenant a tenant-blind Postgres
+   transaction can touch to live in ONE ArcadeDB database; `:context` maps tenants to different
+   databases, so a cross-tenant Postgres transaction would fail `:cross_database_transaction` and
+   shatter effect-once. `ValidateSingleDbTenancy` rejects `:context` at compile. The checkpoint's
+   `client:` MUST also resolve to that same database (not verifier-checkable — the checkpoint is not
+   a mirror resource; a mismatched client makes the watermark upsert a cross-database write that
+   fails the session).
+
+2. **Sensitive source columns must be skipped (compile verifier + runtime halt).** AshArcadic holds
+   no key material, so it cannot safely emit an arriving Postgres value into an encrypted-binary
+   column. A non-`skip`ped source column whose name matches a `sensitive` target attribute **HALTS
+   the transaction value-free** (`:sensitive_plaintext`) at apply time — so list every such column in
+   the `replicant` `skip`. (If a column genuinely arrives already-ciphertext and you want it
+   mirrored, model the target as a plain `:binary` attribute, NOT `sensitive` — the
+   searchable-encryption escape hatch; `sensitive` is the do-not-mirror-as-plaintext contract.) A
+   `sensitive` **primary key** is additionally rejected at compile
+   (`ValidatePrimaryKeyNotSensitive`) — the sink builds the mirror identity from the source's
+   plaintext key to MATCH the vertex, and a sensitive PK would both leak the value and break
+   idempotent matching.
+
+3. **Write-action seam-lock (compile verifier + consumer policy).** A mirror resource with any
+   create/update/destroy action **must declare at least one authorizer**
+   (`ValidateWriteActionsAuthorized` rejects the absence at compile — the sound compile-time
+   precondition). That verifier is necessary but NOT sufficient: the FULL forbidden-by-default lock
+   is **your** default-deny policies (e.g. `forbid_if always()`) plus the sink's `authorize?: false`
+   bypass. A **permissive** write policy defeats the lock (any caller could dual-write the mirror)
+   and is **the consumer's responsibility** — it is compile-undecidable (a runtime SAT problem), so
+   cover it with your own policy tests.
+
+4. **Effect-once via a same-transaction integer watermark.** The watermark is an **integer** LSN
+   stored in the same ArcadeDB database, advanced in the **same `Ash.transaction`** (one session) as
+   the mirrored writes — so data + watermark commit atomically or roll back together. A replayed
+   `commit_lsn` is a no-op via the integer `<=` gate (`is_integer(stored) and lsn <= stored`); a
+   `nil`/never-applied checkpoint **applies** (the guard is load-bearing — in Erlang term order a
+   number sorts before every atom, so a guardless `lsn <= nil` would wrongly skip the first
+   transaction). A crash mid-apply commits neither the data nor the watermark, so `replicant`
+   redelivers from the last acked LSN (loss = 0); `MERGE` upsert makes any individual re-apply
+   idempotent (dup = 0).
+
+5. **Empty-index fails closed.** A sink whose `domains` contain NO replicant mirror resource fails
+   closed (`:empty_index`) BEFORE opening the transaction — it never silently skips every change while
+   advancing the watermark (which would be permanent, invisible loss). A non-empty index with a
+   specific unmapped `{schema, table}` stays a legitimate partial-publication skip (`:ok`).
+
+6. **Truncate.** An upstream `TRUNCATE` is handled per `on_truncate`: `:halt` (default, fail-closed —
+   the transaction rolls back) or `:mirror` (a tenant-**blind** whole-label `DETACH DELETE`, atomic
+   with the surrounding changes and the watermark advance).
+
+7. **Optional-dep caveat (honest optionality).** `replicant` is declared `optional: true`, but the
+   `AshArcadic.Replicant.*` subtree hard-references `%Replicant.Transaction{}` / `%Replicant.Change{}`
+   structs at compile, so it is **not** conditionally compiled. A host that uses the CDC sink **must
+   add `replicant` to its own deps**; a host that doesn't never touches these modules and needs
+   nothing.
+
+- **Value-free CDC telemetry.** Two flat events —
+  `[:ash_arcadic, :replicant, :transaction, :apply]` (measurements `change_count`, `duration`) and
+  `[:ash_arcadic, :replicant, :transaction, :skip]` (measurement `duration`, a replay-gate hit) —
+  carry metadata `slot` + `commit_lsn` ONLY. No row value, record, column, or tenant ever reaches an
+  error or telemetry.
+
 ## Vector search — dense, sparse & hybrid (Slice 10)
 
 - **Declare the index in the `arcade` block; the HOST creates it.** `vector_index :embedding,
