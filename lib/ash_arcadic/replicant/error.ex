@@ -15,10 +15,31 @@ defmodule AshArcadic.Replicant.Error do
       is plaintext and AshArcadic holds no key to encrypt it, so emitting it would
       write plaintext into a classified column (the F5 runtime guard in
       `writable_target/2` / `attrs_for_upsert/2`).
+
+  The apply step (`AshArcadic.Replicant.Apply`) raises it for the fail-closed
+  effect-once paths:
+
+    * `:empty_identity` — an upsert whose primary key resolves to an empty/partial
+      identity (missing a PK value) would MERGE on an empty pattern and clobber
+      unrelated vertices.
+    * `:missing_primary_key` — a delete whose `old_record` lacks a primary-key value
+      (would build `id == nil`, matching 0 rows and silently losing the delete).
+    * `:truncate_halt` — an upstream TRUNCATE arrived for a resource whose
+      `on_truncate` is `:halt` (the fail-closed default).
+    * `:unsupported_op` — a change carried an op the invariant map does not cover.
+    * `:sink_failed` — a mirrored write failed at the data layer; the underlying
+      exception is discarded value-free (its contents are never interpolated).
   """
   use Splode.Error, fields: [:reason, :resource, :op], class: :invalid
 
-  @type reason :: :tenant_required | :sensitive_plaintext
+  @type reason ::
+          :tenant_required
+          | :sensitive_plaintext
+          | :empty_identity
+          | :missing_primary_key
+          | :truncate_halt
+          | :unsupported_op
+          | :sink_failed
 
   @type t :: %__MODULE__{
           reason: reason() | nil,

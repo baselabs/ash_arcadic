@@ -3432,6 +3432,20 @@ defmodule AshArcadic.DataLayer do
   def write_conn(resource, changeset),
     do: write_conn_for_tenant(resource, Map.get(changeset, :to_tenant))
 
+  @doc false
+  # In-session base-database write conn for a TENANT-BLIND raw command — the replicant
+  # `AshArcadic.Replicant.Apply` TRUNCATE `:mirror` path. Delegates to the canonical
+  # write-conn resolver with a nil tenant: a non-:context resource resolves its base
+  # database (all `:attribute`-tenant rows share it, so a whole-label DELETE is correctly
+  # tenant-blind); a :context resource fails closed `:tenant_required` (physical
+  # multitenancy has no single database to truncate — and a replicant resource is verified
+  # never :context). Routes through resolve_conn/2, so inside an Ash.transaction the raw
+  # command reuses / opens the session and commits atomically with the sibling writes.
+  @spec base_write_conn(Ash.Resource.t()) ::
+          {:ok, Arcadic.Conn.t()}
+          | {:error, :tenant_required | :cross_database_transaction | :transaction_begin_failed}
+  def base_write_conn(resource), do: write_conn_for_tenant(resource, nil)
+
   # The write connection keyed on the raw tenant, fail-closed on a blank :context tenant. The
   # CANONICAL resource+tenant → write-conn resolver, shared by write_conn/2 (single-row) and
   # update_many/3. Routes the database-targeted base conn through resolve_conn/2, an EXACT passthrough
