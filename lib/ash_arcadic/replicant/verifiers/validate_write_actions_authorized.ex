@@ -27,6 +27,12 @@ defmodule AshArcadic.Replicant.Verifiers.ValidateWriteActionsAuthorized do
   those would over-reject legitimate resources. So the runtime seam-lock stays a
   runtime guarantee; this check catches only the "forgot to gate the mirror action
   at all" failure, at compile time.
+
+  Scope note: this reads the RESOURCE's persisted `:authorizers` only. A resource
+  that seam-locks its writes solely via a DOMAIN-level policy authorizer (with no
+  resource authorizer) trips this verifier — a benign false positive whose remedy
+  (also declare a resource authorizer, as the error message says) is harmless
+  belt-and-suspenders.
   """
   use Spark.Dsl.Verifier
   alias Spark.Dsl.Verifier
