@@ -65,6 +65,7 @@ defmodule AshArcadic.Replicant.Apply do
   alias AshArcadic.Replicant.Error
   alias AshArcadic.Replicant.Info
   alias AshArcadic.Replicant.Resolver
+  alias AshArcadic.Replicant.Telemetry
 
   @type config :: %{
           :resolver_index => %{Resolver.source_key() => module()},
@@ -107,15 +108,30 @@ defmodule AshArcadic.Replicant.Apply do
   end
 
   # The transaction body: read the committed watermark, apply-or-skip (F1 gate), advance.
-  # Runs inside the single session opened by the first write.
+  # Runs inside the single session opened by the first write. Telemetry (additive,
+  # value-free — Telemetry.validate!/1 is the enforcement point) is emitted AFTER the
+  # decision: on the apply branch, only once every change has applied and the
+  # checkpoint has advanced without raising, so a rolled-back apply never emits a
+  # false :apply event (a raise here propagates out to apply_transaction/2's boundary
+  # and this function never reaches its telemetry call).
   defp run(config, lsn, changes) do
+    start_time = System.monotonic_time()
     stored = config.checkpoint.for_slot(config.slot)
 
     if replay_skip?(stored, lsn) do
+      Telemetry.skip_event(config.slot, lsn, System.monotonic_time() - start_time)
       stored
     else
       Enum.each(changes, &apply_change(config, &1))
       config.checkpoint.upsert_lsn(config.slot, lsn)
+
+      Telemetry.apply_event(
+        config.slot,
+        lsn,
+        length(changes),
+        System.monotonic_time() - start_time
+      )
+
       lsn
     end
   end
