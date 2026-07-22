@@ -24,7 +24,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   checkpoint APPLIES), and a crash mid-apply commits neither the data nor the watermark. The
   library ships the fail-closed contract, not the consumer: a compile verifier rejects `:context`
   multitenancy (which shatters effect-once across databases), rejects a mirror write action with no
-  authorizer (the seam-lock precondition), and rejects a `sensitive` primary key; the resolver HALTS
+  authorizer (the seam-lock precondition), rejects a `sensitive` primary key, and rejects a primary
+  key listed in `skip` (a dropped-PK write would forge a fresh identity); the resolver HALTS
   value-free on a non-skipped source column mapped to a `sensitive` target; a sink whose domains
   hold no mirror resource fails closed `:empty_index` (never a silent watermark advance); an upstream
   TRUNCATE is `:halt` (default) or a tenant-blind `:mirror` delete. Value-free CDC telemetry

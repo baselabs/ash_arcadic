@@ -111,9 +111,14 @@ does not never compiles it).
   columns — the `tenant_attribute` column is absent — so `Resolver.resolve_tenant!` fails closed
   `:tenant_required` and the **whole transaction halts** (fail-closed; never an unscoped write). So
   on a table with default replica identity, **every** delete and PK-change on a tenant-scoped mirror
-  halts the pipeline. Run `ALTER TABLE <table> REPLICA IDENTITY FULL` upstream so `old_record`
-  carries the tenant column on every delete / PK-change. (A **non**-tenant-scoped mirror — no
-  `tenant_attribute` — is unaffected.)
+  halts the pipeline. `REPLICA IDENTITY FULL` also closes the one **silent** case: a
+  tenant-**move** `:update` (an unchanged primary key but a changed tenant). Under default replica
+  identity Postgres sends no old tuple (`old_record` is absent), so the move is undetectable and the
+  **old** tenant retains a stale copy *without halting*; under FULL, `old_record` carries the old
+  tenant, so the sink destroys the old-(tenant, PK) vertex before creating the new one. Run
+  `ALTER TABLE <table> REPLICA IDENTITY FULL` upstream so `old_record` carries the tenant column on
+  every delete / PK-change / tenant-move. (A **non**-tenant-scoped mirror — no `tenant_attribute` —
+  is unaffected.)
 
 - **Wire the checkpoint, sink, and pipeline.** The checkpoint is an ArcadeDB-resident watermark
   vertex (one row per slot); the sink is a `Replicant.Sink` impl baked with the host's config; the
