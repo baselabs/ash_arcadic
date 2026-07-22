@@ -201,6 +201,21 @@ defmodule AshArcadic.ReplicantSinkTest do
                  first_for_table?: true
                })
     end
+
+    test "handle_snapshot with a malformed non-binary context.table fails closed value-free (no raw raise)" do
+      # Non-empty index so the empty-index guard passes; a non-binary table makes the pre-batch
+      # split_qualified raise — which must route through the value-free boundary (symmetric with
+      # apply_transaction/2), never escape as a raw uncaught error.
+      nonempty = %{
+        resolver_index: %{{"public", "mapped"} => __MODULE__},
+        checkpoint: StubCheckpoint,
+        slot: "snap-malformed",
+        authorize?: false
+      }
+
+      assert {:error, %Error{reason: :sink_failed}} =
+               Impl.handle_snapshot(nonempty, [], %{table: 123, first_for_table?: true})
+    end
   end
 end
 

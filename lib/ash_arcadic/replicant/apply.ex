@@ -75,6 +75,10 @@ defmodule AshArcadic.Replicant.Apply do
           optional(any()) => any()
         }
 
+  # `run/1`'s apply-vs-skip result — carried out of the transaction so `emit_and_return/4`
+  # can emit telemetry AFTER the commit (F2) and produce the Sink's `{:ok, lsn}`.
+  @type outcome :: {:applied, non_neg_integer()} | {:skipped, integer() | nil}
+
   @doc """
   Apply one decoded transaction's `changes` atomically with the watermark advance.
 
@@ -87,19 +91,22 @@ defmodule AshArcadic.Replicant.Apply do
   @spec apply_transaction(config(), Replicant.Transaction.t()) ::
           {:ok, integer() | nil} | {:error, term()}
   def apply_transaction(config, %Replicant.Transaction{commit_lsn: lsn, changes: changes}) do
-    # `Ash.transaction/2` returns `{:ok, result} | {:error, reason}` — `result` is the fun's
-    # value (the applied/held lsn), which IS the Sink's `{:ok, lsn}` contract. The non-empty
-    # resources list (Ch1) is what engages the single data-layer session. SELF-ENFORCE the
-    # value-free boundary: a data-layer write failure is delivered as a rollback THROW that
-    # `run/1` RETURNS as `{:error, raw}` (bypassing the per-change rescue), so route every
-    # error — returned, raised, or thrown/exited — through `boundary_error/1`. The
-    # empty-index guard fires BEFORE the transaction opens, so a wholesale-empty (mis-mapped)
-    # sink fails closed WITHOUT advancing the checkpoint (invisible-loss guard).
-    with :ok <- reject_empty_index(config),
-         {:ok, applied} <- Ash.transaction(resources(config), fn -> run(config, lsn, changes) end) do
-      {:ok, applied}
-    else
-      {:error, reason} -> {:error, boundary_error(reason)}
+    # `Ash.transaction/2` returns `{:ok, outcome} | {:error, reason}` — `outcome` is `run/1`'s
+    # apply-vs-skip result. The non-empty resources list (Ch1) engages the single data-layer
+    # session. SELF-ENFORCE the value-free boundary: a data-layer write failure is delivered
+    # as a rollback THROW that `run/1` RETURNS as `{:error, raw}` (bypassing the per-change
+    # rescue), so route every error — returned, raised, or thrown/exited — through
+    # `boundary_error/1`. The empty-index guard fires BEFORE the transaction opens, so a
+    # wholesale-empty (mis-mapped) sink fails closed WITHOUT advancing the checkpoint
+    # (invisible-loss guard). Telemetry is emitted in `emit_and_return/4` — AFTER the
+    # transaction COMMITS (F2), NEVER inside the tx body: `AshArcadic.Transaction.run/1`
+    # commits after the fn returns, so emitting inside would over-count `:apply` on a commit
+    # that ultimately FAILED (`{:error, :transaction_commit_failed}`) and rolled back.
+    start_time = System.monotonic_time()
+
+    with :ok <- reject_empty_index(config) do
+      result = Ash.transaction(resources(config), fn -> run(config, lsn, changes) end)
+      emit_and_return(result, config.slot, lsn, System.monotonic_time() - start_time)
     end
   rescue
     exception -> {:error, boundary_error(exception)}
@@ -108,32 +115,47 @@ defmodule AshArcadic.Replicant.Apply do
   end
 
   # The transaction body: read the committed watermark, apply-or-skip (F1 gate), advance.
-  # Runs inside the single session opened by the first write. Telemetry (additive,
-  # value-free — Telemetry.validate!/1 is the enforcement point) is emitted AFTER the
-  # decision: on the apply branch, only once every change has applied and the
-  # checkpoint has advanced without raising, so a rolled-back apply never emits a
-  # false :apply event (a raise here propagates out to apply_transaction/2's boundary
-  # and this function never reaches its telemetry call).
+  # Runs inside the single session opened by the first write. Returns the apply-vs-skip
+  # OUTCOME for `apply_transaction/2` to emit telemetry from + turn into the Sink's
+  # `{:ok, lsn}` — the emission happens AFTER the commit (F2), so a commit failure after this
+  # returns never emits a false `:apply`. A raise here propagates to the boundary (no emit).
+  @spec run(config(), integer(), Enumerable.t()) :: outcome()
   defp run(config, lsn, changes) do
-    start_time = System.monotonic_time()
     stored = config.checkpoint.for_slot(config.slot)
 
     if replay_skip?(stored, lsn) do
-      Telemetry.skip_event(config.slot, lsn, System.monotonic_time() - start_time)
-      stored
+      {:skipped, stored}
     else
       Enum.each(changes, &apply_change(config, &1))
       config.checkpoint.upsert_lsn(config.slot, lsn)
-
-      Telemetry.apply_event(
-        config.slot,
-        lsn,
-        length(changes),
-        System.monotonic_time() - start_time
-      )
-
-      lsn
+      {:applied, length(changes)}
     end
+  end
+
+  @doc false
+  # Post-commit result handling (F2). Emits the value-free `:apply` / `:skip` telemetry ONLY
+  # on the COMMITTED `{:ok, outcome}` path and returns the Sink's `{:ok, lsn}`; a returned
+  # error (a commit failure `{:error, :transaction_commit_failed}`, or a rolled-back
+  # data-layer write) emits NOTHING and routes through the value-free boundary. The emission
+  # lives HERE and not in `run/1` because `AshArcadic.Transaction.run/1` commits AFTER the fn
+  # returns — emitting inside the tx body would over-count `:apply` on a commit that
+  # ultimately failed (effect-once still holds: the sink returns `{:error}` and redelivers).
+  # `commit_lsn` (the incoming `lsn`) is the event's watermark for BOTH apply and skip; a skip
+  # RETURNS the stored watermark.
+  @spec emit_and_return({:ok, outcome()} | {:error, term()}, String.t(), integer(), integer()) ::
+          {:ok, integer() | nil} | {:error, struct()}
+  def emit_and_return({:ok, {:applied, change_count}}, slot, lsn, duration) do
+    Telemetry.apply_event(slot, lsn, change_count, duration)
+    {:ok, lsn}
+  end
+
+  def emit_and_return({:ok, {:skipped, stored}}, slot, lsn, duration) do
+    Telemetry.skip_event(slot, lsn, duration)
+    {:ok, stored}
+  end
+
+  def emit_and_return({:error, reason}, _slot, _lsn, _duration) do
+    {:error, boundary_error(reason)}
   end
 
   @doc false

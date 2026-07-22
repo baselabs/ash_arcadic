@@ -123,6 +123,10 @@ defmodule AshArcadic.Replicant.Sink.Impl do
   def handle_snapshot(config, changes, %{table: qualified, first_for_table?: first?}) do
     # Fail closed on a WHOLESALE-empty index BEFORE any write (never "complete" an empty
     # mirror); a NON-empty index with an unmapped table stays a partial-publication skip.
+    # The rescue/catch mirrors `apply_transaction/2`'s boundary: this pre-batch body (index
+    # guard, table parse, lookup) runs OUTSIDE `run_snapshot_batch`'s own rescue, so a raise
+    # here (e.g. a malformed non-binary `context.table`) also routes value-free — symmetric
+    # fail-closed, never a raw uncaught error.
     with :ok <- Apply.reject_empty_index(config) do
       {schema, table} = split_qualified(qualified)
 
@@ -131,6 +135,10 @@ defmodule AshArcadic.Replicant.Sink.Impl do
         resource -> run_snapshot_batch(config, resource, changes, first?)
       end
     end
+  rescue
+    exception -> {:error, Apply.boundary_error(exception)}
+  catch
+    kind, value when kind in [:throw, :exit] -> {:error, Apply.boundary_error(value)}
   end
 
   # ONE session (Ch1): the first_for_table? clear + every row upsert commit atomically, so

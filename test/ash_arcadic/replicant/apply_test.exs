@@ -178,6 +178,48 @@ defmodule AshArcadic.Replicant.ApplyUnitTest do
       refute Exception.message(err) =~ "leak"
     end
   end
+
+  describe "emit_and_return/4 — :apply/:skip telemetry is emitted POST-commit (F2)" do
+    # The telemetry emission moved OUT of the transaction body (`run/1`) into
+    # `emit_and_return/4`, which runs on the RESULT of `Ash.transaction/2` — i.e. AFTER the
+    # commit. So a commit failure (`{:error, :transaction_commit_failed}`, e.g. an MVCC
+    # ConcurrentModificationException) that rolls the data back emits NO false `:apply`.
+    # (A live commit failure can't be forced deterministically in this harness — StubTransport
+    # cannot perform `run/1`'s real writes — so the gate is proven at this seam.)
+    @apply_event [:ash_arcadic, :replicant, :transaction, :apply]
+    @skip_event [:ash_arcadic, :replicant, :transaction, :skip]
+
+    test "a committed apply outcome emits :apply and returns {:ok, lsn}" do
+      ref = :telemetry_test.attach_event_handlers(self(), [@apply_event, @skip_event])
+
+      assert {:ok, 9} = Apply.emit_and_return({:ok, {:applied, 2}}, "slot", 9, 100)
+
+      assert_received {@apply_event, ^ref, %{change_count: 2}, %{slot: "slot", commit_lsn: 9}}
+      refute_received {@skip_event, ^ref, _measurements, _meta}
+      :telemetry.detach(ref)
+    end
+
+    test "a committed skip outcome emits :skip (with the incoming lsn) and returns {:ok, stored}" do
+      ref = :telemetry_test.attach_event_handlers(self(), [@apply_event, @skip_event])
+
+      assert {:ok, 10} = Apply.emit_and_return({:ok, {:skipped, 10}}, "slot", 9, 100)
+
+      assert_received {@skip_event, ^ref, _measurements, %{slot: "slot", commit_lsn: 9}}
+      refute_received {@apply_event, ^ref, _measurements, _meta}
+      :telemetry.detach(ref)
+    end
+
+    test "a COMMIT FAILURE ({:error, :transaction_commit_failed}) emits NO event and fails closed value-free" do
+      ref = :telemetry_test.attach_event_handlers(self(), [@apply_event, @skip_event])
+
+      assert {:error, %Error{}} =
+               Apply.emit_and_return({:error, :transaction_commit_failed}, "slot", 9, 100)
+
+      refute_received {@apply_event, ^ref, _measurements, _meta}
+      refute_received {@skip_event, ^ref, _measurements, _meta}
+      :telemetry.detach(ref)
+    end
+  end
 end
 
 defmodule AshArcadic.Replicant.ApplyIntegrationTest do
