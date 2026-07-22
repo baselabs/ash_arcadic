@@ -78,6 +78,8 @@ defmodule AshArcadic.Replicant do
 
   use Spark.Dsl.Extension,
     sections: [@replicant],
-    # T2 adds AshArcadic.Replicant.Verifiers.Validate...
-    verifiers: []
+    verifiers: [
+      AshArcadic.Replicant.Verifiers.ValidateSingleDbTenancy,
+      AshArcadic.Replicant.Verifiers.ValidateWriteActionsAuthorized
+    ]
 end
