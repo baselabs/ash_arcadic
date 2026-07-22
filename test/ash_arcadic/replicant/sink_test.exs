@@ -140,8 +140,13 @@ defmodule AshArcadic.ReplicantSinkTest do
       assert Pipeline.start_mode(FullSink) == [snapshot: false]
     end
 
-    test "a checkpoint READ FAULT selects snapshot: false (resume; fail-open, deduped on resume)" do
-      assert Pipeline.start_mode(FaultSink) == [snapshot: false]
+    # A read fault means the checkpoint state is UNKNOWN — resuming forward-only on an actually
+    # EMPTY checkpoint would skip the required snapshot bootstrap and PERMANENTLY omit every
+    # pre-slot row (the exact Ch3 failure the snapshot prevents). So a read fault fails CLOSED:
+    # the pipeline start halts value-free (a transient fault is an operator retry), never a
+    # silent forward-only. RED against the previous `_other -> [snapshot: false]`.
+    test "a checkpoint READ FAULT fails CLOSED (raises), never resumes forward-only (row-loss guard)" do
+      assert_raise Error, fn -> Pipeline.start_mode(FaultSink) end
     end
   end
 

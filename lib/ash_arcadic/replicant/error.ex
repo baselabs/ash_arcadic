@@ -35,6 +35,21 @@ defmodule AshArcadic.Replicant.Error do
       one unmapped table, which is a legitimate partial-publication skip.
     * `:sink_failed` — a mirrored write failed at the data layer; the underlying
       exception is discarded value-free (its contents are never interpolated).
+
+  The pipeline start path raises it for the fail-closed start-mode:
+
+    * `:checkpoint_read_fault` — reading the durable watermark at pipeline start
+      faulted, so the checkpoint state is UNKNOWN and no start-mode (snapshot vs
+      resume) can be chosen safely. Resuming forward-only on an actually-empty
+      checkpoint would skip the required snapshot bootstrap and permanently omit
+      every pre-slot row, so a read fault HALTS the start (a transient fault is an
+      operator retry), never a silent forward-only (`AshArcadic.Replicant.Pipeline`).
+
+    * `:missing_mirror_action` — a mirror resource declares no primary create /
+      destroy action, so the sink's apply path has no writable action to route the
+      MERGE upsert / by-PK destroy through. A real mirror MUST be writable; this
+      fails closed value-free at the apply seam rather than raising a raw
+      `primary_action!` error (`AshArcadic.Replicant.Apply`).
   """
   use Splode.Error, fields: [:reason, :resource, :op], class: :invalid
 
@@ -47,6 +62,8 @@ defmodule AshArcadic.Replicant.Error do
           | :unsupported_op
           | :empty_index
           | :sink_failed
+          | :checkpoint_read_fault
+          | :missing_mirror_action
 
   @type t :: %__MODULE__{
           reason: reason() | nil,

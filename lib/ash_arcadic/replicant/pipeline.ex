@@ -26,10 +26,13 @@ defmodule AshArcadic.Replicant.Pipeline do
     * `{:ok, nil}` (never applied) → `snapshot: true` — bootstrap the FULL pre-existing
       state (`Replicant.Config`'s guard treats a snapshot intent as the safe empty-start
       seed).
-    * anything else (`{:ok, integer}` durable watermark, OR a read fault) → `snapshot:
-      false` — resume. A read fault is fail-open (the guard treats "unknown" as
-      "not definitively empty"; a re-delivered already-applied txn is deduped by the
-      idempotent sink), never a partial `go_forward_only` seed.
+    * `{:ok, integer}` (durable watermark) → `snapshot: false` — resume.
+    * a read fault (or any non-`{:ok, _}` result) → FAIL CLOSED. The checkpoint state is
+      UNKNOWN, and a forward-only resume on an actually-empty checkpoint would skip the
+      snapshot bootstrap and permanently omit every pre-slot row (the exact Ch3 failure the
+      snapshot exists to prevent). So `start_mode/1` raises a value-free
+      `:checkpoint_read_fault` — the pipeline start halts (a transient fault → operator
+      retry), never a silent forward-only seed.
 
   It NEVER passes `go_forward_only`.
 
@@ -46,6 +49,7 @@ defmodule AshArcadic.Replicant.Pipeline do
   `Replicant.start_link/1` `{:error, _}`) fails the host's boot loud (fail-closed).
   """
 
+  alias AshArcadic.Replicant.Error
   alias AshArcadic.Replicant.Sink.Impl
 
   @doc """
@@ -92,20 +96,29 @@ defmodule AshArcadic.Replicant.Pipeline do
 
   @doc """
   The Ch3 start-mode opts for `sink` — `[snapshot: true]` on an empty checkpoint (bootstrap
-  the full state), `[snapshot: false]` otherwise (a durable watermark resumes; a checkpoint
-  read fault is fail-open → resume, deduped on redelivery). NEVER `go_forward_only`.
+  the full state), `[snapshot: false]` on a durable watermark (resume). A checkpoint read
+  fault FAILS CLOSED: the state is unknown, so it raises a value-free
+  `AshArcadic.Replicant.Error` (`:checkpoint_read_fault`) rather than defaulting to a
+  forward-only resume that would skip the bootstrap on an empty checkpoint. NEVER
+  `go_forward_only`.
   """
   @spec start_mode(module()) :: [snapshot: boolean()]
   def start_mode(sink) do
     case safe_checkpoint(sink) do
       {:ok, nil} -> [snapshot: true]
-      _other -> [snapshot: false]
+      {:ok, _watermark} -> [snapshot: false]
+      # A read fault (or any non-`{:ok, _}` result) means the checkpoint state is UNKNOWN — no
+      # start-mode can be chosen safely, so fail closed rather than silently forward-only.
+      _fault -> raise Error.exception(reason: :checkpoint_read_fault)
     end
   end
 
-  # A checkpoint read fault is fail-open (mirrors `Replicant.Config`'s start guard) and
-  # value-free — the reason is never inspected. Return a sentinel that is NOT {:ok, nil}, so
-  # start_mode/1 resumes rather than re-bootstrapping on a transient read failure.
+  # Isolate a checkpoint READ fault (a raise/throw/exit while reading the durable watermark) as
+  # a `:read_fault` sentinel that is NOT `{:ok, _}`, value-free — the reason is never inspected.
+  # `start_mode/1` turns it into a fail-closed halt: on an actually-empty checkpoint a
+  # forward-only resume would skip the snapshot bootstrap and permanently omit every pre-slot
+  # row, so an unknown checkpoint state must halt the start (a transient fault → operator retry),
+  # never default to resume.
   defp safe_checkpoint(sink) do
     sink.checkpoint()
   rescue

@@ -214,6 +214,46 @@ defmodule AshArcadic.Replicant.VerifierTest do
     assert err.message =~ "primary-key attribute"
   end
 
+  # Check 5 — a primary-key column in the replicant `skip` list. `reject_empty_identity!`
+  # checks the RAW source record carries the PK, but `Resolver.attrs_for_upsert/2` then DROPS
+  # every `skip`-listed column from the write inputs — so a skipped PK passes the raw check yet
+  # never reaches the create, leaving `Ash.create!(upsert?: true)` without the identity: a UUID
+  # PK gets a fresh random value each apply (duplicate vertices; deletes can't find them). The
+  # PK source column maps 1:1 to its attribute (no rename), so this is statically decidable and
+  # fails closed at compile.
+  test "a primary-key column in the replicant skip list breaks the mirror identity => compile error" do
+    err =
+      assert_dsl_error %Spark.Error.DslError{path: [:replicant, :skip]} do
+        defmodule Elixir.AshArcadic.Test.ReplicantSkippedPk do
+          use Ash.Resource,
+            domain: AshArcadic.Test.Domain,
+            validate_domain_inclusion?: false,
+            data_layer: AshArcadic.DataLayer,
+            extensions: [AshArcadic.Replicant]
+
+          arcade do
+            client(AshArcadic.Test.MockClient)
+          end
+
+          replicant do
+            source_table("orders")
+            skip([:id])
+          end
+
+          attributes do
+            uuid_primary_key :id
+          end
+
+          actions do
+            defaults [:read]
+          end
+        end
+      end
+
+    # "must not be in the replicant `skip`" is unique to the primary-key-not-skipped verifier.
+    assert err.message =~ "must not be in the replicant `skip`"
+  end
+
   # A read-only replicant resource (no write actions) with no authorizer is valid — check 3
   # must pass VACUOUSLY (nothing to seam-lock). This guards T1's read-only fixtures.
   test "a read-only replicant resource with no authorizer compiles clean (check 3 is vacuous)" do

@@ -43,6 +43,33 @@ defmodule AshArcadic.Replicant.ApplyUnitTest do
     end
   end
 
+  # A read-only mirror (no primary create/destroy action). A real mirror MUST be writable; the
+  # apply path must fail closed value-free rather than raise a raw `primary_action!` error.
+  defmodule ReadOnlyThing do
+    @moduledoc false
+    use Ash.Resource,
+      domain: AshArcadic.Test.Domain,
+      data_layer: AshArcadic.DataLayer,
+      extensions: [AshArcadic.Replicant]
+
+    arcade do
+      client(AshArcadic.Test.MockClient)
+      label(:ApplyReadOnlyThing)
+    end
+
+    replicant do
+      source_table("readonly_things")
+    end
+
+    attributes do
+      attribute :id, :string, primary_key?: true, allow_nil?: false, public?: true
+    end
+
+    actions do
+      defaults [:read]
+    end
+  end
+
   defmodule Checkpoint do
     @moduledoc false
     use AshArcadic.ReplicantCheckpoint,
@@ -176,6 +203,27 @@ defmodule AshArcadic.Replicant.ApplyUnitTest do
 
       assert err.reason == :unsupported_op
       refute Exception.message(err) =~ "leak"
+    end
+
+    # A read-only mirror (no primary create action) reaches the upsert path, which routes the
+    # MERGE through `Ash.Resource.Info.primary_action!/2`. A real mirror MUST be writable — the
+    # apply must fail closed with a SELF-DESCRIBING `:missing_mirror_action` (never a raw
+    # `primary_action!` error). RED against the previous `create_action/1` = `primary_action!`:
+    # the raw error is scrubbed to the generic `:sink_failed`, not the specific reason.
+    test "an upsert to a mirror with no primary create action fails closed value-free (:missing_mirror_action)" do
+      cfg = %{
+        resolver_index: %{{"public", "readonly_things"} => ReadOnlyThing},
+        checkpoint: Checkpoint,
+        slot: "unit-readonly",
+        authorize?: false
+      }
+
+      err =
+        assert_raise Error, fn ->
+          Apply.apply_change(cfg, change(:insert, "readonly_things", %{"id" => "1"}))
+        end
+
+      assert err.reason == :missing_mirror_action
     end
   end
 
@@ -314,6 +362,35 @@ defmodule AshArcadic.Replicant.ApplyIntegrationTest do
       client: AshArcadic.Test.IntegrationClient
   end
 
+  # A lazy, SINGLE-PASS Enumerable modelling replicant's `Replicant.Spill.Reader` — a
+  # SPILLED (large) transaction's `changes` (Transaction.changes :: Enumerable.t()). It is
+  # NOT a proper list, so `length/1` raises `ArgumentError`, and it is valid for exactly ONE
+  # reduction (a second enumeration raises). So `run/1` must COUNT during its single `Enum`
+  # pass — never `length(changes)`/`Enum.count(changes)`, which the previous code did after
+  # `Enum.each` had already consumed the reader.
+  defmodule OneShotChanges do
+    @moduledoc false
+    defstruct [:agent]
+
+    def wrap(list) when is_list(list) do
+      {:ok, agent} = Agent.start_link(fn -> {:fresh, list} end)
+      %__MODULE__{agent: agent}
+    end
+
+    defimpl Enumerable do
+      def count(_), do: {:error, __MODULE__}
+      def member?(_, _), do: {:error, __MODULE__}
+      def slice(_), do: {:error, __MODULE__}
+
+      def reduce(%{agent: agent}, acc, fun) do
+        case Agent.get_and_update(agent, fn state -> {state, :consumed} end) do
+          {:fresh, list} -> Enumerable.reduce(list, acc, fun)
+          :consumed -> raise "single-pass Enumerable already consumed"
+        end
+      end
+    end
+  end
+
   defp config(slot) do
     %{
       resolver_index: %{
@@ -399,6 +476,51 @@ defmodule AshArcadic.Replicant.ApplyIntegrationTest do
       assert %Order{note: "a"} = Ash.get!(Order, "p6", authorize?: false)
     end
 
+    # The mirror vertex IDENTITY is (primary key + the tenant discriminator) — the MERGE folds
+    # the multitenancy attribute into the upsert identity (`upsert_identity_keys/2`). So a
+    # same-PK :update that MOVES the tenant is an IDENTITY change: it must destroy the
+    # OLD-(tenant, PK) vertex FIRST (tenant resolved from `old_record` — REPLICA IDENTITY FULL),
+    # then upsert into the new tenant. RED against the PK-only `pk_changed?` trigger: with no
+    # destroy, the upsert CREATEs a fresh vertex in tenant B (the identity now differs) while the
+    # tenant-A vertex is NEVER destroyed → a stale copy the former tenant can still read.
+    test "a tenant-MOVE update (same PK, new tenant) destroys the OLD-tenant copy (no stale cross-tenant vertex)" do
+      cfg = config("apply-tenant-move")
+
+      Apply.apply_transaction(
+        cfg,
+        txn(1, [
+          change(:insert, "tenant_things", %{
+            "id" => "mv1",
+            "org_id" => "move_src",
+            "note" => "in-a"
+          })
+        ])
+      )
+
+      assert [%TenantThing{note: "in-a"}] =
+               Ash.read!(TenantThing, tenant: "move_src", authorize?: false)
+
+      # Same PK "mv1", tenant moves move_src -> move_dst; old_record carries the source tenant.
+      assert {:ok, 2} =
+               Apply.apply_transaction(
+                 cfg,
+                 txn(2, [
+                   change(
+                     :update,
+                     "tenant_things",
+                     %{"id" => "mv1", "org_id" => "move_dst", "note" => "in-b"},
+                     %{"id" => "mv1", "org_id" => "move_src", "note" => "in-a"}
+                   )
+                 ])
+               )
+
+      # The vertex lives ONLY in the destination tenant; the source-tenant copy is GONE.
+      assert Ash.read!(TenantThing, tenant: "move_src", authorize?: false) == []
+
+      assert [%TenantThing{note: "in-b"}] =
+               Ash.read!(TenantThing, tenant: "move_dst", authorize?: false)
+    end
+
     test "a delete removes the row by PK" do
       cfg = config("apply-delete")
 
@@ -429,6 +551,37 @@ defmodule AshArcadic.Replicant.ApplyIntegrationTest do
 
       assert %Order{note: "keep"} = Ash.get!(Order, "survivor", authorize?: false)
       assert Ash.get!(Order, "never-here", authorize?: false, error?: false) == nil
+    end
+  end
+
+  describe "spilled transaction — changes is a lazy single-pass Enumerable (not a list)" do
+    @apply_event [:ash_arcadic, :replicant, :transaction, :apply]
+
+    # A spilled/large transaction delivers `changes` as a `Replicant.Spill.Reader` — a lazy,
+    # single-pass Enumerable, NOT a list. `run/1` must count the changes DURING its single
+    # `Enum` pass. RED against the previous `{:applied, length(changes)}`: `length/1` raises
+    # `ArgumentError` on the non-list reader (and the reader is already consumed by the
+    # `Enum.each` before it), so `apply_transaction/2` returns `{:error, :sink_failed}` and the
+    # whole (large) transaction rolls back — every spilled transaction deterministically crashes.
+    test "applies every change + emits the right change_count, never crashing on length/1" do
+      cfg = config("apply-spilled")
+      ref = :telemetry_test.attach_event_handlers(self(), [@apply_event])
+
+      changes =
+        OneShotChanges.wrap([
+          change(:insert, "orders", %{"id" => "sp1", "note" => "a"}),
+          change(:insert, "orders", %{"id" => "sp2", "note" => "b"})
+        ])
+
+      assert {:ok, 42} = Apply.apply_transaction(cfg, txn(42, changes))
+
+      assert_received {@apply_event, ^ref, %{change_count: 2},
+                       %{slot: "apply-spilled", commit_lsn: 42}}
+
+      :telemetry.detach(ref)
+
+      assert %Order{note: "a"} = Ash.get!(Order, "sp1", authorize?: false)
+      assert %Order{note: "b"} = Ash.get!(Order, "sp2", authorize?: false)
     end
   end
 

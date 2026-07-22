@@ -30,8 +30,10 @@ defmodule AshArcadic.Replicant.Apply do
   ## Per-change invariant map
 
     * `:insert` / `:update` — MERGE upsert by primary key (`Ash.create!(..., upsert?: true)`).
-      On an `:update` whose primary key CHANGED, the old-PK vertex is destroyed FIRST, then
-      the new row upserted (no ghost row).
+      On an `:update` whose IDENTITY CHANGED — the primary key OR the resolved tenant (the
+      mirror identity is PK + the tenant discriminator, `upsert_identity_keys/2`) — the
+      old-(tenant, PK) vertex is destroyed FIRST, then the new row upserted (no ghost row on a
+      PK change, no stale cross-tenant copy on a tenant move).
     * `:delete` — atomic bulk destroy by primary key. A `nil` primary-key value fails closed
       (never `id == nil`, which matches 0 rows and silently "succeeds"); a genuine 0-row
       match (already-absent) is idempotent `:ok`.
@@ -126,9 +128,18 @@ defmodule AshArcadic.Replicant.Apply do
     if replay_skip?(stored, lsn) do
       {:skipped, stored}
     else
-      Enum.each(changes, &apply_change(config, &1))
+      # Count DURING the single pass — `changes` may be a lazy, single-pass Enumerable
+      # (`Replicant.Spill.Reader` on a spilled/large transaction), so `length/1`/`Enum.count/1`
+      # would raise (not a proper list) AND the reader would already be consumed by a prior
+      # `Enum.each`. One `Enum.reduce` applies every change and yields the count.
+      count =
+        Enum.reduce(changes, 0, fn change, n ->
+          apply_change(config, change)
+          n + 1
+        end)
+
       config.checkpoint.upsert_lsn(config.slot, lsn)
-      {:applied, length(changes)}
+      {:applied, count}
     end
   end
 
@@ -209,7 +220,7 @@ defmodule AshArcadic.Replicant.Apply do
 
   defp apply_to(config, resource, %Replicant.Change{op: op} = change)
        when op in [:insert, :update] do
-    if op == :update and pk_changed?(resource, change) do
+    if op == :update and identity_changed?(resource, change) do
       destroy_by_pk(config, resource, change.old_record)
     end
 
@@ -381,6 +392,16 @@ defmodule AshArcadic.Replicant.Apply do
 
   defp sink_failed, do: Error.exception(reason: :sink_failed)
 
+  # The mirror vertex identity is (primary key + the tenant discriminator): the native MERGE
+  # folds the multitenancy attribute into the upsert identity (`upsert_identity_keys/2`), so a
+  # cross-tenant upsert under the same PK CREATEs its own row rather than matching. An `:update`
+  # whose EITHER the PK or the resolved tenant changed is therefore an identity change: the
+  # old-(tenant, PK) vertex must be destroyed FIRST, then the new one upserted — otherwise the
+  # old vertex is orphaned (a stale cross-tenant copy on a tenant move; a ghost row on a PK move).
+  defp identity_changed?(resource, change) do
+    pk_changed?(resource, change) or tenant_changed?(resource, change)
+  end
+
   defp pk_changed?(resource, %Replicant.Change{record: record, old_record: old})
        when is_map(old) do
     Resolver.pk_values(resource, record) != Resolver.pk_values(resource, old)
@@ -388,6 +409,36 @@ defmodule AshArcadic.Replicant.Apply do
 
   defp pk_changed?(_resource, _change), do: false
 
-  defp create_action(resource), do: Ash.Resource.Info.primary_action!(resource, :create).name
-  defp destroy_action(resource), do: Ash.Resource.Info.primary_action!(resource, :destroy).name
+  # A tenant move is detectable only when `old_record` carries the resolvable tenant — which the
+  # REPLICA IDENTITY FULL precondition guarantees for a tenant-scoped mirror's every `:update`.
+  # Comparing the full `resolve_tenant/2` results ({:ok, tenant} | {:error, :tenant_required})
+  # keeps a non-tenant mirror inert ({:ok, nil} == {:ok, nil}); a source that carries the tenant
+  # but the old_record does not surfaces as a difference here and fails closed downstream at
+  # `destroy_by_pk`'s `resolve_tenant!(old_record)` (the documented :tenant_required halt).
+  defp tenant_changed?(resource, %Replicant.Change{record: record, old_record: old})
+       when is_map(old) do
+    Resolver.resolve_tenant(resource, record) != Resolver.resolve_tenant(resource, old)
+  end
+
+  defp tenant_changed?(_resource, _change), do: false
+
+  defp create_action(resource), do: primary_action_name!(resource, :create)
+  defp destroy_action(resource), do: primary_action_name!(resource, :destroy)
+
+  # A mirror MUST be writable: the apply path routes the MERGE upsert / by-PK destroy through the
+  # resource's primary create / destroy action. A read-only mirror (no primary write action) is a
+  # misconfiguration — `ValidateWriteActionsAuthorized` passes it vacuously (no write action to
+  # seam-lock), so the failure surfaces here. Fail closed with a SELF-DESCRIBING value-free
+  # `:missing_mirror_action` rather than a raw `primary_action!` error scrubbed to the generic
+  # `:sink_failed`. Called inside `upsert/3` / `destroy_by_pk/3`, whose `rescue`+`scrub/3` pass an
+  # `%Error{}` through unchanged, so the specific reason reaches the value-free boundary.
+  defp primary_action_name!(resource, type) do
+    case Ash.Resource.Info.primary_action(resource, type) do
+      %{name: name} ->
+        name
+
+      nil ->
+        raise Error.exception(reason: :missing_mirror_action, resource: resource, op: type)
+    end
+  end
 end
