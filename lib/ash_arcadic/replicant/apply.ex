@@ -39,10 +39,26 @@ defmodule AshArcadic.Replicant.Apply do
       TENANT-BLIND raw `MATCH (n:Label) DETACH DELETE n` on the whole label, on the session
       connection so it is atomic with the surrounding changes and the checkpoint upsert.
 
-  A change whose `{schema, table}` is not a mirror target is ignored (`:ok`). Every
-  rescue/raise produces a VALUE-FREE error (`AshArcadic.Replicant.Error`, carrying only a
-  reason atom + the resource + the op) — a source row, column value, or tenant is never
-  interpolated, and the underlying exception's contents are never inspected.
+  A change whose `{schema, table}` is not a mirror target is ignored (`:ok`).
+
+  ## Value-free error boundary
+
+  `apply_transaction/2` ALWAYS returns `{:ok, lsn} | {:error, <value-free>}` — it never
+  raises and never lets a value-bearing term escape, whether the underlying failure arrived
+  as a returned rollback `{:error, reason}` (an Ash data-layer write failing INSIDE the
+  transaction rolls back via `AshArcadic.Transaction.rollback_throw/1`, which
+  `AshArcadic.Transaction.run/1` catches and RETURNS as `{:error, reason}` — bypassing the
+  per-change rescue), a raised exception, or a caught throw/exit. `boundary_error/1` lets
+  only PROVABLY value-free terms cross: an `AshArcadic.Replicant.Error` (atoms only), or a
+  bare structural `AshArcadic.Errors.*` data-layer error (value-free by AGENTS.md Rule 4 —
+  extracted from its value-BEARING `Ash.Error` container, which carries the changeset/query,
+  when wrapped). ANY other or unrecognized term maps to a static `:sink_failed` (fail closed
+  — an unrecognized error is never trusted to be value-free).
+
+  The per-change `scrub/3` is the inner layer: it converts a RAISE within one change (a
+  cast/helper/guard) to a value-free `AshArcadic.Replicant.Error` carrying the correct op,
+  so an op-specific reason (`:tenant_required`, `:truncate_halt`, …) survives to the
+  boundary; the underlying exception's contents are never inspected.
   """
 
   alias AshArcadic.DataLayer.Info, as: DataLayerInfo
@@ -70,11 +86,20 @@ defmodule AshArcadic.Replicant.Apply do
   @spec apply_transaction(config(), Replicant.Transaction.t()) ::
           {:ok, integer() | nil} | {:error, term()}
   def apply_transaction(config, %Replicant.Transaction{commit_lsn: lsn, changes: changes}) do
-    # `Ash.transaction/2` already returns `{:ok, result} | {:error, reason}` — where `result`
-    # is the fun's value (the applied/held lsn) — which IS the Sink's `{:ok, lsn}` contract, so
-    # no further unwrapping is needed. The non-empty resources list (Ch1) is what engages the
-    # single data-layer session.
-    Ash.transaction(resources(config), fn -> run(config, lsn, changes) end)
+    # `Ash.transaction/2` returns `{:ok, result} | {:error, reason}` — `result` is the fun's
+    # value (the applied/held lsn), which IS the Sink's `{:ok, lsn}` contract. The non-empty
+    # resources list (Ch1) is what engages the single data-layer session. SELF-ENFORCE the
+    # value-free boundary: a data-layer write failure is delivered as a rollback THROW that
+    # `run/1` RETURNS as `{:error, raw}` (bypassing the per-change rescue), so route every
+    # error — returned, raised, or thrown/exited — through `boundary_error/1`.
+    case Ash.transaction(resources(config), fn -> run(config, lsn, changes) end) do
+      {:ok, applied} -> {:ok, applied}
+      {:error, reason} -> {:error, boundary_error(reason)}
+    end
+  rescue
+    exception -> {:error, boundary_error(exception)}
+  catch
+    kind, value when kind in [:throw, :exit] -> {:error, boundary_error(value)}
   end
 
   # The transaction body: read the committed watermark, apply-or-skip (F1 gate), advance.
@@ -221,6 +246,10 @@ defmodule AshArcadic.Replicant.Apply do
 
     case AshArcadic.DataLayer.base_write_conn(resource) do
       {:ok, conn} ->
+        # On the in-session path (the only real path — `base_write_conn/1` returns the open
+        # session inside `apply_transaction`), raw `Arcadic.command` is identical to the data
+        # layer's `write_command/3`: the latter passes a session conn straight through (its
+        # autocommit retry applies only to non-session conns), so there is nothing to reuse.
         case Arcadic.command(conn, "MATCH (n:#{label}) DETACH DELETE n", %{}) do
           {:ok, _rows} ->
             :ok
@@ -246,15 +275,44 @@ defmodule AshArcadic.Replicant.Apply do
     end
   end
 
-  # An already value-free `AshArcadic.Replicant.Error` (a guard raise) passes through with
-  # its reason intact. Any OTHER exception (an Ash error carrying changeset input, an
-  # `Arcadic.Error`/`Jason.EncodeError` on nested bytes) is replaced by a static
-  # `:sink_failed` Error — the original exception's contents are NEVER inspected or
-  # interpolated (`project_redaction_fail_path_exception_leak`).
+  # Inner (per-change) layer: convert a RAISE within one change to a value-free Error with the
+  # right op. An already value-free `AshArcadic.Replicant.Error` (a guard raise) passes through
+  # with its reason intact; any OTHER exception (an Ash error carrying changeset input, an
+  # `Arcadic.Error`/`Jason.EncodeError` on nested bytes) is replaced by a static `:sink_failed`
+  # Error — the original exception's contents are NEVER inspected (`project_redaction_fail_path_exception_leak`).
+  # (A data-layer write failure arrives as a rollback THROW, which a `rescue` does NOT catch —
+  # that path is handled at the `apply_transaction/2` boundary by `boundary_error/1`.)
   defp scrub(%Error{} = error, _resource, _op), do: error
 
   defp scrub(_exception, resource, op),
     do: Error.exception(reason: :sink_failed, resource: resource, op: op)
+
+  # The `apply_transaction/2` value-free boundary. Lets only PROVABLY value-free terms cross:
+  # our own `AshArcadic.Replicant.Error` (atoms only), and a bare structural `AshArcadic.Errors.*`
+  # data-layer error (value-free by AGENTS.md Rule 4). An `Ash.Error` CONTAINER carries the
+  # changeset/query (the source row) — value-BEARING — so it never passes through: if it wraps
+  # only bare value-free data-layer errors, surface the first one (preserving the value-free
+  # diagnostic); otherwise, and for ANY unrecognized term, fail closed to a static `:sink_failed`
+  # (never trust an unrecognized error to be value-free).
+  defp boundary_error(%Error{} = error), do: error
+  defp boundary_error(%AshArcadic.Errors.CreateFailed{} = error), do: error
+  defp boundary_error(%AshArcadic.Errors.UpdateFailed{} = error), do: error
+  defp boundary_error(%AshArcadic.Errors.QueryFailed{} = error), do: error
+  defp boundary_error(%AshArcadic.Errors.UnsupportedFilter{} = error), do: error
+
+  defp boundary_error(%{errors: [_ | _] = errors}) do
+    if Enum.all?(errors, &data_layer_value_free?/1), do: hd(errors), else: sink_failed()
+  end
+
+  defp boundary_error(_other), do: sink_failed()
+
+  defp data_layer_value_free?(%AshArcadic.Errors.CreateFailed{}), do: true
+  defp data_layer_value_free?(%AshArcadic.Errors.UpdateFailed{}), do: true
+  defp data_layer_value_free?(%AshArcadic.Errors.QueryFailed{}), do: true
+  defp data_layer_value_free?(%AshArcadic.Errors.UnsupportedFilter{}), do: true
+  defp data_layer_value_free?(_other), do: false
+
+  defp sink_failed, do: Error.exception(reason: :sink_failed)
 
   defp pk_changed?(resource, %Replicant.Change{record: record, old_record: old})
        when is_map(old) do

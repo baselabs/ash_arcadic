@@ -443,4 +443,47 @@ defmodule AshArcadic.Replicant.ApplyIntegrationTest do
       assert Checkpoint.for_slot("apply-replay") == 10
     end
   end
+
+  describe "value-free error boundary (apply_transaction always returns {:ok|:error}, never leaks)" do
+    # A data-layer write failure inside the transaction is delivered as a rollback THROW that
+    # `Transaction.run/1` RETURNS as `{:error, <raw data-layer error>}` — bypassing the per-change
+    # `rescue`. The raw term is an `%Ash.Error.Invalid{}` CONTAINER that carries the changeset
+    # (the source row) — value-BEARING under `inspect`. The boundary must never let it cross.
+    test "a data-layer write failure surfaces a VALUE-FREE {:error}, never the value-bearing container" do
+      cfg = config("apply-valuefree-boundary")
+      # A non-UTF8 binary passes Ash's :string cast but fails the data-layer JSON encode gate.
+      poison = "leak-" <> <<0xFF, 0xFE, 0xFD>>
+
+      assert {:error, error} =
+               Apply.apply_transaction(
+                 cfg,
+                 txn(3, [change(:insert, "orders", %{"id" => "vf1", "note" => poison})])
+               )
+
+      # The value-bearing Ash.Error container (with its changeset) must NOT cross the boundary.
+      refute match?(%Ash.Error.Invalid{}, error)
+      refute is_map(error) and Map.has_key?(error, :changeset)
+
+      # What crosses is value-free: our own Error, or a bare structural data-layer error.
+      assert match?(%AshArcadic.Replicant.Error{}, error) or
+               match?(%AshArcadic.Errors.CreateFailed{}, error)
+    end
+
+    # A malformed :update with `record: nil` + a map `old_record` makes `pk_changed?/2` call
+    # `Resolver.pk_values(resource, nil)`, whose `is_map` guard raises a raw FunctionClauseError
+    # OUTSIDE the per-change rescue. The boundary must convert it to a value-free {:error},
+    # never a raw crash on the crux.
+    test "a malformed :update (record: nil) fails closed value-free — no raw crash escapes" do
+      cfg = config("apply-malformed-update")
+
+      assert {:error, error} =
+               Apply.apply_transaction(
+                 cfg,
+                 txn(4, [change(:update, "orders", nil, %{"id" => "x"})])
+               )
+
+      refute match?(%Ash.Error.Invalid{}, error)
+      assert match?(%AshArcadic.Replicant.Error{}, error)
+    end
+  end
 end
