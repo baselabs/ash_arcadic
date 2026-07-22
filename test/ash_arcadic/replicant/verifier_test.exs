@@ -168,6 +168,52 @@ defmodule AshArcadic.Replicant.VerifierTest do
     end
   end
 
+  # Check 4 (T3-review-driven) — a `sensitive` PRIMARY KEY. `Resolver.pk_values/2` builds the
+  # mirror identity from the source row's PLAINTEXT key columns and does NOT pass them through
+  # the F5 sensitive-halt (the identity must be plaintext to MATCH). A `:binary` PK marked
+  # `sensitive` passes ValidateSensitive R2 (it IS binary-storage-typed), so only this verifier
+  # catches it — the sink would otherwise write the plaintext source PK into a classified column
+  # AND break idempotent matching. Mirrors R3 (the tenant discriminator, another plaintext
+  # selector, cannot be sensitive).
+  test "a sensitive primary key on a replicant resource leaks the plaintext identity => compile error" do
+    err =
+      assert_dsl_error %Spark.Error.DslError{path: [:arcade, :sensitive]} do
+        defmodule Elixir.AshArcadic.Test.ReplicantSensitivePk do
+          use Ash.Resource,
+            domain: AshArcadic.Test.Domain,
+            validate_domain_inclusion?: false,
+            data_layer: AshArcadic.DataLayer,
+            extensions: [AshArcadic.Replicant]
+
+          arcade do
+            client(AshArcadic.Test.MockClient)
+            # `:binary` => passes ValidateSensitive R2 (binary-storage-typed), so this
+            # resource is caught ONLY by the primary-key-not-sensitive verifier.
+            sensitive([:id])
+          end
+
+          replicant do
+            source_table("orders")
+          end
+
+          attributes do
+            attribute :id, :binary do
+              primary_key?(true)
+              allow_nil?(false)
+            end
+          end
+
+          actions do
+            defaults [:read]
+          end
+        end
+      end
+
+    # "primary-key attribute" is unique to the primary-key-not-sensitive verifier's message
+    # (distinguishes it from R2's "binary-storage" wording).
+    assert err.message =~ "primary-key attribute"
+  end
+
   # A read-only replicant resource (no write actions) with no authorizer is valid — check 3
   # must pass VACUOUSLY (nothing to seam-lock). This guards T1's read-only fixtures.
   test "a read-only replicant resource with no authorizer compiles clean (check 3 is vacuous)" do

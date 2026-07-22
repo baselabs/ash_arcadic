@@ -80,6 +80,7 @@ defmodule AshArcadic.Replicant do
     sections: [@replicant],
     verifiers: [
       AshArcadic.Replicant.Verifiers.ValidateSingleDbTenancy,
-      AshArcadic.Replicant.Verifiers.ValidateWriteActionsAuthorized
+      AshArcadic.Replicant.Verifiers.ValidateWriteActionsAuthorized,
+      AshArcadic.Replicant.Verifiers.ValidatePrimaryKeyNotSensitive
     ]
 end
