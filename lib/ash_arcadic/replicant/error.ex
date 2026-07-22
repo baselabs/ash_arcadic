@@ -27,6 +27,12 @@ defmodule AshArcadic.Replicant.Error do
     * `:truncate_halt` — an upstream TRUNCATE arrived for a resource whose
       `on_truncate` is `:halt` (the fail-closed default).
     * `:unsupported_op` — a change carried an op the invariant map does not cover.
+    * `:empty_index` — the sink's resolver index is WHOLESALE empty (no mapped
+      resources — empty/wrong domains), so every change would resolve to `nil` and be
+      silently dropped WHILE the checkpoint advances (permanent, invisible loss). The
+      apply/snapshot paths fail closed on this BEFORE any write, so the checkpoint never
+      advances and the transaction is re-delivered. Distinct from a NON-empty index with
+      one unmapped table, which is a legitimate partial-publication skip.
     * `:sink_failed` — a mirrored write failed at the data layer; the underlying
       exception is discarded value-free (its contents are never interpolated).
   """
@@ -39,6 +45,7 @@ defmodule AshArcadic.Replicant.Error do
           | :missing_primary_key
           | :truncate_halt
           | :unsupported_op
+          | :empty_index
           | :sink_failed
 
   @type t :: %__MODULE__{

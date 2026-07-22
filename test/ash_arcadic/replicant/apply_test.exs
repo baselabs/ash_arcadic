@@ -486,4 +486,33 @@ defmodule AshArcadic.Replicant.ApplyIntegrationTest do
       assert match?(%AshArcadic.Replicant.Error{}, error)
     end
   end
+
+  describe "wholesale-empty resolver index fails closed (:empty_index — no invisible loss)" do
+    # A mirror sink whose resolver_index is EMPTY (empty/wrong domains) would resolve every
+    # change to nil (unmapped → :ok skip) and silently drop the whole transaction WHILE
+    # advancing the checkpoint = PERMANENT, INVISIBLE loss. The guard fires BEFORE the
+    # transaction opens, so the checkpoint is NOT advanced and the LSN is re-delivered on
+    # resume. Distinct from a NON-empty index with one unmapped table (a legitimate
+    # partial-publication skip — covered by "an unmapped {schema, table} is ignored (:ok)").
+    test "apply_transaction returns {:error, :empty_index} and does NOT advance the checkpoint" do
+      empty_cfg = %{
+        resolver_index: %{},
+        checkpoint: Checkpoint,
+        slot: "apply-empty-index",
+        authorize?: false
+      }
+
+      assert Checkpoint.for_slot("apply-empty-index") == nil
+
+      assert {:error, %AshArcadic.Replicant.Error{reason: :empty_index}} =
+               Apply.apply_transaction(
+                 empty_cfg,
+                 txn(9, [change(:insert, "orders", %{"id" => "leak", "note" => "no"})])
+               )
+
+      # loss=0: nothing mirrored AND the checkpoint did NOT advance (a redo re-delivers).
+      assert Checkpoint.for_slot("apply-empty-index") == nil
+      assert Ash.get!(Order, "leak", authorize?: false, error?: false) == nil
+    end
+  end
 end

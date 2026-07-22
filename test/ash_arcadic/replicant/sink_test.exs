@@ -9,6 +9,7 @@ defmodule AshArcadic.ReplicantSinkTest do
   # module below. Full bootstrap is proven live in the T8 integration slice.
   use ExUnit.Case, async: true
 
+  alias AshArcadic.Replicant.Error
   alias AshArcadic.Replicant.Pipeline
   alias AshArcadic.Replicant.Sink.Impl
 
@@ -157,6 +158,50 @@ defmodule AshArcadic.ReplicantSinkTest do
       end
     end
   end
+
+  describe "Impl snapshot callbacks — a wholesale-empty index fails closed :empty_index" do
+    # An empty resolver index (empty/wrong domains) would resolve every snapshot row to nil
+    # (unmapped → :ok) and silently "complete" an empty mirror. The whole-index guard fires
+    # BEFORE any write, value-free. This is distinct from a NON-empty index with one unmapped
+    # table — a legitimate partial-publication skip (next test).
+    test "handle_snapshot on a wholesale-empty index returns {:error, :empty_index}" do
+      empty = %{
+        resolver_index: %{},
+        checkpoint: StubCheckpoint,
+        slot: "snap-empty",
+        authorize?: false
+      }
+
+      change = %Replicant.Change{
+        op: :snapshot,
+        schema: "public",
+        table: "foo",
+        record: %{"id" => "1"}
+      }
+
+      assert {:error, %Error{reason: :empty_index}} =
+               Impl.handle_snapshot(empty, [change], %{
+                 table: "public.foo",
+                 first_for_table?: true
+               })
+    end
+
+    test "handle_snapshot on a NON-empty index skips an unmapped table :ok (partial-publication preserved)" do
+      # A non-empty index whose value is never dereferenced (the table is unmapped).
+      nonempty = %{
+        resolver_index: %{{"public", "mapped"} => __MODULE__},
+        checkpoint: StubCheckpoint,
+        slot: "snap-skip",
+        authorize?: false
+      }
+
+      assert :ok =
+               Impl.handle_snapshot(nonempty, [], %{
+                 table: "public.unmapped",
+                 first_for_table?: true
+               })
+    end
+  end
 end
 
 defmodule AshArcadic.ReplicantSinkIntegrationTest do
@@ -226,10 +271,21 @@ defmodule AshArcadic.ReplicantSinkIntegrationTest do
       domains: [AshArcadic.Test.Replicant.SinkDelegationDomain]
   end
 
+  # A mis-configured sink: NO mapped resources (empty/wrong domains). Every change would be
+  # silently dropped while the checkpoint advances — the empty-index guard must fail closed.
+  defmodule EmptyDomainsSink do
+    @moduledoc false
+    use AshArcadic.ReplicantSink,
+      checkpoint_resource: Checkpoint,
+      slot_name: "sink-empty-domains",
+      domains: []
+  end
+
   setup do
     on_exit(fn ->
       AshArcadic.Transaction.clear()
       :persistent_term.erase({AshArcadic.Replicant.Sink.Impl, "sink-delegation"})
+      :persistent_term.erase({AshArcadic.Replicant.Sink.Impl, "sink-empty-domains"})
     end)
 
     :ok
@@ -247,6 +303,7 @@ defmodule AshArcadic.ReplicantSinkIntegrationTest do
 
   defp txn(lsn, changes), do: %Replicant.Transaction{commit_lsn: lsn, changes: changes}
 
+  alias AshArcadic.Replicant.Error
   alias AshArcadic.Test.Replicant.SinkOrder
 
   test "handle_transaction/1 delegates to Apply: applies the change and advances the watermark" do
@@ -259,5 +316,20 @@ defmodule AshArcadic.ReplicantSinkIntegrationTest do
 
     assert %SinkOrder{note: "hi"} = Ash.get!(SinkOrder, "s1", authorize?: false)
     assert Sink.checkpoint() == {:ok, 5}
+  end
+
+  test "an empty-domains sink fails closed :empty_index (no invisible loss; checkpoint not advanced)" do
+    assert EmptyDomainsSink.checkpoint() == {:ok, nil}
+
+    assert {:error, %Error{reason: :empty_index}} =
+             EmptyDomainsSink.handle_transaction(
+               txn(9, [change(:insert, "sink_orders", %{"id" => "leak", "note" => "no"})])
+             )
+
+    assert {:error, %Error{reason: :empty_index}} =
+             EmptyDomainsSink.handle_snapshot_complete(9)
+
+    # loss=0: neither delivery path advanced the checkpoint.
+    assert EmptyDomainsSink.checkpoint() == {:ok, nil}
   end
 end

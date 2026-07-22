@@ -54,16 +54,14 @@ defmodule AshArcadic.Replicant.Sink.Impl do
   `handle_snapshot/3` and `handle_snapshot_complete/2` return `:ok` / `{:ok, lsn}` or a
   VALUE-FREE `{:error, _}` — a batch failure (a per-row raise scrubbed by `apply_change`,
   a clear failure, or a data-layer rollback that returns a value-bearing `Ash.Error`
-  container) is routed through `boundary_error/1`, which mirrors
-  `AshArcadic.Replicant.Apply`'s boundary: only a bare `AshArcadic.Replicant.Error` or a
-  structural `AshArcadic.Errors.*` crosses; any value-bearing or unrecognized term maps to
-  a static `:sink_failed` (`project_redaction_fail_path_exception_leak` — a new wire
-  surface gates value-free, diffed against its sibling).
+  container) is routed through the SHARED `AshArcadic.Replicant.Apply.boundary_error/1`
+  (the single source of truth for this security boundary): only a bare
+  `AshArcadic.Replicant.Error` or a structural `AshArcadic.Errors.*` crosses; any
+  value-bearing or unrecognized term maps to a static `:sink_failed`
+  (`project_redaction_fail_path_exception_leak`).
   """
 
-  alias AshArcadic.DataLayer.Info, as: DataLayerInfo
   alias AshArcadic.Replicant.Apply
-  alias AshArcadic.Replicant.Error
   alias AshArcadic.Replicant.Resolver
 
   @index_prefix __MODULE__
@@ -123,11 +121,15 @@ defmodule AshArcadic.Replicant.Sink.Impl do
   """
   @spec handle_snapshot(Apply.config(), [Replicant.Change.t()], map()) :: :ok | {:error, term()}
   def handle_snapshot(config, changes, %{table: qualified, first_for_table?: first?}) do
-    {schema, table} = split_qualified(qualified)
+    # Fail closed on a WHOLESALE-empty index BEFORE any write (never "complete" an empty
+    # mirror); a NON-empty index with an unmapped table stays a partial-publication skip.
+    with :ok <- Apply.reject_empty_index(config) do
+      {schema, table} = split_qualified(qualified)
 
-    case Resolver.lookup(config.resolver_index, schema, table) do
-      nil -> :ok
-      resource -> run_snapshot_batch(config, resource, changes, first?)
+      case Resolver.lookup(config.resolver_index, schema, table) do
+        nil -> :ok
+        resource -> run_snapshot_batch(config, resource, changes, first?)
+      end
     end
   end
 
@@ -140,18 +142,20 @@ defmodule AshArcadic.Replicant.Sink.Impl do
            apply_snapshot_batch(config, resource, changes, first?)
          end) do
       {:ok, _} -> :ok
-      {:error, reason} -> {:error, boundary_error(reason)}
+      {:error, reason} -> {:error, Apply.boundary_error(reason)}
     end
   rescue
-    exception -> {:error, boundary_error(exception)}
+    exception -> {:error, Apply.boundary_error(exception)}
   catch
-    kind, value when kind in [:throw, :exit] -> {:error, boundary_error(value)}
+    kind, value when kind in [:throw, :exit] -> {:error, Apply.boundary_error(value)}
   end
 
   # The batch body, inside the enclosing snapshot session: clear the table on the first
-  # batch (redo-safety), then upsert each row via the reused live-stream :insert path.
+  # batch (redo-safety), then upsert each row via the reused live-stream :insert path. The
+  # tenant-blind label clear is the SHARED `Apply.clear_label!/2` (the same mechanism as the
+  # truncate `:mirror` path), tagged `:snapshot`.
   defp apply_snapshot_batch(config, resource, changes, first?) do
-    if first?, do: clear_label!(resource)
+    if first?, do: Apply.clear_label!(resource, :snapshot)
     Enum.each(changes, fn change -> Apply.apply_change(config, snapshot_insert(change)) end)
   end
 
@@ -163,16 +167,21 @@ defmodule AshArcadic.Replicant.Sink.Impl do
   @spec handle_snapshot_complete(Apply.config(), Replicant.lsn()) ::
           {:ok, Replicant.lsn()} | {:error, term()}
   def handle_snapshot_complete(config, snapshot_lsn) do
-    case Ash.transaction([config.checkpoint], fn ->
-           config.checkpoint.upsert_lsn(config.slot, snapshot_lsn)
-         end) do
-      {:ok, _} -> {:ok, snapshot_lsn}
-      {:error, reason} -> {:error, boundary_error(reason)}
+    # Fail closed on a WHOLESALE-empty index BEFORE the write (never advance the checkpoint
+    # to "complete" a snapshot that mirrored nothing — that would lock in invisible loss).
+    with :ok <- Apply.reject_empty_index(config),
+         {:ok, _} <-
+           Ash.transaction([config.checkpoint], fn ->
+             config.checkpoint.upsert_lsn(config.slot, snapshot_lsn)
+           end) do
+      {:ok, snapshot_lsn}
+    else
+      {:error, reason} -> {:error, Apply.boundary_error(reason)}
     end
   rescue
-    exception -> {:error, boundary_error(exception)}
+    exception -> {:error, Apply.boundary_error(exception)}
   catch
-    kind, value when kind in [:throw, :exit] -> {:error, boundary_error(value)}
+    kind, value when kind in [:throw, :exit] -> {:error, Apply.boundary_error(value)}
   end
 
   # A snapshot row arrives as %Change{op: :snapshot}; the apply invariant map upserts on
@@ -182,30 +191,6 @@ defmodule AshArcadic.Replicant.Sink.Impl do
   # batch back.
   defp snapshot_insert(change), do: %{change | op: :insert}
 
-  # Redo-safety clear: a tenant-blind whole-label DELETE (a Postgres source is tenant-blind;
-  # a tenant-scoped destroy would need a tenant the snapshot lacks). Deliberately mirrors
-  # `AshArcadic.Replicant.Apply`'s truncate `:mirror` mechanism, sharing the public
-  # data-layer entry point `base_write_conn/1`: the label is allowlist-validated (Rule 1 —
-  # never a `$param`), and the raw command runs IN the enclosing snapshot session so the
-  # clear is atomic with the batch's upserts. Value-free on failure.
-  defp clear_label!(resource) do
-    label = resource |> DataLayerInfo.label() |> AshArcadic.Identifier.validate!()
-
-    case AshArcadic.DataLayer.base_write_conn(resource) do
-      {:ok, conn} ->
-        case Arcadic.command(conn, "MATCH (n:#{label}) DETACH DELETE n", %{}) do
-          {:ok, _rows} ->
-            :ok
-
-          {:error, _error} ->
-            raise Error.exception(reason: :sink_failed, resource: resource, op: :snapshot)
-        end
-
-      {:error, _reason} ->
-        raise Error.exception(reason: :sink_failed, resource: resource, op: :snapshot)
-    end
-  end
-
   # `context.table` is `"schema.table"` or a bare `"table"`; apply the SAME nil-schema →
   # "public" default `Resolver.lookup/3` / the index keys use.
   defp split_qualified(qualified) do
@@ -214,30 +199,4 @@ defmodule AshArcadic.Replicant.Sink.Impl do
       [table] -> {"public", table}
     end
   end
-
-  # The value-free boundary, mirroring `AshArcadic.Replicant.Apply.boundary_error/1` (the
-  # sibling wire surface): only our own `AshArcadic.Replicant.Error` (atoms only) or a bare
-  # structural `AshArcadic.Errors.*` data-layer error (value-free by AGENTS.md Rule 4)
-  # crosses. A value-bearing `Ash.Error` CONTAINER (carrying the changeset/source row) never
-  # crosses — if it wraps only bare value-free errors, surface the first; otherwise, and for
-  # ANY unrecognized term, fail closed to a static `:sink_failed`.
-  defp boundary_error(%Error{} = error), do: error
-  defp boundary_error(%AshArcadic.Errors.CreateFailed{} = error), do: error
-  defp boundary_error(%AshArcadic.Errors.UpdateFailed{} = error), do: error
-  defp boundary_error(%AshArcadic.Errors.QueryFailed{} = error), do: error
-  defp boundary_error(%AshArcadic.Errors.UnsupportedFilter{} = error), do: error
-
-  defp boundary_error(%{errors: [_ | _] = errors}) do
-    if Enum.all?(errors, &data_layer_value_free?/1), do: hd(errors), else: sink_failed()
-  end
-
-  defp boundary_error(_other), do: sink_failed()
-
-  defp data_layer_value_free?(%AshArcadic.Errors.CreateFailed{}), do: true
-  defp data_layer_value_free?(%AshArcadic.Errors.UpdateFailed{}), do: true
-  defp data_layer_value_free?(%AshArcadic.Errors.QueryFailed{}), do: true
-  defp data_layer_value_free?(%AshArcadic.Errors.UnsupportedFilter{}), do: true
-  defp data_layer_value_free?(_other), do: false
-
-  defp sink_failed, do: Error.exception(reason: :sink_failed, op: :snapshot)
 end
