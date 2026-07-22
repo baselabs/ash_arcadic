@@ -59,7 +59,11 @@ defmodule AshArcadic.Replicant do
       tenant_attribute: [
         type: :atom,
         doc:
-          "Source column carrying the tenant. Resolved per row and passed as `tenant:` to the mirror action."
+          "Source column carrying the tenant. Resolved per row and passed as `tenant:` to the " <>
+            "mirror action. **Requires the source table to be `REPLICA IDENTITY FULL`**: a " <>
+            "`:delete` / PK-changing `:update` resolves the tenant from `old_record`, which is " <>
+            "key-only under the default replica identity — the tenant column would be absent, so " <>
+            "the apply fails closed `:tenant_required` and halts the whole transaction."
       ],
       skip: [
         type: {:wrap_list, :atom},

@@ -6,7 +6,12 @@
 # Pre-publish: path-install from a checkout that has ../arcadic beside it.
 # After the hex release this becomes: Mix.install([{:ash_arcadic, "~> 0.1"}])
 Mix.install([
-  {:ash_arcadic, path: Path.join(__DIR__, "..")}
+  {:ash_arcadic, path: Path.join(__DIR__, "..")},
+  # `replicant` is the CDC transport (Postgres logical replication → decoded
+  # transactions). ash_arcadic declares it `optional: true`, so the CDC-mirror section
+  # near the end needs it added here explicitly. It is unpublished — a path dep to the
+  # sibling checkout. A tour without the CDC section can drop this line.
+  {:replicant, path: Path.join(__DIR__, "../../replicant")}
 ])
 ```
 
@@ -352,6 +357,159 @@ ann = Tour.Person |> Ash.get!("ann", tenant: "org1") |> Ash.load!(:network, tena
 ann.network |> Enum.map(& &1.name) |> Enum.sort()
 ```
 
+## CDC mirror — Postgres→ArcadeDB effect-once sink
+
+An optional subsystem (`AshArcadic.Replicant.*`) mirrors a Postgres logical-replication
+stream into an ArcadeDB graph projection **exactly once** — over the sibling `replicant`
+CDC transport. In production `replicant` decodes the WAL into `%Replicant.Transaction{}`
+structs and delivers them to the sink; here we hand-build one to show the effect-once
+contract end-to-end against the same throwaway DB.
+
+The mirror is a normal AshArcadic graph resource carrying the `AshArcadic.Replicant`
+extension: `replicant do source_table ... tenant_attribute ... end` declares which Postgres
+`{schema, table}` it mirrors and which source column carries the tenant. It is seam-locked —
+a `forbid_if always()` policy forbids ordinary writes, so **only** the sink writes (bypassing
+with `authorize?: false`).
+
+```elixir
+defmodule Tour.MirrorDoc do
+  use Ash.Resource,
+    domain: Tour.MirrorDomain,
+    validate_domain_inclusion?: false,
+    data_layer: AshArcadic.DataLayer,
+    extensions: [AshArcadic.Replicant],
+    authorizers: [Ash.Policy.Authorizer]
+
+  arcade do
+    client Tour.ArcadicClient
+    label :MirrorDoc
+  end
+
+  replicant do
+    source_table "docs"
+    tenant_attribute :org
+  end
+
+  attributes do
+    attribute :id, :string, primary_key?: true, allow_nil?: false, public?: true
+    attribute :org, :string, allow_nil?: false, public?: true
+    attribute :title, :string, public?: true
+  end
+
+  multitenancy do
+    strategy :attribute
+    attribute :org
+  end
+
+  actions do
+    default_accept [:id, :org, :title]
+    defaults [:read, :create, :update, :destroy]
+  end
+
+  # Seam-lock: forbid ordinary writes so only the sink writes (authorize?: false).
+  policies do
+    policy always() do
+      forbid_if always()
+    end
+  end
+end
+
+# The sink resolves its mirror targets from a domain's REGISTERED resources, so the mirror
+# lives in its own explicitly-registered domain (not the tour's allow_unregistered? one — an
+# unregistered domain yields an empty resolver index, which fails closed :empty_index).
+defmodule Tour.MirrorDomain do
+  use Ash.Domain, validate_config_inclusion?: false
+
+  resources do
+    resource Tour.MirrorDoc
+  end
+end
+```
+
+The **checkpoint** is an ArcadeDB-resident watermark vertex (one integer LSN per slot); the
+**sink** is a `Replicant.Sink` impl baked with the host's config. The watermark advance rides
+the SAME `Ash.transaction` as the mirrored writes — that co-commit is the whole effect-once
+mechanism. The checkpoint `client:` must point at the same database as the mirror.
+
+```elixir
+defmodule Tour.ReplicantCheckpoint do
+  use AshArcadic.ReplicantCheckpoint,
+    domain: Tour.Domain,
+    client: Tour.ArcadicClient
+end
+
+defmodule Tour.ReplicantSink do
+  use AshArcadic.ReplicantSink,
+    domains: [Tour.MirrorDomain],
+    checkpoint_resource: Tour.ReplicantCheckpoint,
+    slot_name: "tour"
+end
+```
+
+Feed a hand-built transaction (LSN 10, one insert) through `handle_transaction/1`. It upserts
+the mirror vertex AND advances the watermark in one session, returning `{:ok, 10}`. The source
+record is string-keyed (Postgres column names), and `org` — the `tenant_attribute` — resolves
+the tenant the sink writes under.
+
+```elixir
+txn = %Replicant.Transaction{
+  commit_lsn: 10,
+  changes: [
+    %Replicant.Change{
+      op: :insert,
+      schema: "public",
+      table: "docs",
+      record: %{"id" => "d1", "org" => "acme", "title" => "hello"}
+    }
+  ]
+}
+
+{:ok, 10} = Tour.ReplicantSink.handle_transaction(txn)
+
+# The mirrored vertex (peek past the seam-lock with authorize?: false).
+Tour.MirrorDoc
+|> Ash.read!(tenant: "acme", authorize?: false)
+|> Enum.map(&{&1.id, &1.org, &1.title})
+```
+
+The durable watermark now reads 10.
+
+```elixir
+Tour.ReplicantSink.checkpoint()
+```
+
+Re-deliver the SAME `commit_lsn: 10` — a replay. The integer `<=` gate skips it: it returns
+the held watermark and applies nothing (dup = 0). The vertex count is unchanged.
+
+```elixir
+before = Tour.MirrorDoc |> Ash.count!(tenant: "acme", authorize?: false)
+{:ok, 10} = Tour.ReplicantSink.handle_transaction(txn)
+after_replay = Tour.MirrorDoc |> Ash.count!(tenant: "acme", authorize?: false)
+%{replay: :no_op, count_before: before, count_after: after_replay}
+```
+
+A higher `commit_lsn: 11` update upserts in place and advances the watermark to 11.
+
+```elixir
+txn2 = %Replicant.Transaction{
+  commit_lsn: 11,
+  changes: [
+    %Replicant.Change{
+      op: :update,
+      schema: "public",
+      table: "docs",
+      record: %{"id" => "d1", "org" => "acme", "title" => "hello (v2)"},
+      old_record: %{"id" => "d1", "org" => "acme"}
+    }
+  ]
+}
+
+{:ok, 11} = Tour.ReplicantSink.handle_transaction(txn2)
+
+titles = Tour.MirrorDoc |> Ash.read!(tenant: "acme", authorize?: false) |> Enum.map(&{&1.id, &1.title})
+%{titles: titles, watermark: Tour.ReplicantSink.checkpoint()}
+```
+
 ## Cleanup
 
 ```elixir
@@ -364,6 +522,10 @@ Arcadic.Server.drop_database(admin, db)
   operators, sortable types, vector scoping rules, bulk-write concurrency,
   documented limitations.
 * [`README.md`](../README.md) — capability matrix and connection setup.
+* [`usage-rules.md` → *CDC mirror*](../usage-rules.md) — the full Postgres→ArcadeDB
+  effect-once sink contract: the seven fail-closed consumer contracts, the checkpoint /
+  sink / pipeline wiring, and the `REPLICA IDENTITY FULL` precondition for a tenant-scoped
+  mirror.
 * Sparse + hybrid vector search, traversal aggregates, combinations, atomics,
   `update_many` — all live; see the test suite for working examples of every
   capability.

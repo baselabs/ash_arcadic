@@ -105,6 +105,16 @@ does not never compiles it).
         end
       end
 
+- **A tenant-scoped mirror requires the source table to be `REPLICA IDENTITY FULL`.** A
+  `:delete` and a primary-key-changing `:update` resolve the tenant from the change's
+  `old_record`. Under Postgres' **default** replica identity `old_record` carries only the key
+  columns — the `tenant_attribute` column is absent — so `Resolver.resolve_tenant!` fails closed
+  `:tenant_required` and the **whole transaction halts** (fail-closed; never an unscoped write). So
+  on a table with default replica identity, **every** delete and PK-change on a tenant-scoped mirror
+  halts the pipeline. Run `ALTER TABLE <table> REPLICA IDENTITY FULL` upstream so `old_record`
+  carries the tenant column on every delete / PK-change. (A **non**-tenant-scoped mirror — no
+  `tenant_attribute` — is unaffected.)
+
 - **Wire the checkpoint, sink, and pipeline.** The checkpoint is an ArcadeDB-resident watermark
   vertex (one row per slot); the sink is a `Replicant.Sink` impl baked with the host's config; the
   pipeline is a supervision child that starts `replicant` with the correct start-mode.
@@ -138,7 +148,8 @@ does not never compiles it).
   full **snapshot** bootstrap (the rebuildable-projection premise — forward-only replay would lose
   every pre-slot row); on a durable watermark it **resumes**. A mis-mapped mirror (duplicate/missing
   `source_table`) fails the host's boot loud, never silently starts. Postgres logical-replication
-  setup (`wal_level=logical`, the slot, the publication) is the host's operational concern.
+  setup (`wal_level=logical`, the slot, the publication — and, for a tenant-scoped mirror, the
+  source table's `REPLICA IDENTITY FULL`, see above) is the host's operational concern.
 
 **The seven fail-closed contracts a consumer MUST honor** (verifier-enforced or runtime-halted):
 
@@ -195,7 +206,9 @@ does not never compiles it).
    `AshArcadic.Replicant.*` subtree hard-references `%Replicant.Transaction{}` / `%Replicant.Change{}`
    structs at compile, so it is **not** conditionally compiled. A host that uses the CDC sink **must
    add `replicant` to its own deps**; a host that doesn't never touches these modules and needs
-   nothing.
+   nothing. **`replicant` is not yet published to hex** — a CDC host currently needs a **path or git
+   dep** to the `replicant` checkout, and a future ash_arcadic hex release of this CDC feature is
+   gated on `replicant`'s publication.
 
 - **Value-free CDC telemetry.** Two flat events —
   `[:ash_arcadic, :replicant, :transaction, :apply]` (measurements `change_count`, `duration`) and

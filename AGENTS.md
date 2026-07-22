@@ -12,13 +12,20 @@ verifiers, Cypher generation, traversal) and executes through the tenant-blind
 `arcadic` transport. It does **not** own transport, and does **not** re-implement
 Ash core's `multitenancy` DSL / tenant concept.
 
-## Architecture (once built)
+## Architecture
 
 A `Spark.Dsl.Extension` implementing the `Ash.DataLayer` behaviour, exposing an
 `arcade do ... end` resource section. Learn the shape from `ash_postgres`,
 `ash_sqlite`, and — closest — the sibling `ash_age` (`../ash_age`), whose
 `data_layer.ex`, `multitenancy.ex`, `validate_sensitive.ex`, and
-`manual_relationships/traverse.ex` are the templates to port.
+`manual_relationships/traverse.ex` are the templates ported.
+
+An **optional** subsystem, `AshArcadic.Replicant.*` (`lib/ash_arcadic/replicant/`),
+adds a Postgres→ArcadeDB **effect-once CDC sink** — a graph resource declares itself a
+mirror target with the `AshArcadic.Replicant` extension (`replicant do source_table …
+tenant_attribute … end`), and the sink applies decoded `%Replicant.Transaction{}`s from
+the sibling `replicant` transport, co-committing an integer-LSN watermark with the
+mirrored writes. See `usage-rules.md` for the consumer contract.
 
 ## Critical rules
 
@@ -98,11 +105,17 @@ All gates pass before commit/PR. Update `CHANGELOG.md` under `[Unreleased]`.
   specs, plans, exec notes, reviews, and handoffs — under `/docs/`, which is
   **gitignored** (the `ash_age` convention). Keep them there.
 
-## Next action
+## Current status
 
-`/brainstorm-autopilot` **opening with the Stage-0 physical-multitenancy
-decision** (CHARTER "OPEN"), then plan, then implement TDD against `ash_age`'s
-design and `arcadic`'s transport.
+The data layer is **built and released** — `ash_arcadic` 0.1.0 is on hex (the full
+Slice 1–11 surface: the `arcade` DSL, query push-down, CRUD/upserts/atomics, bulk
+writes, offset + keyset pagination, aggregates, calculations, relationships +
+traversal + edge writes, dense/sparse/hybrid vector search, transactions,
+`:async_engine`, telemetry — all fail-closed multitenant). The Stage-0
+physical-multitenancy decision was resolved during the brainstorm. The newest
+subsystem is the **`AshArcadic.Replicant.*`** CDC sink (Postgres→ArcadeDB
+effect-once mirror; optional; `[Unreleased]`). For the current surface, read
+`usage-rules.md`, `README.md`, and the runnable `livebooks/tour.livemd`.
 
 ## graphify (code knowledge graph)
 
