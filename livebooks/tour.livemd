@@ -8,9 +8,10 @@
 Mix.install([
   {:ash_arcadic, path: Path.join(__DIR__, "..")},
   # `replicant` is the CDC transport (Postgres logical replication → decoded
-  # transactions). ash_arcadic declares it `optional: true`, so the CDC-mirror section
-  # near the end needs it added here explicitly. It is unpublished — a path dep to the
-  # sibling checkout. A tour without the CDC section can drop this line.
+  # transactions), on hex as `{:replicant, "~> 0.3"}`. ash_arcadic declares it
+  # `optional: true`, so the CDC-mirror section near the end needs it added here
+  # explicitly (path-installed to match the ash_arcadic path dep above; a hex tour uses
+  # `{:replicant, "~> 0.3"}`). A tour without the CDC section can drop this line.
   {:replicant, path: Path.join(__DIR__, "../../replicant")}
 ])
 ```

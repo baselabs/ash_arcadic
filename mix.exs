@@ -47,10 +47,10 @@ defmodule AshArcadic.MixProject do
       {:spark, ">= 2.3.3 and < 3.0.0-0"},
       {:splode, "~> 0.3"},
       {:arcadic, "~> 0.7.1"},
-      # `replicant` is not published to hex; the sibling checkout is a path dep (dev/CI
-      # only — not a release concern this slice; see T1 closeout for the future-hex-release
-      # gap and the CI checkout gap this leaves).
-      {:replicant, path: "../replicant", optional: true},
+      # The CDC transport for the optional `AshArcadic.Replicant.*` sink. `optional: true`
+      # so non-CDC hosts don't pull it (nor its Postgrex replication deps); a host that
+      # uses the sink adds `replicant` to its own deps.
+      {:replicant, "~> 0.3", optional: true},
       {:jason, "~> 1.4"},
       {:telemetry, "~> 1.0"},
       # SAT solver required by Ash.Policy.Authorizer (Ash lists it as an optional dep;

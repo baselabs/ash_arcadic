@@ -207,13 +207,14 @@ does not never compiles it).
    the transaction rolls back) or `:mirror` (a tenant-**blind** whole-label `DETACH DELETE`, atomic
    with the surrounding changes and the watermark advance).
 
-7. **Optional-dep caveat (honest optionality).** `replicant` is declared `optional: true`, but the
-   `AshArcadic.Replicant.*` subtree hard-references `%Replicant.Transaction{}` / `%Replicant.Change{}`
-   structs at compile, so it is **not** conditionally compiled. A host that uses the CDC sink **must
-   add `replicant` to its own deps**; a host that doesn't never touches these modules and needs
-   nothing. **`replicant` is not yet published to hex** — a CDC host currently needs a **path or git
-   dep** to the `replicant` checkout, and a future ash_arcadic hex release of this CDC feature is
-   gated on `replicant`'s publication.
+7. **Optional-dep caveat (honest optionality).** `replicant` (the CDC transport) is on hex — a host
+   that uses the CDC sink **adds `{:replicant, "~> 0.3"}` to its own deps**. It is declared
+   `optional: true` in ash_arcadic so a non-CDC host needn't pull it (nor its Postgrex replication
+   deps). One honest wrinkle: the `AshArcadic.Replicant.*` subtree hard-references
+   `%Replicant.Transaction{}` / `%Replicant.Change{}` structs at compile and is **not** conditionally
+   compiled, so building ash_arcadic itself always needs `replicant` present — a future release that
+   ships CDC on hex should compile-gate the subtree (or drop `optional:`) for a non-CDC host to build
+   it replicant-free.
 
 - **Value-free CDC telemetry.** Two flat events —
   `[:ash_arcadic, :replicant, :transaction, :apply]` (measurements `change_count`, `duration`) and

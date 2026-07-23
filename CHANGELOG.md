@@ -30,12 +30,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   hold no mirror resource fails closed `:empty_index` (never a silent watermark advance); an upstream
   TRUNCATE is `:halt` (default) or a tenant-blind `:mirror` delete. Value-free CDC telemetry
   (`[:ash_arcadic, :replicant, :transaction, :apply|:skip]`, metadata `slot`/`commit_lsn` only — never
-  a row value). `replicant` is an `optional: true` dep; a host that uses the CDC sink must add
-  `replicant` to its own deps (the sink subtree hard-references `%Replicant.*{}` structs at compile),
-  a host that doesn't never touches these modules. NOTE: `replicant` is not yet published to hex — a
-  CDC host currently needs a path/git dep to the `replicant` checkout, and a future ash_arcadic hex
-  release of this CDC feature is gated on `replicant`'s publication. See `usage-rules.md` for the full
-  consumer contract.
+  a row value). `replicant` (on hex) is an `optional: true` dep; a host that uses the CDC sink adds
+  `{:replicant, "~> 0.3"}` to its own deps (the sink subtree hard-references `%Replicant.*{}` structs
+  at compile, so it is not conditionally compiled — a future release that ships CDC on hex should
+  compile-gate the subtree, or drop `optional:`, for a non-CDC host to build replicant-free). See
+  `usage-rules.md` for the full consumer contract.
 
 ## [0.1.0] - 2026-07-15
 
