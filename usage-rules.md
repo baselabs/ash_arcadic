@@ -215,8 +215,8 @@ dep, and the three modules that hard-reference `%Replicant.*{}` structs / `Repli
    (`AshArcadic.Replicant.Apply` / `Sink.Impl` / `Pipeline`) are **compile-gated** on
    `Code.ensure_loaded?(Replicant.Sink)`, so a non-CDC host builds ash_arcadic replicant-free (that
    subtree compiles away). If a host adds `replicant` **after** an initial non-CDC compile, run
-   `mix deps.clean ash_arcadic --build && mix compile` once so the gated subtree recompiles with
-   `replicant` present (the guard creates no compile-dependency edge, so `mix` will not otherwise
+   `mix deps.get && mix deps.clean ash_arcadic --build && mix compile` once so the gated subtree
+   recompiles with `replicant` present (the guard creates no compile-dependency edge, so `mix` will not otherwise
    rebuild ash_arcadic; `mix deps.compile ash_arcadic --force` is NOT sufficient — it can recompile
    ash_arcadic before `replicant` itself is compiled, leaving the gate false). Until the rebuild,
    the missing modules surface as a loud `AshArcadic.Replicant.Apply … is undefined` at the host's

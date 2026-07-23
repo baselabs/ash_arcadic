@@ -42,8 +42,8 @@ defmodule AshArcadic.ReplicantSink do
   the CDC sink adds `{:replicant, "~> 0.3"}` to its own deps; `use AshArcadic.ReplicantSink`
   requires it (its `@behaviour Replicant.Sink` / delegation to `Apply` bind at the host's
   compile). If a host adds `replicant` AFTER an initial non-CDC compile, run
-  `mix deps.clean ash_arcadic --build && mix compile` so the gated subtree recompiles with
-  `replicant` present (`mix deps.compile ash_arcadic --force` alone can rebuild ash_arcadic
+  `mix deps.get && mix deps.clean ash_arcadic --build && mix compile` so the gated subtree
+  recompiles with `replicant` present (`mix deps.compile ash_arcadic --force` alone can rebuild ash_arcadic
   before `replicant` is compiled, leaving the gate false).
   """
 
