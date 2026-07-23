@@ -58,7 +58,7 @@ if Code.ensure_loaded?(Replicant.Sink) do
     `handle_snapshot/3` and `handle_snapshot_complete/2` return `:ok` / `{:ok, lsn}` or a
     VALUE-FREE `{:error, _}` — a batch failure (a per-row raise scrubbed by `apply_change`,
     a clear failure, or a data-layer rollback that returns a value-bearing `Ash.Error`
-    container) is routed through the SHARED `AshArcadic.Replicant.Apply.boundary_error/1`
+    container) is routed through the SHARED `AshArcadic.Replicant.Apply.boundary_error`
     (the single source of truth for this security boundary): only a bare
     `AshArcadic.Replicant.Error` or a structural `AshArcadic.Errors.*` crosses; any
     value-bearing or unrecognized term maps to a static `:sink_failed`

@@ -16,7 +16,7 @@ defmodule AshArcadic.ReplicantCheckpoint do
   `AshArcadic.Replicant`'s mirror-resource verifier: this is not a mirror resource).
   A `client:` pointed at a different database than the mirrored resources breaks the
   same-transaction guarantee — the checkpoint upsert becomes a cross-database write,
-  which `AshArcadic.Transaction.resolve_conn/2` fails closed on
+  which `AshArcadic.Transaction.resolve_conn` fails closed on
   (`:cross_database_transaction`) rather than silently splitting the commit. The
   consumer is responsible for wiring this correctly.
 

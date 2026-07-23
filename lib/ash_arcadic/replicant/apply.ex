@@ -14,7 +14,7 @@ if Code.ensure_loaded?(Replicant.Sink) do
     `apply_transaction/2` wraps the WHOLE apply in `Ash.transaction(resources, fn -> ... end)`
     — never a raw `Arcadic.transaction/3`. The data-layer `transaction/4` callback that
     `Ash.transaction/2` routes through is what sets the process marker
-    (`:ash_arcadic_tx_marker`); `AshArcadic.Transaction.resolve_conn/2` opens ONE ArcadeDB
+    (`:ash_arcadic_tx_marker`); `AshArcadic.Transaction.resolve_conn` opens ONE ArcadeDB
     session on the first write and every subsequent write/read reuses it, so the mirrored
     data writes AND the checkpoint upsert commit together in a single session. The
     `resources` list MUST be non-empty (it includes the checkpoint resource): a bare
@@ -53,9 +53,9 @@ if Code.ensure_loaded?(Replicant.Sink) do
     `apply_transaction/2` ALWAYS returns `{:ok, lsn} | {:error, <value-free>}` — it never
     raises and never lets a value-bearing term escape, whether the underlying failure arrived
     as a returned rollback `{:error, reason}` (an Ash data-layer write failing INSIDE the
-    transaction rolls back via `AshArcadic.Transaction.rollback_throw/1`, which
-    `AshArcadic.Transaction.run/1` catches and RETURNS as `{:error, reason}` — bypassing the
-    per-change rescue), a raised exception, or a caught throw/exit. `boundary_error/1` lets
+    transaction rolls back via `AshArcadic.Transaction.rollback_throw`, which
+    `AshArcadic.Transaction.run` catches and RETURNS as `{:error, reason}` — bypassing the
+    per-change rescue), a raised exception, or a caught throw/exit. `boundary_error` lets
     only PROVABLY value-free terms cross: an `AshArcadic.Replicant.Error` (atoms only), or a
     bare structural `AshArcadic.Errors.*` data-layer error (value-free by AGENTS.md Rule 4 —
     extracted from its value-BEARING `Ash.Error` container, which carries the changeset/query,
