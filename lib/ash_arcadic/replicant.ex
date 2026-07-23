@@ -68,7 +68,10 @@ defmodule AshArcadic.Replicant do
       skip: [
         type: {:wrap_list, :atom},
         default: [],
-        doc: "Source columns excluded from the mirror write."
+        doc:
+          "Source **non-identity** columns excluded from the mirror write. Must NOT name the " <>
+            "primary key — a dropped PK would forge a fresh vertex identity on every apply, so a " <>
+            "skipped PK is rejected at compile by `ValidatePrimaryKeyNotSkipped`."
       ],
       on_truncate: [
         type: {:one_of, [:halt, :mirror]},

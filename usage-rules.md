@@ -88,7 +88,8 @@ dep, and the three modules that hard-reference `%Replicant.*{}` structs / `Repli
 
         actions do
           # The sink calls the resource's PRIMARY create + destroy. A defaults-generated
-          # :destroy is primary; a custom create must be marked primary? true.
+          # :destroy is primary; a custom create must be marked primary? true. (The sink passes
+          # upsert?: true at apply time, so `upsert? true` on the action itself is optional.)
           defaults [:read, :destroy]
 
           create :upsert do
@@ -154,11 +155,19 @@ dep, and the three modules that hard-reference `%Replicant.*{}` structs / `Repli
   supplies only `:connection` and `:publication`. On an **empty** checkpoint the pipeline runs a
   full **snapshot** bootstrap (the rebuildable-projection premise — forward-only replay would lose
   every pre-slot row); on a durable watermark it **resumes**. A mis-mapped mirror (duplicate/missing
-  `source_table`) fails the host's boot loud, never silently starts. Postgres logical-replication
-  setup (`wal_level=logical`, the slot, the publication — and, for a tenant-scoped mirror, the
-  source table's `REPLICA IDENTITY FULL`, see above) is the host's operational concern.
+  `source_table`) fails the host's boot loud, never silently starts. the host handles the Postgres side.
 
-**The seven fail-closed contracts a consumer MUST honor** (verifier-enforced or runtime-halted):
+  **Postgres prerequisites** (host-side, once on the source database): set `wal_level = 'logical'`
+  (`ALTER SYSTEM SET wal_level = 'logical'` — needs a restart); create a publication for the
+  mirrored tables (`CREATE PUBLICATION orders_pub FOR TABLE orders`); give the `:connection` role
+  the `REPLICATION` attribute; and for a **tenant-scoped** mirror set the source table to
+  `REPLICA IDENTITY FULL` (`ALTER TABLE orders REPLICA IDENTITY FULL`) so a `:delete` / PK-change
+  carries the tenant column in `old_record` (else the apply halts `:tenant_required`). `replicant`
+  **creates and resumes the replication slot itself** from the sink's `slot_name` — you never run
+  `CREATE_REPLICATION_SLOT` by hand; just leave `max_replication_slots` headroom. See the
+  [`replicant`](https://hex.pm/packages/replicant) docs for the operational detail.
+
+**The eight fail-closed contracts a consumer MUST honor** (verifier-enforced or runtime-halted):
 
 1. **Single-database (compile verifier).** A mirror resource must be `:attribute` multitenancy or
    non-multitenant — **never `:context`**. Effect-once needs every tenant a tenant-blind Postgres
@@ -222,6 +231,12 @@ dep, and the three modules that hard-reference `%Replicant.*{}` structs / `Repli
    ash_arcadic before `replicant` itself is compiled, leaving the gate false). Until the rebuild,
    the missing modules surface as a loud `AshArcadic.Replicant.Apply … is undefined` at the host's
    `use AshArcadic.ReplicantSink` — never a silent gap.
+
+8. **Primary key must not be skipped (compile verifier).** A primary-key column listed in the
+   `replicant` `skip` is rejected at compile (`ValidatePrimaryKeyNotSkipped`): the sink builds the
+   mirror vertex identity from the source PK, so a dropped PK would forge a fresh identity on every
+   apply (unbounded duplicate vertices) rather than MATCHing the existing vertex. `skip` names
+   non-identity columns only.
 
 - **Value-free CDC telemetry.** Two flat events —
   `[:ash_arcadic, :replicant, :transaction, :apply]` (measurements `change_count`, `duration`) and
@@ -920,5 +935,6 @@ dep, and the three modules that hard-reference `%Replicant.*{}` structs / `Repli
   **full-param encode-gated** (Rule 4) before the DB touch — a raw non-UTF8 binary
   nested in a `:map`/`:list` property fails closed value-free, naming only the key.
 
-See `docs/CHARTER.md` for architecture and the open multitenancy decision; `AGENTS.md`
-for the full working rules.
+See [`AGENTS.md`](https://github.com/baselabs/ash_arcadic/blob/main/AGENTS.md) for the full
+working rules, and the module reference on [hexdocs](https://hexdocs.pm/ash_arcadic) for the
+architecture.

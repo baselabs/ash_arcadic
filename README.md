@@ -25,7 +25,7 @@ enforced **Ash-natively**. It executes through the
 
 [`livebooks/tour.livemd`](https://github.com/baselabs/ash_arcadic/blob/main/livebooks/tour.livemd)
 is a runnable Livebook tour of the whole surface (CRUD → queries → keyset streaming →
-concurrent bulk → multitenancy → vector search → graph traversal) against a throwaway
+concurrent bulk → multitenancy → vector search → graph traversal → CDC mirror) against a throwaway
 database. Every cell is verified against a live ArcadeDB. Click the badge (needs a running
 [Livebook](https://livebook.dev)), or open the file from a local clone.
 

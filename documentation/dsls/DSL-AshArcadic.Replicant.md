@@ -56,7 +56,7 @@ Marks a host graph resource as a `replicant` CDC mirror target and declares its 
 | [`source_table`](#replicant-source_table){: #replicant-source_table .spark-required} | `String.t` |  | Source Postgres table name. Required — a graph resource's own `arcade` label is not its Postgres source table, so no reflection fallback is offered. |
 | [`source_schema`](#replicant-source_schema){: #replicant-source_schema } | `String.t` | `"public"` | Source Postgres schema name. |
 | [`tenant_attribute`](#replicant-tenant_attribute){: #replicant-tenant_attribute } | `atom` |  | Source column carrying the tenant. Resolved per row and passed as `tenant:` to the mirror action. **Requires the source table to be `REPLICA IDENTITY FULL`**: a `:delete` / PK-changing `:update` resolves the tenant from `old_record`, which is key-only under the default replica identity — the tenant column would be absent, so the apply fails closed `:tenant_required` and halts the whole transaction. |
-| [`skip`](#replicant-skip){: #replicant-skip } | `atom \| list(atom)` | `[]` | Source columns excluded from the mirror write. |
+| [`skip`](#replicant-skip){: #replicant-skip } | `atom \| list(atom)` | `[]` | Source **non-identity** columns excluded from the mirror write. Must NOT name the primary key — a dropped PK would forge a fresh vertex identity on every apply, so a skipped PK is rejected at compile by `ValidatePrimaryKeyNotSkipped`. |
 | [`on_truncate`](#replicant-on_truncate){: #replicant-on_truncate } | `:halt \| :mirror` | `:halt` | Policy for an upstream TRUNCATE: `:halt` (fail-closed, default) or `:mirror` (raw-delete the mirror rows in-txn). |
 
 
