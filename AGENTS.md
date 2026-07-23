@@ -76,7 +76,7 @@ DSL docs with `mix spark.cheat_sheets --extensions AshArcadic.DataLayer,AshArcad
 ## Development workflow
 
 ```bash
-mix deps.get          # pulls ../arcadic via path dep
+mix deps.get          # fetch deps (ash, arcadic, … from hex)
 mix format
 mix credo --strict
 mix compile --warnings-as-errors
