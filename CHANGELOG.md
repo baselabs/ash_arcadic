@@ -31,9 +31,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   TRUNCATE is `:halt` (default) or a tenant-blind `:mirror` delete. Value-free CDC telemetry
   (`[:ash_arcadic, :replicant, :transaction, :apply|:skip]`, metadata `slot`/`commit_lsn` only — never
   a row value). `replicant` (on hex) is an `optional: true` dep; a host that uses the CDC sink adds
-  `{:replicant, "~> 0.3"}` to its own deps (the sink subtree hard-references `%Replicant.*{}` structs
-  at compile, so it is not conditionally compiled — a future release that ships CDC on hex should
-  compile-gate the subtree, or drop `optional:`, for a non-CDC host to build replicant-free). See
+  `{:replicant, "~> 0.3"}` to its own deps. The three modules with compile-time `Replicant.*`
+  dependencies (`AshArcadic.Replicant.Apply`/`Sink.Impl`/`Pipeline`) are compile-gated on
+  `Code.ensure_loaded?(Replicant.Sink)`, so a non-CDC host builds ash_arcadic replicant-free. See
   `usage-rules.md` for the full consumer contract.
 
 ## [0.1.0] - 2026-07-15

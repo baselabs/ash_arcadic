@@ -41,9 +41,10 @@ _An Ash DataLayer for ArcadeDB (native OpenCypher over HTTP)._
 An **optional** subsystem that mirrors a Postgres logical-replication stream into an
 ArcadeDB graph projection **exactly once**, over the sibling `replicant` CDC transport. Opt-in
 — a host that does not use CDC never references these modules. `replicant` is an `optional: true`
-dep, but the whole `AshArcadic.Replicant.*` subtree hard-references `%Replicant.*{}` structs at
-compile, so **a host that uses the CDC sink MUST add `replicant` to its own deps** (a host that
-does not never compiles it).
+dep, and the three modules that hard-reference `%Replicant.*{}` structs / `Replicant.start_link/1`
+(`AshArcadic.Replicant.Apply` / `Sink.Impl` / `Pipeline`) are **compile-gated** on
+`Code.ensure_loaded?(Replicant.Sink)`, so a non-CDC host builds ash_arcadic without `replicant`.
+**A host that uses the CDC sink adds `replicant` to its own deps** (see the Optional-dep contract below).
 
 - **Declare a mirror resource** with the `AshArcadic.Replicant` extension. `source_table` is
   required (no reflection — a graph resource's `arcade` label is not its Postgres table);
@@ -207,14 +208,16 @@ does not never compiles it).
    the transaction rolls back) or `:mirror` (a tenant-**blind** whole-label `DETACH DELETE`, atomic
    with the surrounding changes and the watermark advance).
 
-7. **Optional-dep caveat (honest optionality).** `replicant` (the CDC transport) is on hex — a host
+7. **Optional-dep contract (honest optionality).** `replicant` (the CDC transport) is on hex — a host
    that uses the CDC sink **adds `{:replicant, "~> 0.3"}` to its own deps**. It is declared
    `optional: true` in ash_arcadic so a non-CDC host needn't pull it (nor its Postgrex replication
-   deps). One honest wrinkle: the `AshArcadic.Replicant.*` subtree hard-references
-   `%Replicant.Transaction{}` / `%Replicant.Change{}` structs at compile and is **not** conditionally
-   compiled, so building ash_arcadic itself always needs `replicant` present — a future release that
-   ships CDC on hex should compile-gate the subtree (or drop `optional:`) for a non-CDC host to build
-   it replicant-free.
+   deps). The three modules with compile-time `Replicant.*` dependencies
+   (`AshArcadic.Replicant.Apply` / `Sink.Impl` / `Pipeline`) are **compile-gated** on
+   `Code.ensure_loaded?(Replicant.Sink)`, so a non-CDC host builds ash_arcadic replicant-free (that
+   subtree compiles away). If a host adds `replicant` **after** an initial non-CDC compile, run
+   `mix deps.compile ash_arcadic --force` once so the gated subtree recompiles (the guard creates no
+   compile-dependency edge — the otherwise-missing modules surface as a loud
+   `AshArcadic.Replicant.Apply … is undefined` at the host's `use AshArcadic.ReplicantSink`).
 
 - **Value-free CDC telemetry.** Two flat events —
   `[:ash_arcadic, :replicant, :transaction, :apply]` (measurements `change_count`, `duration`) and

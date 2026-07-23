@@ -104,3 +104,38 @@ jobs:
       - name: Dialyzer
         if: matrix.dialyzer
         run: mix dialyzer
+
+  # Regression guard for the optional-dep contract: a non-CDC host must compile ash_arcadic
+  # WITHOUT `replicant`. The AshArcadic.Replicant.{Apply,Sink.Impl,Pipeline} subtree is
+  # compile-gated on Code.ensure_loaded?(Replicant.Sink); everything else is replicant-free.
+  # Compile-only (no ArcadeDB service needed).
+  compile-without-cdc:
+    name: Compile without optional replicant (non-CDC host)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Elixir/OTP
+        uses: erlef/setup-beam@v1
+        with:
+          elixir-version: "1.18.3"
+          otp-version: "27.3"
+
+      - name: Install dependencies
+        run: mix deps.get
+
+      - name: Compile the replicant-free subtree (optional replicant dep dropped)
+        run: |
+          # This CI checkout is disposable, so dropping the dep in place is safe. Assert the
+          # dep line was actually removed (non-vacuity) so a mix.exs reformat can't turn this
+          # guard into a silent pass.
+          before=$(md5sum mix.exs | cut -d' ' -f1)
+          sed -i '/{:replicant,/d' mix.exs
+          after=$(md5sum mix.exs | cut -d' ' -f1)
+          if [ "$before" = "$after" ]; then
+            echo "::error::guard vacuous — the {:replicant, ...} dep line was not found in mix.exs; update this guard" >&2
+            exit 1
+          fi
+          mix deps.unlock replicant
+          mix compile --force --warnings-as-errors
