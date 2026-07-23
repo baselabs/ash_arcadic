@@ -3,8 +3,8 @@
 # AshArcadic tour — Ash on ArcadeDB
 
 ```elixir
-# Pre-publish: path-install from a checkout that has ../arcadic beside it.
-# After the hex release this becomes: Mix.install([{:ash_arcadic, "~> 0.1"}])
+# Local dev: path-install from a checkout that has ../arcadic beside it.
+# A hex tour instead uses: Mix.install([{:ash_arcadic, "~> 0.2"}])
 Mix.install([
   {:ash_arcadic, path: Path.join(__DIR__, "..")},
   # `replicant` is the CDC transport (Postgres logical replication → decoded

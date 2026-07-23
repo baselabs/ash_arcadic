@@ -31,12 +31,13 @@ defmodule AshArcadic do
     * `usage-rules.md` — the per-feature fine print (supported operators,
       pagination, vector search, bulk-write concurrency, limitations).
 
-  Supported surface (0.1.0): CRUD + `MERGE` upserts + atomics, bulk writes
+  Supported surface (0.2.0): CRUD + `MERGE` upserts + atomics, bulk writes
   (incl. query-scoped push-down and MVCC-retry-converging concurrent bulk),
   filter/sort/distinct/combinations push-down, offset + keyset pagination with
   `Ash.stream!`, temporal comparisons, query + traversal aggregates, expression
   calculations, standard relationships + edge writes, dense/sparse/hybrid vector
-  search, transactions, `:async_engine` concurrent loads, telemetry — all
+  search, transactions, `:async_engine` concurrent loads, telemetry, and an
+  optional Postgres→ArcadeDB effect-once CDC sink (`AshArcadic.Replicant.*`) — all
   fail-closed multitenant with value-free redacted errors.
   """
 end

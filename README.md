@@ -71,17 +71,20 @@ Multitenancy lives **here**, not in `arcadic` — exactly as `ash_postgres` (not
 
 ## Installation
 
-Not yet on Hex (0.1.0 imminent). Until then, a path/git dependency:
+Add `ash_arcadic` (and `ash`) to your deps:
 
 ```elixir
 # mix.exs
 def deps do
   [
     {:ash, "~> 3.0"},
-    {:ash_arcadic, path: "../ash_arcadic"} # or git: ...
+    {:ash_arcadic, "~> 0.2.0"}
   ]
 end
 ```
+
+The Postgres→ArcadeDB CDC sink is optional — add `{:replicant, "~> 0.3"}` only if you
+use it (see `usage-rules.md`); a non-CDC host builds `ash_arcadic` without it.
 
 ## Connecting to ArcadeDB
 
