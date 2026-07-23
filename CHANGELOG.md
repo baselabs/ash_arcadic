@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-07-22
+
+Adds the optional Postgres→ArcadeDB effect-once CDC sink (`AshArcadic.Replicant.*`),
+compile-gated on the `replicant` transport so non-CDC hosts build unchanged.
+
 ### Added
 
 - **Postgres→ArcadeDB effect-once CDC sink (`AshArcadic.Replicant.*`).** An optional module
@@ -470,5 +475,6 @@ the initial surface.
   tenant space). ArcadeDB `CONTAINS`/`STARTS WITH`/`ENDS WITH` are case-sensitive (a
   `:ci_string` attribute's case-insensitive semantics are not preserved).
 
-[Unreleased]: https://github.com/baselabs/ash_arcadic/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/baselabs/ash_arcadic/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/baselabs/ash_arcadic/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/baselabs/ash_arcadic/releases/tag/v0.1.0
