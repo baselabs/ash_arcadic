@@ -137,5 +137,11 @@ jobs:
             echo "::error::guard vacuous — the {:replicant, ...} dep line was not found in mix.exs; update this guard" >&2
             exit 1
           fi
+          # The {:replicant, ...} dep is a single line today. If it were ever reformatted to a
+          # multi-line tuple, the line-delete above would strip only a fragment and break mix.exs
+          # syntax — which must NOT be confused with the gated-compile property failing. Fail with
+          # a distinct message so a future reformat is fixed at the guard, not misread as a real bug.
+          elixir -e 'Code.string_to_quoted!(File.read!("mix.exs"))' \
+            || { echo "::error::guard broke mix.exs syntax (multi-line {:replicant, ...} tuple?) — harden the dep removal" >&2; exit 1; }
           mix deps.unlock replicant
           mix compile --force --warnings-as-errors
