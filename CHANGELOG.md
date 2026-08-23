@@ -48,6 +48,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   call. Mutation-red-proven (a swallow-and-fallback rescue in `conn_for` and a
   dropped `%Conn{}` guard each red exactly the targeted tests).
 
+### Changed
+
+- Documented (no behavior change) why `transaction/4`'s `timeout` parameter is
+  not enforced: the transaction marker and ArcadeDB session are owner-process-
+  only (process dictionary), so a task-wrapped deadline body would lose the
+  session; each wire call is already bounded by the conn's per-call receive
+  timeout. Recorded at the callback (`data_layer.ex`) and in the troubleshooting
+  guide's timeouts section, with the host-side workaround (wrap the action at
+  the caller's boundary).
+
 ### Fixed
 
 - Docs build warnings: `documentation/telemetry.md`'s reference to the deliberately

@@ -157,3 +157,11 @@ def conn do
   Arcadic.connect(url, db, auth: {"root", pass}, timeout: 15_000)
 end
 ```
+
+**`Ash.transaction`'s `timeout` opt is not enforced by this data layer.** The
+transaction marker and the ArcadeDB session live in the caller's process
+dictionary (owner-process-only by design), so a task-wrapped body with a kill
+timer would lose the session; and every wire call inside the transaction is
+already bounded by the conn's per-call `timeout` above. For a wall-clock bound
+around a whole action, wrap the call at your own boundary (`Task.async` +
+`Task.yield` with a shutdown).

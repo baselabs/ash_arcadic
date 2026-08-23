@@ -2726,6 +2726,16 @@ defmodule AshArcadic.DataLayer do
 
   # === Transactions (owner-process-only session; Plan-3 spec §4) ===
 
+  # `timeout`/`reason` are deliberately NOT enforced. `reason` is Ash metadata. A true
+  # transaction deadline would have to run `fun` under a task with a kill timer — but the
+  # marker AND the ArcadeDB session live in the CALLER's process dictionary
+  # (AshArcadic.Transaction, owner-process-only by design), so a task-wrapped body would
+  # lose the session and double-own the marker. Each wire call inside the transaction is
+  # already bounded by the conn's per-call receive timeout (`Arcadic.Conn.timeout`, the
+  # host sets it on its client conn) — a hung command fails there. Enforcing a
+  # cross-call deadline would mean moving the transaction state out of the process
+  # dictionary (a redesign, not a knob); callers needing a wall-clock bound can wrap the
+  # Ash action in `Task.timeout` at their own boundary.
   @impl true
   def transaction(resource, fun, _timeout \\ nil, _reason \\ nil) do
     if AshArcadic.Transaction.in_transaction?() do
