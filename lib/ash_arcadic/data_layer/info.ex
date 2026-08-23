@@ -9,6 +9,14 @@ defmodule AshArcadic.DataLayer.Info do
   @spec database(Ash.Resource.t()) :: String.t() | nil
   def database(resource), do: Extension.get_opt(resource, [:arcade], :database)
 
+  @doc """
+  The per-resource default receive timeout (`arcade do timeout <ms> end`), or nil when the
+  resource sets none (the client conn's own `timeout:` is then the floor). Applied by the data
+  layer's per-op conn derivation (`AshArcadic.DataLayer.resource_conn/1`) to every wire call.
+  """
+  @spec timeout(Ash.Resource.t()) :: pos_integer() | nil
+  def timeout(resource), do: Extension.get_opt(resource, [:arcade], :timeout)
+
   @spec label(Ash.Resource.t()) :: atom() | String.t()
   def label(resource),
     do: Extension.get_opt(resource, [:arcade], :label) || default_label(resource)

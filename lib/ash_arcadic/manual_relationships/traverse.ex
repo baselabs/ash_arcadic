@@ -559,14 +559,16 @@ defmodule AshArcadic.ManualRelationships.Traverse do
   # Route the database-targeted base conn through the transaction resolver: a plain
   # conn outside a tx; the session (read-own-writes) inside one. :read never errors on
   # the session guard, but the spec's error variants are handled by do_load's else.
+  # base_conn rides DataLayer.resource_conn/1 so the traversal's wire calls inherit the
+  # SOURCE resource's `arcade do timeout end` default (R10) like every other path.
   defp resolve_conn(source, database) do
     Transaction.resolve_conn(base_conn(source, database), :read)
   end
 
-  defp base_conn(source, nil), do: Info.client(source).conn()
+  defp base_conn(source, nil), do: DataLayer.resource_conn(source)
 
   defp base_conn(source, database),
-    do: Arcadic.with_database(Info.client(source).conn(), database)
+    do: Arcadic.with_database(DataLayer.resource_conn(source), database)
 
   # One $ids entry: source-PK fields stringified and serialized by attribute type so
   # the param matches the STORED form (binary→base64, date/decimal→string). Scalar PKs

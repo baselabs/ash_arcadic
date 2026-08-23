@@ -48,6 +48,7 @@ Configuration for the ArcadeDB data layer.
 |------|------|---------|------|
 | [`client`](#arcade-client){: #arcade-client .spark-required} | `atom` |  | Module implementing `AshArcadic.Client` (supplies the `Arcadic.Conn`). |
 | [`database`](#arcade-database){: #arcade-database } | `String.t` |  | Per-resource default database. Defaults to the client conn's database. Ignored for `:context`. |
+| [`timeout`](#arcade-timeout){: #arcade-timeout } | `pos_integer` |  | Per-resource default receive timeout (ms) for every wire call — reads, writes, aggregates, vector search, traversal, session ops. Beats the client conn's `timeout:` for this resource; an Ash-resolved timeout (read action `timeout`, `changeset.timeout`) beats this for that call. Bounds each HTTP request's receive (per-chunk) wait, not a whole-action deadline — see the timeouts section in `documentation/troubleshooting.md`. |
 | [`label`](#arcade-label){: #arcade-label } | `atom \| String.t` |  | Vertex label. Defaults to the resource's short module name. |
 | [`skip`](#arcade-skip){: #arcade-skip } | `list(atom)` | `[]` | Attribute names excluded from ArcadeDB properties. |
 | [`sensitive`](#arcade-sensitive){: #arcade-sensitive } | `list(atom)` | `[]` | Attribute names classified as sensitive. Verifier (ValidateSensitive): each must be binary-storage-typed (app-side-encrypted bytes) or listed in `skip`. The verifier checks the type SHAPE — encrypting is the host app's job. |

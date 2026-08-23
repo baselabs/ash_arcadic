@@ -9,6 +9,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Timeout surface (R10).** The data layer now declares Ash's `:timeout`
+  capability and adds a per-resource receive-timeout default, both applied
+  through one mechanism (per-op conn derivation) so every wire path — reads,
+  writes, aggregates, vector search, traversal, session ops — inherits it:
+  - `Ash.Query.timeout/2` and call-site read `timeout:` opts are accepted
+    (previously a `TimeoutNotSupported` error). They bound the whole action's
+    wall clock via Ash's task wrapper (outside transactions), the ash_postgres
+    split: a read action's own `timeout` option (and the
+    `context data_layer: %{timeout: …}` convention) additionally bounds each
+    wire call, as does `changeset.timeout` on writes.
+  - New `arcade do timeout <ms> end` per-resource default — beats the client
+    conn's `timeout:` for that resource on every wire call, including inside
+    transactions (where Ash's wall-clock wrapper is off). The only declarative
+    knob for slow-write resources (write actions have no `timeout` field in
+    Ash, and the domain `execution` default is read-path-only).
+  - Precedence at the wire: Ash-resolved per-call > resource default > client
+    conn; an explicit `:infinity` means "no receive bound for this call". A
+    timed-out write is never retried (post-send ambiguity — unchanged).
+  - Docs corrected: wire calls were never unbounded-with-no-default — with no
+    timeout set anywhere, Req's 15 s per-chunk receive default applies (the old
+    "no timeout by default" text in troubleshooting/SECURITY overstated it).
+    The receive bound is per-chunk, not per-response (documented; a Finch
+    `request_timeout` plumbing through `arcadic` would be needed for
+    full-response bounds). Timeout tests are mutation-red-proven (capability
+    drop, stash drop, derivation drop, changeset-threading drop, precedence
+    flip — each red exactly the targeted tests).
+
 - Driven connection-failure redaction tests (unit + live integration). The refused-
   connection, credential-failure (live 403 `ServerSecurityException`), and non-MVCC 5xx
   (live 500 `DatabaseOperationException`, whose `detail` carries the database name)

@@ -77,9 +77,13 @@ documented with its mitigation in `usage-rules.md`:
   before AshArcadic sees it (upstream bug; documented in usage-rules).
 - ArcadeDB HTTP transport is the default; TLS and other transport options are
   the host's `arcadic` connection concern (`Arcadic.connect` transport opts).
-- Commands have **no timeout by default** (arcadic default). Set
-  `timeout: <ms>` in your client module's `Arcadic.connect/3` to bound every
-  data-layer call against a hung server.
+- Every wire call carries an HTTP receive timeout (per-chunk wait): the client
+  conn's `timeout:` in `Arcadic.connect/3` is the floor, a per-resource
+  `arcade do timeout <ms> end` overrides it for that resource, and Ash-resolved
+  timeouts (read action `timeout` / `changeset.timeout`) override both for that
+  call. With none set, Req's 15 s per-chunk default applies — set one
+  explicitly so the bound is yours, not the HTTP client's. See the timeouts
+  section in `documentation/troubleshooting.md`.
 
 ### Dependency surface
 

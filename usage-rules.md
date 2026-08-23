@@ -44,6 +44,29 @@ _An Ash DataLayer for ArcadeDB (native OpenCypher over HTTP)._
 - **`MERGE` is used** for idempotent upsert (ArcadeDB-verified) — unlike the
   `ash_age` sibling. Do not import AGE's "never MERGE" rule.
 
+## Timeouts (R10)
+
+Every wire call carries an HTTP receive timeout (max wait **per received
+chunk**), resolved most-specific-wins:
+
+1. Ash-resolved per call: a **read action's `timeout`** option (action DSL, or
+   `context data_layer: %{timeout: …}`) and, on writes, `changeset.timeout`
+   (call-site `timeout:` / `Ash.Changeset.timeout/2`). `Ash.Query.timeout/2`
+   and call-site read `timeout:` opts are accepted (`:timeout` capability,
+   ash_postgres's posture) but are whole-action wall clocks (Ash's task
+   wrapper, outside transactions only) — they do not reach individual wire
+   calls.
+2. The **resource default**: `arcade do timeout <ms> end` — applies to every
+   wire call of the resource (reads, writes, aggregates, vector, traversal,
+   session ops; also inside transactions, where the task wrapper is off).
+3. The **client conn floor**: `timeout:` on the host client's
+   `Arcadic.connect/3`. Unset everywhere → Req's 15 s per-chunk default.
+
+Bulk writes ride the resource/conn bounds (an explicit `timeout:` opt to
+`Ash.bulk_create` is a wall clock only, defaulting to `:infinity`). A timed-out
+write is never retried. Details + failure modes:
+`documentation/troubleshooting.md` § Timeouts & hangs.
+
 ## CDC mirror — Postgres→ArcadeDB effect-once sink (`AshArcadic.Replicant.*`)
 
 An **optional** subsystem that mirrors a Postgres logical-replication stream into an

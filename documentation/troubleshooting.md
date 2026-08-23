@@ -148,9 +148,21 @@ Either accept the halt (fail-closed default) or declare `on_truncate :mirror`.
 
 ## Timeouts & hangs
 
-**An action hangs against a stalled ArcadeDB** — arcadic commands have no
-timeout by default. Set `timeout: <ms>` (and transport pool options) in your
-client module's `Arcadic.connect/3` — the data layer uses your conn as-is:
+Every wire call carries an HTTP **receive timeout** — the maximum wait for each
+received chunk of a response. It resolves in three layers, most specific wins:
+
+1. **An Ash-resolved timeout** for that call — a read action's `timeout` option
+   (the action DSL, or `context data_layer: %{timeout: …}`), or
+   `changeset.timeout` (a call-site `timeout:` opt / `Ash.Changeset.timeout/2`)
+   on writes. `Ash.Query.timeout/2` and call-site read `timeout:` opts are
+   accepted (the data layer declares Ash's `:timeout` capability) but bound the
+   **whole action's wall clock** (Ash's task wrapper), not each wire call —
+   exactly ash_postgres's split.
+2. **The resource default** — `arcade do timeout 15_000 end` — beats the client
+   conn for every wire call of that resource (reads, writes, aggregates, vector
+   search, traversal, session ops — including inside transactions).
+3. **The client conn floor** — `timeout: <ms>` in your client module's
+   `Arcadic.connect/3`:
 
 ```elixir
 def conn do
@@ -158,10 +170,33 @@ def conn do
 end
 ```
 
+When no layer sets one, Req/Finch's own default applies (a 15 s per-chunk
+receive timeout) — commands are never fully unbounded, but the default is
+invisible to your config, so set one of the above explicitly.
+
+Fine print:
+
+- The receive bound is **per chunk**, not per whole response: a server that
+  trickles bytes can outlive it. Full-response bounding would need Finch's
+  `request_timeout` plumbed through `arcadic` (not wired today).
+- Outside transactions, an action carrying an Ash timeout is ALSO wrapped in a
+  wall-clock deadline by Ash (a task with a kill timer — the data layer declares
+  `:async_engine`). Inside a transaction that wrapper is off (Ash's rule); the
+  per-wire-call bounds above are what apply.
+- `Ash.bulk_create` defaults its `timeout:` opt to `:infinity` — no wall clock
+  unless you pass one; the per-wire-call bounds still apply.
+- A write that times out is **never retried** (the response may have been
+  applied — re-sending could duplicate). Autocommit conflict retries each get
+  the bound per attempt.
+- When the wall-clock wrapper fires, the abandoned task's in-flight HTTP
+  request still runs until its own receive timeout — that is what the per-call
+  bound caps.
+
 **`Ash.transaction`'s `timeout` opt is not enforced by this data layer.** The
 transaction marker and the ArcadeDB session live in the caller's process
 dictionary (owner-process-only by design), so a task-wrapped body with a kill
 timer would lose the session; and every wire call inside the transaction is
-already bounded by the conn's per-call `timeout` above. For a wall-clock bound
+bounded by the receive-timeout layers above (the conn floor, or the resource
+default — which applies inside transactions too). For a wall-clock bound
 around a whole action, wrap the call at your own boundary (`Task.async` +
 `Task.yield` with a shutdown).

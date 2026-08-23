@@ -12,6 +12,7 @@ defmodule AshArcadic.DataLayer do
         skip [:computed]
         sensitive [:ssn]             # binary-storage-typed or skipped
         # database "my_db"           # per-resource default (non-:context)
+        # timeout 15_000             # per-resource receive timeout (ms)
         # tenant_database {MyApp.Tenancy, :db_for, []}  # :context override
       end
 
@@ -146,6 +147,16 @@ defmodule AshArcadic.DataLayer do
         type: :string,
         doc:
           "Per-resource default database. Defaults to the client conn's database. Ignored for `:context`."
+      ],
+      timeout: [
+        type: :pos_integer,
+        doc:
+          "Per-resource default receive timeout (ms) for every wire call — reads, writes, " <>
+            "aggregates, vector search, traversal, session ops. Beats the client conn's " <>
+            "`timeout:` for this resource; an Ash-resolved timeout (read action `timeout`, " <>
+            "`changeset.timeout`) beats this for that call. Bounds each HTTP request's " <>
+            "receive (per-chunk) wait, not a whole-action deadline — see the timeouts section " <>
+            "in `documentation/troubleshooting.md`."
       ],
       label: [
         type: {:or, [:atom, :string]},
@@ -377,6 +388,18 @@ defmodule AshArcadic.DataLayer do
   # to Ash's fallback cursor-filter path (a normal or/and/comparison/is_nil filter we already translate).
   def can?(_, :keyset), do: true
 
+  # R10: accepting `Ash.Query.timeout/2` (the ash_postgres posture — its `:timeout` is the ONLY
+  # capability-gated timeout knob; `Ash.Changeset.timeout/2` and the task wall-clock were never
+  # gated). The per-wire-call honoring lives in the conn derivation (resource_conn/1 +
+  # resolve_query_conn + write_conn); the whole-action wall-clock is Ash's own task wrapper
+  # (task_with_timeout, already active via :async_engine above). Reads: the action-DSL `timeout`
+  # and the `context data_layer: %{timeout: …}` convention reach the wire via set_context/3
+  # (context[:action] is the only timeout Ash seeds there, query.ex:4508); writes:
+  # `changeset.timeout` (call-site / `Ash.Changeset.timeout/2`). Call-site read `timeout:` /
+  # `Ash.Query.timeout/2` / domain defaults are wall-clock-only — the same coverage as
+  # ash_postgres's repo_timeout/1 (it reads the identical two context sources).
+  def can?(_, :timeout), do: true
+
   def can?(_, _), do: false
 
   # Slice 11 (F1): the Ash.DataLayer keyset callback. It is an OPTIONAL callback but Ash calls it
@@ -440,12 +463,23 @@ defmodule AshArcadic.DataLayer do
     # `internal?` distinguishes a nested relationship-filter read (Ash sets
     # private.internal? for the separate-read IN path) from a top-level read — a
     # value-free telemetry tag consumed by the run_query :read span.
+    #
+    # `timeout` (R10) is the Ash-resolved per-call receive timeout, from the same two
+    # context sources ash_postgres's repo_timeout/1 reads (its `:timeout` capability
+    # posture): the `context data_layer: %{timeout: …}` convention first, then the read
+    # action's DSL `timeout` — the ONLY call-site-ish knob Ash seeds into the data-layer
+    # context (it puts the action struct there, query.ex:4508; resolved query.timeout /
+    # domain defaults never enter it and stay wall-clock-only in Ash's task wrapper).
+    # The nil-action guard matters: actionless data-layer queries must not crash here.
     {:ok,
      %{
        query
        | tenant: get_in(context, [:private, :tenant]),
          internal?: get_in(context, [:private, :internal?]) == true,
-         vector_search: get_in(context, [:vector_search])
+         vector_search: get_in(context, [:vector_search]),
+         timeout:
+           get_in(context, [:data_layer, :timeout]) ||
+             (context[:action] && context[:action].timeout)
      }}
   end
 
@@ -3435,12 +3469,18 @@ defmodule AshArcadic.DataLayer do
 
   @doc false
   # The write connection for a changeset — a thin adapter over write_conn_for_tenant/2 keyed on
-  # `changeset.to_tenant`.
+  # `changeset.to_tenant`, PLUS the R10 per-call timeout: `changeset.timeout` (set by a call-site
+  # `timeout:` opt or `Ash.Changeset.timeout/2`) beats the resource default and the conn floor
+  # for this call. Edge changes and bulk (first changeset of the batch) ride this same adapter.
   @spec write_conn(Ash.Resource.t(), Ash.Changeset.t()) ::
           {:ok, Arcadic.Conn.t()}
           | {:error, :tenant_required | :cross_database_transaction | :transaction_begin_failed}
-  def write_conn(resource, changeset),
-    do: write_conn_for_tenant(resource, Map.get(changeset, :to_tenant))
+  def write_conn(resource, changeset) do
+    case write_conn_for_tenant(resource, Map.get(changeset, :to_tenant)) do
+      {:ok, conn} -> {:ok, maybe_apply_timeout(conn, Map.get(changeset, :timeout))}
+      {:error, _} = err -> err
+    end
+  end
 
   @doc false
   # In-session base-database write conn for a TENANT-BLIND raw command — the replicant
@@ -3506,6 +3546,9 @@ defmodule AshArcadic.DataLayer do
   # a resolved :context database re-targets the conn; :attribute/non-multitenant use the base DB (nil
   # database) or the query's database, scoped by the WHERE predicate. resolve_conn/2 is exact
   # passthrough outside a transaction, session-reuse / cross-database-guarded inside one.
+  # R10: the set_context-stashed Ash timeout (read action DSL / data_layer context convention)
+  # applies ON TOP of the resolved conn — including a session-conn copy inside a transaction
+  # (the stash bounds THAT call; the stashed session itself keeps what it opened with).
   @spec resolve_query_conn(AshArcadic.Query.t(), Ash.Resource.t(), :read | :write) ::
           {:ok, Arcadic.Conn.t()}
           | {:error, :tenant_required | :cross_database_transaction | :transaction_begin_failed}
@@ -3515,17 +3558,54 @@ defmodule AshArcadic.DataLayer do
         {:error, :tenant_required}
 
       {_strategy, nil} ->
-        AshArcadic.Transaction.resolve_conn(conn_for(resource), mode)
+        resource_conn(resource)
+        |> AshArcadic.Transaction.resolve_conn(mode)
+        |> apply_query_timeout(query)
 
       {_strategy, database} ->
-        AshArcadic.Transaction.resolve_conn(
-          Arcadic.with_database(conn_for(resource), database),
-          mode
-        )
+        resource_conn(resource)
+        |> Arcadic.with_database(database)
+        |> AshArcadic.Transaction.resolve_conn(mode)
+        |> apply_query_timeout(query)
     end
   end
 
-  defp conn_for(resource), do: Info.client(resource).conn()
+  defp apply_query_timeout({:ok, %Arcadic.Conn{} = conn}, %AshArcadic.Query{timeout: t}),
+    do: {:ok, maybe_apply_timeout(conn, t)}
+
+  defp apply_query_timeout({:error, _} = err, _query), do: err
+
+  @doc false
+  # The client conn with the resource's `arcade do timeout end` default derived on (R10) — the
+  # SINGLE base resolution every wire path shares: reads and query-scoped writes through
+  # resolve_query_conn, changeset writes through write_conn_for_tenant, and traversal's own
+  # base_conn (manual_relationships/traverse.ex). Vector search consumes the conn the read path
+  # resolves, so it inherits the derivation without its own wiring. A pure-data copy — the
+  # host's conn struct is never mutated. A NON-conn term from the client seam passes through
+  # UNTOUCHED: the seam's invalid-conn rejection lives at the downstream struct guards
+  # (Transaction.resolve_conn / Arcadic.with_database, pinned by ClientSeamFailureTest) — the
+  # derivation must not move where that failure surfaces.
+  @spec resource_conn(Ash.Resource.t()) :: Arcadic.Conn.t()
+  def resource_conn(resource) do
+    case Info.client(resource).conn() do
+      %Arcadic.Conn{} = conn -> maybe_apply_timeout(conn, Info.timeout(resource))
+      other -> other
+    end
+  end
+
+  defp conn_for(resource), do: resource_conn(resource)
+
+  # R10: derive a per-op conn copy carrying `t` as its receive timeout — an Ash-resolved
+  # per-call timeout (read action DSL / changeset / data_layer context convention) or the
+  # resource default. pos_integer sets it; an explicit `:infinity` means "no receive bound for
+  # this call" (Ash's own timeout vocabulary); anything else (nil, a misshapen value) leaves
+  # the conn UNTOUCHED — the client conn's timeout (or Req's 15s default when the host set
+  # none) stays the floor. Never mutates: pure-data copy.
+  defp maybe_apply_timeout(%Arcadic.Conn{} = conn, t) when is_integer(t) and t > 0,
+    do: %{conn | timeout: t}
+
+  defp maybe_apply_timeout(%Arcadic.Conn{} = conn, :infinity), do: %{conn | timeout: :infinity}
+  defp maybe_apply_timeout(%Arcadic.Conn{} = conn, _t), do: conn
 
   # Maps a value-free conn-resolution error atom to a value-free reason string. The atom is
   # the ONLY thing interpolated — never a database name (tenant-derived), session id, or
