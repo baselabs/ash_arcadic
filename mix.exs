@@ -93,6 +93,7 @@ defmodule AshArcadic.MixProject do
         "usage-rules.md",
         "documentation/upgrading.md",
         "documentation/troubleshooting.md",
+        "documentation/performance.md",
         "documentation/telemetry.md",
         "documentation/dsls/DSL-AshArcadic.DataLayer.md",
         "documentation/dsls/DSL-AshArcadic.Replicant.md",

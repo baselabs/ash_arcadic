@@ -9,6 +9,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Performance & tuning guide (R13)** — `documentation/performance.md`,
+  consolidating the previously scattered tuning one-liners, every
+  server-behavior claim probe-verified live on the pinned 26.8.1 before
+  documenting: buckets (a type without a `BUCKETS` clause gets a single bucket
+  — probed via insert @rid clusters; the hard cap is 32, `BUCKETS 64` rejected
+  "maximum is 32"; no ALTER-based widening on 26.8.1; 12-way concurrent
+  `bulk_create` runs 100% on both a default and a `BUCKETS 32` type through
+  the data layer's retry stack), property indexes (declare `CREATE PROPERTY`
+  first — a `FULL_TEXT` index over an implicitly auto-created property fails
+  `SchemaException`, re-probed; SQL index types are `UNIQUE | NOTUNIQUE |
+  FULL_TEXT`, `EXPLAIN`-verified index use), and the `max_vector_candidates`
+  ceiling (default 10 000, fail-closed never-truncate, validated
+  pos_integer config, telemetry event, `:context` as the scale answer).
+  The `max_vector_candidates` knob previously had NO test anywhere — added
+  `test/data_layer/vector_candidate_ceiling_test.exs` (ceiling trip + within-
+  ceiling pass + the CV-4 config-validation fallback against the fail-open
+  string-config hazard), each mutation-red-proven (ceiling-check drop, guard
+  drop each red exactly the targeted tests).
+
 - **Timeout surface (R10).** The data layer now declares Ash's `:timeout`
   capability and adds a per-resource receive-timeout default, both applied
   through one mechanism (per-op conn derivation) so every wire path — reads,
