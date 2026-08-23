@@ -39,10 +39,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `context data_layer: %{timeout: …}` convention) additionally bounds each
     wire call, as does `changeset.timeout` on writes.
   - New `arcade do timeout <ms> end` per-resource default — beats the client
-    conn's `timeout:` for that resource on every wire call, including inside
-    transactions (where Ash's wall-clock wrapper is off). The only declarative
+    conn's `timeout:` for that resource on every wire call. The only declarative
     knob for slow-write resources (write actions have no `timeout` field in
-    Ash, and the domain `execution` default is read-path-only).
+    Ash, and the domain `execution` default is read-path-only). Fine print
+    (security-lens findings, doc-fixed): inside a transaction the session conn
+    keeps the FIRST writer's attributes — joining resources' defaults do not
+    re-derive it; manual-relationship loads (`Traverse`) ride the
+    resource/conn default (Ash's load context never exposes the source
+    action's timeout to the data layer).
   - Precedence at the wire: Ash-resolved per-call > resource default > client
     conn; an explicit `:infinity` means "no receive bound for this call". A
     timed-out write is never retried (post-send ambiguity — unchanged).

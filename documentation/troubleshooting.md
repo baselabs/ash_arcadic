@@ -157,10 +157,19 @@ received chunk of a response. It resolves in three layers, most specific wins:
    on writes. `Ash.Query.timeout/2` and call-site read `timeout:` opts are
    accepted (the data layer declares Ash's `:timeout` capability) but bound the
    **whole action's wall clock** (Ash's task wrapper), not each wire call —
-   exactly ash_postgres's split.
+   exactly ash_postgres's split. Two exceptions where a wire call falls back to
+   the layers below: **manual-relationship loads** (`Traverse` — Ash's load
+   context does not expose the source action's timeout to the data layer, so
+   its per-chunk bound rides the resource/conn default while the action's wall
+   clock still covers it), and, inside a transaction, anything the **session
+   wrapper** disabled (below).
 2. **The resource default** — `arcade do timeout 15_000 end` — beats the client
    conn for every wire call of that resource (reads, writes, aggregates, vector
-   search, traversal, session ops — including inside transactions).
+   search, traversal, session ops). Inside a **transaction**, the ArcadeDB
+   session is one connection opened from the FIRST writer's conn, and — like
+   every other conn attribute — its timeout stays the opener's for the life of
+   the session; later same-database resources joining the transaction do not
+   re-derive it (their Ash per-call timeouts still apply per wire call).
 3. **The client conn floor** — `timeout: <ms>` in your client module's
    `Arcadic.connect/3`:
 

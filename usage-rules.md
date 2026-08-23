@@ -58,7 +58,13 @@ chunk**), resolved most-specific-wins:
    calls.
 2. The **resource default**: `arcade do timeout <ms> end` — applies to every
    wire call of the resource (reads, writes, aggregates, vector, traversal,
-   session ops; also inside transactions, where the task wrapper is off).
+   session ops). Inside a transaction the ArcadeDB session is one connection
+   opened from the first writer's conn — its timeout stays the opener's, like
+   every other conn attribute; joining resources' defaults do not re-derive
+   it (their Ash per-call timeouts still apply). Manual-relationship loads
+   (`Traverse`) ride the resource/conn default for their per-chunk bound —
+   Ash's load context does not expose the source action's timeout to the data
+   layer (the action's wall clock still covers them).
 3. The **client conn floor**: `timeout:` on the host client's
    `Arcadic.connect/3`. Unset everywhere → Req's 15 s per-chunk default.
 
