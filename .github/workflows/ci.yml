@@ -94,7 +94,7 @@ jobs:
       - name: Wait for ArcadeDB to be ready
         run: |
           for i in $(seq 1 60); do
-            code=$(curl -s -o /dev/null -w '%{http_code}' -u root:arcadedb_dev_password http://localhost:2480/api/v1/ready || true)
+            code=$(curl -s -o /dev/null -w '%{http_code}' -u "root:$ARCADIC_TEST_PASSWORD" http://localhost:2480/api/v1/ready || true)
             if [ "$code" = "204" ]; then echo "ArcadeDB ready"; exit 0; fi
             echo "waiting for ArcadeDB ($i)... last=$code"; sleep 2
           done
@@ -210,7 +210,7 @@ jobs:
       - name: Wait for ArcadeDB to be ready
         run: |
           for i in $(seq 1 60); do
-            code=$(curl -s -o /dev/null -w '%{http_code}' -u root:arcadedb_dev_password http://localhost:2480/api/v1/ready || true)
+            code=$(curl -s -o /dev/null -w '%{http_code}' -u "root:$ARCADIC_TEST_PASSWORD" http://localhost:2480/api/v1/ready || true)
             if [ "$code" = "204" ]; then echo "ArcadeDB ready"; exit 0; fi
             echo "waiting for ArcadeDB ($i)... last=$code"; sleep 2
           done
