@@ -12,6 +12,9 @@ here.
 No application-code changes are required. The release moves the dependency
 floors to the stabilized transports and formalizes what was already shipped:
 
+- **Elixir floor is now `~> 1.18`** (was `~> 1.15`). The ash 3.32 dependency chain
+  (crux/reactor → `ex_ast ~> 1.18`) will not build below 1.18 on a fresh resolution.
+  CDC hosts additionally need `replicant`'s own floor: Elixir `~> 1.20.3`.
 - **`arcadic` floor is now `~> 1.0`** (was `~> 0.7.1`). The 1.0 transport is
   API-compatible with the surface AshArcadic uses — the full integration suite
   passes unchanged against it. If your own code calls `arcadic` directly,

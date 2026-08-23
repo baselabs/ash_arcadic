@@ -11,6 +11,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Elixir floor moved `~> 1.15` → `~> 1.18`.** The stabilized dep set binds there: ash
+  3.32's chain (crux/reactor → `ex_ast ~> 1.18`, `yaml_elixir ~> 1.17`) means a fresh
+  dependency resolution will not build below 1.18 — the old floor was untestable and
+  false for any new consumer. CDC hosts additionally need `replicant`'s own floor
+  (`~> 1.20.3`). CI's floor lane now runs 1.18.3/27.3.
 - CI: ArcadeDB service image pinned to `26.8.1` by digest, plus a non-blocking
   `latest` canary job. `latest` is a moving SNAPSHOT (on 2026-08-22 it is
   26.9.1-SNAPSHOT) and the 26.8→26.9 jump changed DDL behavior (FULL_TEXT over an

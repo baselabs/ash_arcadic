@@ -8,7 +8,7 @@ defmodule AshArcadic.MixProject do
     [
       app: :ash_arcadic,
       version: @version,
-      elixir: "~> 1.15",
+      elixir: "~> 1.18",
       start_permanent: Mix.env() == :prod,
       elixirc_paths: elixirc_paths(Mix.env()),
       consolidate_protocols: Mix.env() != :test,

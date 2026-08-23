@@ -23,10 +23,11 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Supported floor (mix.exs requires elixir ~> 1.15).
-          - elixir: "1.16.3"
-            otp: "26.2"
-          # Previous current — kept as a compatibility lane.
+          # Supported floor. The locked dep chain binds here: ash 3.32 → crux/reactor →
+          # ex_ast (~> 1.18) and yaml_elixir (~> 1.17); a fresh resolution will not build
+          # below 1.18. CDC hosts additionally need replicant's own floor (1.20.3+), but
+          # replicant is optional — the floor lane runs the full suite WITH it because the
+          # lock pins it here (it compiles on 1.18 with a requirement warning only).
           - elixir: "1.18.3"
             otp: "27.3"
           # Current (latest stable release pair). New-compiler warnings surface here
