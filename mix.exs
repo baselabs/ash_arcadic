@@ -89,6 +89,7 @@ defmodule AshArcadic.MixProject do
       extras: [
         "README.md",
         "SECURITY.md",
+        "CODE_OF_CONDUCT.md",
         "usage-rules.md",
         "documentation/upgrading.md",
         "documentation/troubleshooting.md",
