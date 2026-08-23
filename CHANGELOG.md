@@ -31,6 +31,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   nesting levels, and deeper writes surface as a value-free `server_error`
   (HTTP 400 nesting guard). Limits documented in `usage-rules.md`; the tests are
   mutation-red-proven (serialize truncation, decode no-op, detail interpolation).
+- `AshArcadic.Replicant.Pipeline.start_link/1` + `child_spec/1` unit tests: the
+  `:temporary` child semantics (a fail-closed halt stays permanent; the boot
+  trigger never auto-restarts into a duplicate pipeline), the fail-closed
+  `Impl.config/1` boot (a duplicate `source_table` raises), the
+  checkpoint-read-fault halt, the required-opt `fetch!` guards, and the
+  `Replicant.start_link/1` error-tuple passthrough (driven with an invalid
+  publication — deterministic config rejection, no live Postgres). Mutation-red-proven
+  (restart flip, config-call drop, fault-arm resume each red exactly the targeted
+  tests).
 
 ### Fixed
 
