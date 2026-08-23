@@ -48,21 +48,21 @@ defmodule AshArcadic.Integration.UnicodeRoundtripTest do
   end
 
   describe "the read path binds unicode values as params" do
+    # Distinct from every @corpus value: ExUnit randomizes test order within the module,
+    # so this may run before OR after the corpus tests — sharing a value with corpus[0]
+    # made the single-row assertion order-dependent (caught by CI's 1.18 lane).
     test "filter name == <unicode> finds exactly that row" do
       {:ok, _} =
         CrudPerson
-        |> Ash.Changeset.for_create(:create, %{id: "uf1", name: "こんにちは世界"})
+        |> Ash.Changeset.for_create(:create, %{id: "uf1", name: "フィルター検索テスト"})
         |> Ash.create()
 
       {:ok, _} =
         CrudPerson
-        |> Ash.Changeset.for_create(:create, %{
-          id: "uf2",
-          name: "«Großändler» sagt: \"Guten Tag\""
-        })
+        |> Ash.Changeset.for_create(:create, %{id: "uf2", name: "«фильтр-поиск» — otro valor"})
         |> Ash.create()
 
-      {:ok, [hit]} = CrudPerson |> Ash.Query.filter(name == "こんにちは世界") |> Ash.read()
+      {:ok, [hit]} = CrudPerson |> Ash.Query.filter(name == "フィルター検索テスト") |> Ash.read()
       assert hit.id == "uf1"
     end
   end
