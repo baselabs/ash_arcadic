@@ -15,6 +15,7 @@ section and implements the `Ash.DataLayer` behaviour.
       skip [:computed]
       sensitive [:ssn]             # binary-storage-typed or skipped
       # database "my_db"           # per-resource default (non-:context)
+      # timeout 15_000             # per-resource receive timeout (ms)
       # tenant_database {MyApp.Tenancy, :db_for, []}  # :context override
     end
 
