@@ -88,6 +88,9 @@ jobs:
       - name: Credo
         run: mix credo --strict
 
+      - name: Hex audit (retired packages + security advisories)
+        run: mix hex.audit
+
       - name: Wait for ArcadeDB to be ready
         run: |
           for i in $(seq 1 60); do
