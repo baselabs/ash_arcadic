@@ -39,6 +39,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Unit tests for the MVCC autocommit write-retry loop** (`write_command/3` →
+  `autocommit_write/4`), fault-injected through the transport seam arcadic documents as
+  this repo's mock seam (no server): convergence on both retriable classes
+  (`:concurrent_modification`, `:server_error`), bounded exhaustion, deterministic-class
+  passthrough (`:timeout`/`:database_not_found`/`:parse_error`/`:unauthorized`/
+  `:duplicate_key`/`:not_idempotent` — one attempt each), the `write_conflict_retries`
+  knob (bounds attempts; `1` disables), the session-conn bypass (conflicts surface at
+  COMMIT), and the two-level design (server `retries: 10` rides every attempt). Every
+  property mutation-red-proven.
+- **Non-ASCII/escaping round-trip corpus through the live engine** (integration):
+  CJK, emoji (incl. ZWJ sequences + skin-tone modifiers), combining marks, RTL scripts,
+  straight/curly quotes, backslashes, Cypher-literal and `$param` lookalikes (proving the
+  params-only rule on the wire), JSON metacharacters, control bytes, and a long
+  mixed-script string — byte-exact (`===`) create→read assertions, plus
+  filter-by-unicode on the read path. Documents the Ash-casting boundary: trailing
+  whitespace trim and empty→nil are Ash core `:string` defaults applied before the data
+  layer (NOT wire loss) — asserted as such.
 - CI: current-toolchain lane — Elixir 1.20.3 / OTP 29.0.5 (latest stable pair; dialyzer
   moved here). New-compiler warnings surface on this lane first: Elixir 1.20's
   unused-require and type-checker warnings were invisible on the 1.18 lane. 1.18.3/27.3
