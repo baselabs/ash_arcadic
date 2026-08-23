@@ -98,9 +98,10 @@ All gates pass before commit/PR. Update `CHANGELOG.md` under `[Unreleased]`.
 
 ## Docs & lifecycle-artifact policy
 
-- **Tracked / published:** `AGENTS.md`, `README.md`, `CHANGELOG.md`,
-  `CONTRIBUTING.md`, `usage-rules.md`, `LICENSE`, and `documentation/` (published
-  guides + generated DSL cheat sheets).
+- **Tracked / published:** `AGENTS.md`, `CLAUDE.md` (thin pointer, auto-loaded),
+  `README.md`, `CHANGELOG.md`, `CONTRIBUTING.md`, `SECURITY.md`, `usage-rules.md`,
+  `LICENSE`, `livebooks/`, and `documentation/` (published guides + generated
+  DSL cheat sheets).
 - **Never tracked:** the project charter (`docs/CHARTER.md`) plus brainstorm
   specs, plans, exec notes, reviews, and handoffs — under `/docs/`, which is
   **gitignored** (the `ash_age` convention). Keep them there.

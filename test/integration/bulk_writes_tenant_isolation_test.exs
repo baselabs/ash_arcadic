@@ -8,7 +8,6 @@ defmodule AshArcadic.Integration.BulkWritesTenantIsolationTest do
   use AshArcadic.Test.IntegrationCase
 
   require Ash.Expr
-  require Ash.Query
   alias AshArcadic.Test.CalcTenantPerson, as: P
 
   setup %{admin: admin} do

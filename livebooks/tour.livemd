@@ -3,25 +3,29 @@
 # AshArcadic tour — Ash on ArcadeDB
 
 ```elixir
-# Local dev: path-install from a checkout that has ../arcadic beside it.
-# A hex tour instead uses: Mix.install([{:ash_arcadic, "~> 0.2"}])
+# Hex install (the published packages):
 Mix.install([
-  {:ash_arcadic, path: Path.join(__DIR__, "..")},
+  {:ash_arcadic, "~> 1.0"},
   # `replicant` is the CDC transport (Postgres logical replication → decoded
-  # transactions), on hex as `{:replicant, "~> 0.3"}`. ash_arcadic declares it
-  # `optional: true`, so the CDC-mirror section near the end needs it added here
-  # explicitly (path-installed to match the ash_arcadic path dep above; a hex tour uses
-  # `{:replicant, "~> 0.3"}`). A tour without the CDC section can drop this line.
-  {:replicant, path: Path.join(__DIR__, "../../replicant")}
+  # transactions) for the CDC-mirror section near the end. ash_arcadic declares
+  # it `optional: true`, so a tour without that section can drop this line.
+  {:replicant, "~> 1.2"}
 ])
+
+# Local dev from a checkout instead: path-install both.
+#   Mix.install([
+#     {:ash_arcadic, path: Path.join(__DIR__, "..")},
+#     {:replicant, path: Path.join(__DIR__, "../../replicant")}
+#   ])
 ```
 
 ## What this is
 
 A runnable tour of **AshArcadic** — the Ash `DataLayer` for
 [ArcadeDB](https://arcadedb.com). It walks the full surface against a real
-ArcadeDB: CRUD + upserts, query push-down, keyset streaming, concurrent bulk
-writes, fail-closed multitenancy, vector search, and graph traversal over edges.
+ArcadeDB: CRUD + upserts + atomics, query push-down, aggregates + calculations,
+keyset streaming, concurrent bulk writes, fail-closed multitenancy, vector
+search (dense, sparse, hybrid), graph traversal over edges, and the CDC mirror.
 
 **You need a running ArcadeDB.** One docker command:
 
@@ -59,7 +63,7 @@ defmodule Tour.ArcadicClient do
     url = System.get_env("ARCADEDB_URL", "http://localhost:2480")
     password = System.get_env("ARCADEDB_PASSWORD", "playwithdata")
     db = Application.fetch_env!(:ash_arcadic_tour, :database)
-    Arcadic.connect(url, db, auth: {"root", password})
+    Arcadic.connect(url, db, auth: {"root", password}, timeout: 15_000)
   end
 end
 
@@ -68,10 +72,10 @@ end
 
 ## Define resources
 
-One document resource (CRUD, queries, keyset, bulk, vector) and one person
-resource (edges + graph traversal). Both are **multitenant** — AshArcadic's
-flagship posture: every read, write, traversal, vector search, and keyset cursor
-is fail-closed tenant-scoped.
+One document resource (CRUD, queries, keyset, bulk, vector dense + sparse +
+hybrid full-text) and one person resource (edges + graph traversal). Both are
+**multitenant** — AshArcadic's flagship posture: every read, write, traversal,
+vector search, and keyset cursor is fail-closed tenant-scoped.
 
 ```elixir
 defmodule Tour.Domain do
@@ -89,15 +93,23 @@ defmodule Tour.Doc do
     client Tour.ArcadicClient
     label :Doc
     vector_index :embedding, dimensions: 3, similarity: :cosine
+    sparse_vector_index :sparse_embedding, tokens: :tokens, weights: :weights
   end
 
   attributes do
     attribute :id, :string, primary_key?: true, allow_nil?: false, public?: true
     attribute :org_id, :string, public?: true
     attribute :title, :string, public?: true
+    attribute :body, :string, public?: true
     attribute :score, :integer, public?: true
     attribute :published_at, :utc_datetime, public?: true
     attribute :embedding, {:array, :float}, public?: true
+    attribute :tokens, {:array, :integer}, public?: true
+    attribute :weights, {:array, :float}, public?: true
+  end
+
+  calculations do
+    calculate :banner, :string, expr(title <> "!"), public?: true
   end
 
   multitenancy do
@@ -106,7 +118,8 @@ defmodule Tour.Doc do
   end
 
   actions do
-    default_accept [:id, :org_id, :title, :score, :published_at, :embedding]
+    default_accept [:id, :org_id, :title, :body, :score, :published_at, :embedding,
+                    :tokens, :weights]
     defaults [:create, :update, :destroy]
 
     read :read do
@@ -118,10 +131,35 @@ defmodule Tour.Doc do
       upsert? true
     end
 
+    update :bump do
+      change atomic_update(:score, expr(score + 5))
+    end
+
     read :semantic_search do
       argument :query_vector, {:array, :float}, allow_nil?: false
       argument :k, :integer, allow_nil?: false
       prepare {AshArcadic.Preparations.VectorSearch, index: :embedding}
+    end
+
+    read :sparse_search do
+      argument :query_tokens, {:array, :integer}, allow_nil?: false
+      argument :query_weights, {:array, :float}, allow_nil?: false
+      argument :k, :integer, allow_nil?: false
+
+      prepare {AshArcadic.Preparations.VectorSearch, kind: :sparse, index: :sparse_embedding}
+    end
+
+    read :hybrid_search do
+      argument :query_vector, {:array, :float}, allow_nil?: false
+      argument :query_tokens, {:array, :integer}, allow_nil?: false
+      argument :query_weights, {:array, :float}, allow_nil?: false
+      argument :text_query, :string, allow_nil?: false
+      argument :k, :integer, allow_nil?: false
+
+      prepare {AshArcadic.Preparations.VectorSearch,
+               kind: :hybrid,
+               arms: [{:dense, :embedding}, {:sparse, :sparse_embedding}, {:fulltext, :body}],
+               fusion: :rrf}
     end
   end
 end
@@ -185,20 +223,37 @@ row.
 ```elixir
 require Ash.Query
 
-Ash.create!(Tour.Doc, %{id: "d1", title: "Graphs", score: 10}, tenant: "org1")
-Ash.create!(Tour.Doc, %{id: "d2", title: "Vectors", score: 30}, tenant: "org1")
+Ash.create!(Tour.Doc, %{id: "d1", title: "Graphs", body: "graph graph databases", score: 10}, tenant: "org1")
+Ash.create!(Tour.Doc, %{id: "d2", title: "Vectors", body: "embeddings nearest", score: 30}, tenant: "org1")
 
 # Upsert: first call creates, second call (same id) updates in place.
 Tour.Doc
-|> Ash.Changeset.for_create(:upsert, %{id: "d3", title: "Cypher", score: 20}, tenant: "org1")
+|> Ash.Changeset.for_create(:upsert, %{id: "d3", title: "Cypher", body: "match merge", score: 20}, tenant: "org1")
 |> Ash.create!()
 
 Tour.Doc
-|> Ash.Changeset.for_create(:upsert, %{id: "d3", title: "OpenCypher", score: 25}, tenant: "org1")
+|> Ash.Changeset.for_create(:upsert, %{id: "d3", title: "OpenCypher", body: "match merge", score: 25}, tenant: "org1")
 |> Ash.create!()
 
 docs = Tour.Doc |> Ash.Query.sort(score: :asc) |> Ash.read!(tenant: "org1")
 Enum.map(docs, &{&1.id, &1.title, &1.score})
+```
+
+## Atomic updates
+
+An `atomic_update` change pushes down to a Cypher `SET n.score = n.score + $p` —
+the arithmetic runs in the engine, not in your app (also available on creates
+and upserts, and in bulk).
+
+```elixir
+doc = Ash.get!(Tour.Doc, "d1", tenant: "org1")
+
+updated =
+  doc
+  |> Ash.Changeset.for_update(:bump, %{}, tenant: "org1")
+  |> Ash.update!()
+
+%{score_after: updated.score, score_before: doc.score}
 ```
 
 ## Query push-down
@@ -208,13 +263,8 @@ comparisons (AshArcadic wraps datetime/time params in ArcadeDB's native temporal
 constructors, so they compare temporal-to-temporal, not string-to-native).
 
 ```elixir
-Ash.update!(Ash.get!(Tour.Doc, "d1", tenant: "org1"), %{
-  published_at: ~U[2024-06-15 12:00:00Z]
-})
-
-Ash.update!(Ash.get!(Tour.Doc, "d2", tenant: "org1"), %{
-  published_at: ~U[2023-12-31 23:59:59Z]
-})
+Ash.update!(Ash.get!(Tour.Doc, "d1", tenant: "org1"), %{published_at: ~U[2024-06-15 12:00:00Z]})
+Ash.update!(Ash.get!(Tour.Doc, "d2", tenant: "org1"), %{published_at: ~U[2023-12-31 23:59:59Z]})
 
 high_scores =
   Tour.Doc
@@ -234,6 +284,27 @@ page = Ash.read!(Tour.Doc, tenant: "org1", page: [limit: 2, count: true])
   recent: Enum.map(recent, & &1.id),
   total: page.count
 }
+```
+
+## Aggregates & calculations
+
+Query aggregates run as one tenant-scoped Cypher statement each; expression
+calculations load in Elixir (or push down into filters/sorts).
+
+```elixir
+count = Ash.count!(Tour.Doc, tenant: "org1")
+avg = Ash.avg(Tour.Doc, :score, tenant: "org1")
+max = Ash.max(Tour.Doc, :score, tenant: "org1")
+
+# A loaded expression calculation:
+banners =
+  Tour.Doc
+  |> Ash.Query.load(:banner)
+  |> Ash.Query.sort(score: :desc)
+  |> Ash.read!(tenant: "org1")
+  |> Enum.map(& &1.banner)
+
+%{count: count, avg: avg, max: max, banners: banners}
 ```
 
 ## Keyset streaming
@@ -305,30 +376,70 @@ org1_count = Ash.count!(Tour.Doc, tenant: "org1")
 %{org2_sees: length(org2_sees), org1_count: org1_count}
 ```
 
-## Vector search
+## Vector search — dense, sparse, hybrid
 
-Declare the index in the `arcade` block (compile-checked metadata); the host
-creates the physical index once (no migration machinery). Results come back
-ranked, with the distance in record metadata — tenant-scoped like everything
+Declare the indexes in the `arcade` block (compile-checked metadata); the host
+creates the physical indexes once (no migration machinery). Results come back
+ranked with distance/score in record metadata — tenant-scoped like everything
 else.
 
 ```elixir
-# One-time host-side schema (pairs with the index): declare the vector property's
-# physical type, write the embeddings, then build the index.
+# One-time host-side schema (pairs with the declarations): the vector properties'
+# physical types, the data, then the indexes.
 Arcadic.command!(admin, "CREATE PROPERTY Doc.embedding ARRAY_OF_FLOATS", %{}, language: "sql")
+Arcadic.command!(admin, "CREATE PROPERTY Doc.tokens ARRAY_OF_INTEGERS", %{}, language: "sql")
+Arcadic.command!(admin, "CREATE PROPERTY Doc.weights ARRAY_OF_FLOATS", %{}, language: "sql")
+Arcadic.command!(admin, "CREATE PROPERTY Doc.body STRING", %{}, language: "sql")
 
-Ash.update!(Ash.get!(Tour.Doc, "d1", tenant: "org1"), %{embedding: [1.0, 0.0, 0.0]})
-Ash.update!(Ash.get!(Tour.Doc, "d2", tenant: "org1"), %{embedding: [0.0, 1.0, 0.0]})
-Ash.update!(Ash.get!(Tour.Doc, "d3", tenant: "org1"), %{embedding: [0.9, 0.1, 0.0]})
+Ash.update!(Ash.get!(Tour.Doc, "d1", tenant: "org1"), %{
+  embedding: [1.0, 0.0, 0.0], tokens: [10, 20], weights: [1.0, 0.5]
+})
+
+Ash.update!(Ash.get!(Tour.Doc, "d2", tenant: "org1"), %{
+  embedding: [0.0, 1.0, 0.0], tokens: [20, 30], weights: [1.0, 0.5]
+})
+
+Ash.update!(Ash.get!(Tour.Doc, "d3", tenant: "org1"), %{
+  embedding: [0.9, 0.1, 0.0], tokens: [10, 30], weights: [0.9, 0.1]
+})
 
 Arcadic.Vector.create_dense_index!(admin, "Doc", "embedding", 3, similarity: :cosine)
+:ok = Arcadic.FullText.create_index(admin, "Doc", "body")
+:ok = Arcadic.Vector.create_sparse_index(admin, "Doc", "tokens", "weights")
+```
 
+```elixir
+# Dense kNN — ranked by distance, closest first.
 nearest =
   Tour.Doc
   |> Ash.Query.for_read(:semantic_search, %{query_vector: [1.0, 0.0, 0.0], k: 2})
   |> Ash.read!(tenant: "org1", authorize?: false)
 
-Enum.map(nearest, &{&1.id, &1.__metadata__[:vector_distance]})
+dense = Enum.map(nearest, &{&1.id, &1.__metadata__[:vector_distance]})
+
+# Sparse (learned-sparse / BM25-style) kNN — ranked by score, higher = better.
+sparse =
+  Tour.Doc
+  |> Ash.Query.for_read(:sparse_search, %{query_tokens: [10], query_weights: [1.0], k: 2})
+  |> Ash.read!(tenant: "org1", authorize?: false)
+
+sparse_hits = Enum.map(sparse, &{&1.id, &1.__metadata__[:vector_score]})
+
+# Hybrid fusion — dense + sparse + full-text arms fused (RRF) into one list.
+hybrid =
+  Tour.Doc
+  |> Ash.Query.for_read(:hybrid_search, %{
+    query_vector: [1.0, 0.0, 0.0],
+    query_tokens: [10],
+    query_weights: [1.0],
+    text_query: "graph",
+    k: 3
+  })
+  |> Ash.read!(tenant: "org1", authorize?: false)
+
+hybrid_hits = Enum.map(hybrid, &{&1.id, &1.__metadata__[:vector_score]})
+
+%{dense: dense, sparse: sparse_hits, hybrid: hybrid_hits}
 ```
 
 ## Graph: edges & traversal
@@ -524,9 +635,12 @@ Arcadic.Server.drop_database(admin, db)
   documented limitations.
 * [`README.md`](../README.md) — capability matrix and connection setup.
 * [`usage-rules.md` → *CDC mirror*](../usage-rules.md) — the full Postgres→ArcadeDB
-  effect-once sink contract: the seven fail-closed consumer contracts, the checkpoint /
-  sink / pipeline wiring, and the `REPLICA IDENTITY FULL` precondition for a tenant-scoped
-  mirror.
-* Sparse + hybrid vector search, traversal aggregates, combinations, atomics,
-  `update_many` — all live; see the test suite for working examples of every
-  capability.
+  effect-once sink contract: the eight fail-closed consumer contracts, the checkpoint /
+  sink / pipeline wiring, and the `REPLICA IDENTITY FULL` precondition for a
+  tenant-scoped mirror.
+* [Troubleshooting](../documentation/troubleshooting.md) — the error catalog:
+  every fail-closed error and its fix.
+* [Telemetry](../documentation/telemetry.md) — the full event catalog.
+* Combinations (`union`/`intersect`/`except`), `update_many`, traversal
+  aggregates, query-scoped bulk update/destroy — all live; see the test suite
+  for working examples of every capability.

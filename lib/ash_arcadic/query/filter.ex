@@ -27,8 +27,6 @@ defmodule AshArcadic.Query.Filter do
   attribute's case-insensitive semantics are not preserved (usage-rules).
   """
 
-  require Ash.Query
-
   alias AshArcadic.Cast
   alias AshArcadic.DataLayer.Info
   alias AshArcadic.Errors.UnsupportedFilter

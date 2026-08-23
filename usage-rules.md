@@ -13,7 +13,7 @@ _An Ash DataLayer for ArcadeDB (native OpenCypher over HTTP)._
 ## What ash_arcadic owns (and what it does not)
 
 - **Owns:** the physical mechanism that makes an ArcadeDB store Ashy —
-  `set_tenant/3` / `can?({:multitenancy, …})`, sensitive-attribute verifiers,
+  `set_tenant/3` / `can?(:multitenancy)`, sensitive-attribute verifiers,
   Cypher generation, and traversal as an Ash manual relationship.
 - **Does not own:** transport (that is `arcadic`, tenant-blind) or the
   `multitenancy` DSL and tenant concept (that is Ash core, which passes the
@@ -354,8 +354,9 @@ dep, and the three modules that hard-reference `%Replicant.*{}` structs / `Repli
   implements `data_layer_keyset_by_default?/0 → false` (the callback that routes to Ash's fallback
   cursor path). `page: [count: true]` returns the tenant-scoped total.
 - **Supported keyset-sort set.** Any **stored, comparable** sort attribute: `:integer`, `:float`,
-  `:boolean`, `:string`, and the datetime/time family (`:utc_datetime`, `:naive_datetime`, `:time`,
-  incl. `precision: :microsecond`). A duplicate-value sort resolves deterministically via the primary
+  `:boolean`, `:string`, `:ci_string`, `:uuid`, `:date`, and the datetime/time family
+  (`:utc_datetime`, `:naive_datetime`, `:time`, incl. `precision: :microsecond`). A duplicate-value
+  sort resolves deterministically via the primary
   key tiebreaker. **Fail-closed (never silently mis-page):** a `:binary`(sensitive)/`:decimal` sort,
   and a COMPOSITE-typed sort (`:map`, `:struct`, `:union`, `{:array, _}` — no total order), are
   rejected `UnsortableField` at the sort gate; a non-stored / calc / aggregate sort is rejected

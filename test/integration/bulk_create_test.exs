@@ -1,7 +1,6 @@
 defmodule AshArcadic.Integration.BulkCreateTest do
   use AshArcadic.Test.IntegrationCase
 
-  require Ash.Query
   alias AshArcadic.Test.CrudPerson
 
   test "bulk_create inserts every changeset and returns stamped records" do

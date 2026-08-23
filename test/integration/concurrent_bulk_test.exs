@@ -16,7 +16,6 @@ defmodule AshArcadic.Integration.ConcurrentBulkTest do
   guidance (usage-rules).
   """
   use AshArcadic.Test.IntegrationCase
-  require Ash.Query
 
   alias AshArcadic.Test.CrudPerson
 

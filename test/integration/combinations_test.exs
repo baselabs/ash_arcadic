@@ -2,7 +2,6 @@ defmodule AshArcadic.Integration.CombinationsTest do
   use AshArcadic.Test.IntegrationCase
   @moduletag :integration
 
-  require Ash.Query
   require Ash.Expr
   alias Ash.Query.Combination
   alias AshArcadic.Multitenancy

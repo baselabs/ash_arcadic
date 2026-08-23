@@ -124,7 +124,6 @@ defmodule AshArcadic.Replicant.ApplyUnitTest do
 
       assert Thing in resources
       assert Checkpoint in resources
-      refute resources == []
     end
 
     test "dedups a resolver_index that maps two source tables to one resource" do

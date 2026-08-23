@@ -1,7 +1,6 @@
 defmodule AshArcadic.Integration.MultitenancyAttributeTest do
   use AshArcadic.Test.IntegrationCase
 
-  require Ash.Query
   alias AshArcadic.Test.AttributeDoc
 
   # :attribute tenancy shares ONE base DB (the discriminator scopes rows within it),

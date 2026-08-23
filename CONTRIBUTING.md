@@ -4,9 +4,8 @@ Thank you for your interest in contributing to AshArcadic!
 
 ## Prerequisites
 
-- **Elixir** 1.15+ and **Erlang/OTP** 26+
-- A sibling checkout of [`arcadic`](https://github.com/baselabs/arcadic) at
-  `../arcadic` (path dependency during co-development)
+- **Elixir** 1.15+ and **Erlang/OTP** 26+ (deps resolve from hex, including
+  [`arcadic`](https://github.com/baselabs/arcadic))
 - **ArcadeDB** for integration tests: `docker run -p 2480:2480 \
   -e JAVA_OPTS="-Darcadedb.server.rootPassword=…" arcadedata/arcadedb:latest`
 

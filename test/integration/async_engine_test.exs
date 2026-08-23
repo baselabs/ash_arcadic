@@ -8,7 +8,6 @@ defmodule AshArcadic.Integration.AsyncEngineTest do
   gate at async_limiter.ex:32 / process_helpers.ex:71).
   """
   use AshArcadic.Test.IntegrationCase
-  require Ash.Query
 
   alias AshArcadic.DataLayer, as: DL
   alias AshArcadic.Test.{CrudPerson, RelAuthor, RelPost}

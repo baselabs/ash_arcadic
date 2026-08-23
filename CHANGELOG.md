@@ -7,6 +7,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Dependency floors moved to the stabilized transports** (verified against the full
+  785-test suite incl. live integration, zero code changes): `arcadic` `~> 0.7.1` →
+  `~> 1.0`; `replicant` (optional) `~> 0.3` → `~> 1.2`. A CDC host pinning `replicant`
+  itself should move to `~> 1.2` in lockstep — see the new upgrade guide.
+- Resolved-lock security refresh: all transitive advisories in the dev/test lock (ash,
+  mint, hpax, postgrex, ymlr — 10 findings incl. 3 HIGH) cleared by `mix deps.update`
+  within existing constraints. CI's `mix hex.audit` now passes clean.
+
+### Fixed
+
+- `mix compile --warnings-as-errors` on Elixir 1.19+/1.20 (unused `require Ash.Query` in
+  `AshArcadic.Query.Filter`, and the same warning in 10 integration test files — the
+  latter visible only to `mix test --warnings-as-errors`, since test files compile under
+  the test task, not `mix compile`).
+- Two Elixir 1.20 type-checker findings in Replicant unit tests: a provably-vacuous
+  `refute resources == []` (the membership asserts above it fail first on an empty
+  list) removed, and a redundant `is_integer(stored)` guard (the value was already
+  pinned `=== 10`) dropped from the replay-gate model assertions.
+- The `mix deps.audit` alias crashed (`mix_audit` task name was wrong and shadowed by the
+  alias itself); it is now `deps.unlock --check-unused` + `hex.audit`, and the redundant
+  `mix_audit` dep is dropped (`hex.audit` covers it).
+
+### Added
+
+- **New published guides** (hexdocs extras, linked from README):
+  [SECURITY.md](SECURITY.md) (security posture + vulnerability reporting),
+  `documentation/troubleshooting.md` (the error catalog: every fail-closed error, its
+  cause, and its fix — incl. the newly-characterized ArcadeDB behavior that a `FULL_TEXT`
+  index cannot be built over an implicitly auto-created property),
+  `documentation/telemetry.md` (the full event/measurements/metadata catalog and the
+  value-free metadata contract), `documentation/upgrading.md` (semver commitment,
+  0.2→1.0 path, the optional-`replicant` recompile dance, config knobs).
+- **Livebook tour expanded and re-verified end-to-end** (all 20 cells against live
+  ArcadeDB 26.9.x on the 1.0 dep set): new sections for atomic updates, aggregates +
+  expression calculations, and sparse + hybrid vector search; hex-first `Mix.install`
+  (the badge flow no longer requires a local clone); fixes for the stale
+  "seven fail-closed contracts" count (it is eight) and the stale sibling-checkout
+  prerequisite.
+
+### Docs
+
+- Stale-claim sweep: README's install snippet now shows the real `ash` floor (`~> 3.11`);
+  CONTRIBUTING no longer claims `arcadic` installs as a sibling path dep; `usage-rules`
+  keyset-sort set completed (`:ci_string`/`:uuid`/`:date` were already orderable) and the
+  `can?(:multitenancy)` shape corrected; tracked-file policy list in AGENTS.md now matches
+  reality; CLAUDE.md rewritten as a thin pointer (its bootstrap-era content said no code
+  existed).
+
 ## [0.2.0] - 2026-07-22
 
 Adds the optional Postgres→ArcadeDB effect-once CDC sink (`AshArcadic.Replicant.*`),

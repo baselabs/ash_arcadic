@@ -2,7 +2,6 @@ defmodule AshArcadic.Integration.AggregateTest do
   use AshArcadic.Test.IntegrationCase
   @moduletag :integration
 
-  require Ash.Query
   alias AshArcadic.Multitenancy
   alias AshArcadic.Test.{AttributeDoc, ContextDoc}
 

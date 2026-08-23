@@ -55,11 +55,11 @@ defmodule AshArcadic.Replicant.CheckpointTest do
       assert stored === 10
 
       # a higher lsn is NOT <= stored => admitted (applied)
-      refute is_integer(stored) and 15 <= stored
+      refute 15 <= stored
       # a lower lsn IS <= stored => skipped
-      assert is_integer(stored) and 9 <= stored
+      assert 9 <= stored
       # an equal lsn IS <= stored => skipped
-      assert is_integer(stored) and 10 <= stored
+      assert 10 <= stored
     end
   end
 

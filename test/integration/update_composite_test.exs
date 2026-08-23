@@ -1,7 +1,6 @@
 defmodule AshArcadic.Integration.UpdateCompositeTest do
   use AshArcadic.Test.IntegrationCase
 
-  require Ash.Query
   alias AshArcadic.Test.UpsertComposite
 
   # Composite-PK update exercises pk_match_clause/1's multi-field AND WHERE

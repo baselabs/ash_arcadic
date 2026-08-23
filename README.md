@@ -52,7 +52,9 @@ database. Every cell is verified against a live ArcadeDB. Click the badge (needs
 Deliberate non-goals: `{:lateral_join}` (Ash bypasses it for manual traversal rels),
 window-function inline aggregates, transport concerns (pooling, gRPC — those live in
 `arcadic`). Per-feature limitations are documented in
-[`usage-rules.md`](usage-rules.md).
+[`usage-rules.md`](usage-rules.md). Operational guides: [troubleshooting](documentation/troubleshooting.md),
+[telemetry events](documentation/telemetry.md), [upgrading](documentation/upgrading.md).
+Security posture and vulnerability reporting: [SECURITY.md](SECURITY.md).
 
 ## Layering
 
@@ -77,7 +79,7 @@ Add `ash_arcadic` (and `ash`) to your deps:
 # mix.exs
 def deps do
   [
-    {:ash, "~> 3.0"},
+    {:ash, "~> 3.11"},
     {:ash_arcadic, "~> 0.2.0"}
   ]
 end

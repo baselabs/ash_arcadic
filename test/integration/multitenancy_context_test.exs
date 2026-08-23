@@ -1,7 +1,6 @@
 defmodule AshArcadic.Integration.MultitenancyContextTest do
   use AshArcadic.Test.IntegrationCase
 
-  require Ash.Query
   alias AshArcadic.Multitenancy
   alias AshArcadic.Test.ContextDoc
 
