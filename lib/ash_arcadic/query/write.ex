@@ -101,7 +101,8 @@ defmodule AshArcadic.Query.Write do
   end
 
   defp translate_atomic_rhs(field, expr, q) do
-    with {:ok, hydrated} <- Ash.Filter.hydrate_refs(expr, %{resource: q.resource, public?: false}),
+    with {:ok, hydrated} <-
+           Ash.Filter.hydrate_refs(expr, %{resource: q.resource, public?: false}),
          {:ok, q, rhs} <- Expression.translate(hydrated, q) do
       name = field |> to_string() |> Identifier.validate!()
       {:ok, "n.#{name} = #{rhs}", q}
