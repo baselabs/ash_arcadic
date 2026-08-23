@@ -33,6 +33,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- CI: current-toolchain lane — Elixir 1.20.3 / OTP 29.0.5 (latest stable pair; dialyzer
+  moved here). New-compiler warnings surface on this lane first: Elixir 1.20's
+  unused-require and type-checker warnings were invisible on the 1.18 lane. 1.18.3/27.3
+  is kept as a compatibility lane; the `compile-without-cdc` guard also moved to
+  1.20.3/29.0.5 so the optional-dep contract is checked by the newest compiler.
 - **New published guides** (hexdocs extras, linked from README):
   [SECURITY.md](SECURITY.md) (security posture + vulnerability reporting),
   `documentation/troubleshooting.md` (the error catalog: every fail-closed error, its

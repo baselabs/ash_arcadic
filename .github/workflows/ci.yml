@@ -26,9 +26,14 @@ jobs:
           # Supported floor (mix.exs requires elixir ~> 1.15).
           - elixir: "1.16.3"
             otp: "26.2"
-          # Current — dialyzer runs on this one only.
+          # Previous current — kept as a compatibility lane.
           - elixir: "1.18.3"
             otp: "27.3"
+          # Current (latest stable release pair). New-compiler warnings surface here
+          # first — Elixir 1.20's unused-require and type-checker warnings were
+          # invisible on the 1.18 lane. Dialyzer runs on this one only.
+          - elixir: "1.20.3"
+            otp: "29.0.5"
             dialyzer: true
 
     services:
@@ -119,8 +124,8 @@ jobs:
       - name: Set up Elixir/OTP
         uses: erlef/setup-beam@v1
         with:
-          elixir-version: "1.18.3"
-          otp-version: "27.3"
+          elixir-version: "1.20.3"
+          otp-version: "29.0.5"
 
       - name: Install dependencies
         run: mix deps.get
