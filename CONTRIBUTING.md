@@ -50,6 +50,27 @@ mix dialyzer
 This project follows the [Contributor Covenant](CODE_OF_CONDUCT.md). By
 participating, you agree to uphold it.
 
+## Versioning & deprecations
+
+The package follows [Semantic Versioning](https://semver.org) (see the
+CHANGELOG header). The public surface is: the `arcade do ... end` and
+`replicant do ... end` DSL sections, the `AshArcadic.*` public functions and
+behaviours (`AshArcadic.Client`, `AshArcadic.ReplicantSink`,
+`AshArcadic.ReplicantCheckpoint`), telemetry event names and their
+measurements/metadata keys, and the `config :ash_arcadic, ...` keys documented
+in usage-rules.md.
+
+Anything that would remove or change the meaning of that surface follows the
+deprecation discipline — no silent breaks:
+
+- The old form keeps working and is marked `@deprecated` (doc: the replacement
+  and the version that deprecates it) **in a minor release**, with a
+  CHANGELOG entry.
+- Removal happens no earlier than the **next major release** — a deprecated
+  form survives at least one full minor cycle.
+- Deprecation warnings must be actionable and value-free (same boundary as
+  errors: no interpolated values), and are never introduced in patch releases.
+
 ## License
 
 By contributing, you agree that your contributions will be licensed under the MIT License.

@@ -64,6 +64,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   bug-report and a feature-request issue template, and a PR checklist template
   that encodes the repo's gates (format/credo/compile×2/test×2/dialyzer,
   red-before-green, CHANGELOG, value-free boundary).
+- Deprecation discipline documented (CONTRIBUTING "Versioning & deprecations"):
+  the public surface is enumerated, removals require an `@deprecated` minor
+  cycle before a major-release removal, and deprecation warnings stay
+  actionable and value-free.
 
 ### Fixed
 
