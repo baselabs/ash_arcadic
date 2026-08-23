@@ -95,23 +95,11 @@ defmodule AshArcadic.Integration.LargeValueEdgesTest do
     test "depth 30 (the accepted maximum through the $props envelope) round-trips shape-preserved" do
       create_doc!(%{tag: "deep30", data: nest(@nest_depth_ok)})
 
-      read_back = Ash.read_one!(Ash.Query.filter(LargeValueDoc, tag == "deep30"))
+      read_back = Ash.read_one!(Ash.Query.filter(LargeValueDoc, tag: "deep30"))
 
-      # Walk to the leaf: every level survived, in order, with the sentinel intact.
-      levels =
-        read_back.data
-        |> Stream.unfold(fn m -> (inner = m["n"]) && {1, inner} end)
-        |> Enum.count()
-
-      assert levels == @nest_depth_ok
-
-      leaf =
-        read_back.data
-        |> Stream.unfold(fn m -> (inner = m["n"]) && {inner, inner} end)
-        |> Stream.map(& &1["n"])
-        |> Enum.find(&match?(%{"leaf" => @leaf_sentinel}, &1))
-
-      assert leaf["leaf"] == @leaf_sentinel
+      # Structural equality — every level, the leaf sentinel, string keys, all of it.
+      # (ArcadeDB returns JSON-decoded string-keyed maps, exactly the shape nest/1 builds.)
+      assert read_back.data == nest(@nest_depth_ok)
     end
 
     test "depth 31 is rejected value-free — the server's nesting cap surfaces as a redacted error" do

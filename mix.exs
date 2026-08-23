@@ -72,7 +72,7 @@ defmodule AshArcadic.MixProject do
     [
       maintainers: ["rjpalermo"],
       files:
-        ~w(lib .formatter.exs mix.exs README* LICENSE* CHANGELOG* SECURITY.md usage-rules.md documentation),
+        ~w(lib .formatter.exs mix.exs README* LICENSE* CHANGELOG* SECURITY.md CODE_OF_CONDUCT.md CONTRIBUTING.md usage-rules.md documentation),
       licenses: ["MIT"],
       links: %{
         "GitHub" => @source_url,
