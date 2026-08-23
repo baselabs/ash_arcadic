@@ -52,7 +52,8 @@ tenant-derived name, or Cypher statement. Database/transport errors pass
 through a guard-enforced redaction step (`redact_db_error/1`) that interpolates
 only an atom reason under an `is_atom/1` guard — any non-atom reason falls
 through to a static string. Telemetry span metadata is allowlist-enforced at
-runtime (`AshArcadic.Telemetry`): an off-allowlist key raises rather than
+runtime by the data layer's internal telemetry module (hidden from the API docs
+by design): an off-allowlist key raises rather than
 shipping row-level or tenant-derived data.
 
 ### Known limitations (documented, not hidden)

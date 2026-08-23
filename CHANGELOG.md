@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Driven connection-failure redaction tests (unit + live integration). The refused-
+  connection, credential-failure (live 403 `ServerSecurityException`), and non-MVCC 5xx
+  (live 500 `DatabaseOperationException`, whose `detail` carries the database name)
+  classes are now driven through real Ash actions, asserting the error an Ash caller
+  receives is value-free: reason class only — no URL, database name, credential,
+  attribute value, server `error`/`detail` text, or Cypher — in the message, the
+  inspect, and the logs. Response-body fixtures are live-probed on the pinned 26.8.1
+  image. Documents the two-tier surface: reads surface the transport/error reason
+  class; writes inside Ash's transaction wrapper collapse at session BEGIN to the
+  static value-free "could not begin ArcadeDB transaction". The redaction contract is
+  mutation-red-proven (five scratch mutations of the wrap/begin paths each red exactly
+  the targeted tests).
+
+### Fixed
+
+- Docs build warnings: `documentation/telemetry.md`'s reference to the deliberately
+  hidden telemetry module no longer trips ex_doc's hidden-module link check (reworded);
+  `SECURITY.md` added to the docs extras so README/CHANGELOG links to it resolve, and
+  its own hidden-module reference reworded. `mix docs` now builds warning-free.
+
 ## [1.0.0] - 2026-08-22
 
 ### Changed

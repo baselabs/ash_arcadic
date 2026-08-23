@@ -41,7 +41,9 @@ metadata (measurements per `:telemetry.span` conventions: `:duration` on stop;
 
 ## Metadata allowlist
 
-Span metadata may only carry these keys (enforced by `AshArcadic.Telemetry`):
+Span metadata may only carry these keys (enforced at span emission by the internal
+telemetry module that owns the allowlist — `@moduledoc false`, hidden from the API docs
+by design):
 
 `resource` · `multitenancy` · `tenant?` · `internal?` · `stale?` ·
 `in_transaction?` · `properties?` · `direction` · `row_count` · `batch_size` ·

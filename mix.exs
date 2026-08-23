@@ -88,6 +88,7 @@ defmodule AshArcadic.MixProject do
       source_url: @source_url,
       extras: [
         "README.md",
+        "SECURITY.md",
         "usage-rules.md",
         "documentation/upgrading.md",
         "documentation/troubleshooting.md",
