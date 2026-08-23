@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- CI: ArcadeDB service image pinned to `26.8.1` by digest, plus a non-blocking
+  `latest` canary job. `latest` is a moving SNAPSHOT (on 2026-08-22 it is
+  26.9.1-SNAPSHOT) and the 26.8→26.9 jump changed DDL behavior (FULL_TEXT over an
+  implicitly auto-created property) under green CI — an unpinned service made that
+  drift silent. The full 785-test suite is verified on 26.8.1 against a live container.
+
 - **Dependency floors moved to the stabilized transports** (verified against the full
   785-test suite incl. live integration, zero code changes): `arcadic` `~> 0.7.1` →
   `~> 1.0`; `replicant` (optional) `~> 0.3` → `~> 1.2`. A CDC host pinning `replicant`

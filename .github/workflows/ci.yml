@@ -38,9 +38,13 @@ jobs:
 
     services:
       arcadedb:
-        # Matches the locally-verified image (reports 26.8.1). Pin to a stable
-        # ArcadeDB tag once one is standardized for the project.
-        image: arcadedata/arcadedb:latest
+        # Digest-pinned: `latest` is a moving SNAPSHOT (as of 2026-08-22 it is
+        # 26.9.1-SNAPSHOT), and the 26.8→26.9 jump changed DDL behavior (FULL_TEXT
+        # over an implicitly auto-created property) — under green CI, silently.
+        # The full 785-test suite is verified on 26.8.1. Drift is watched by the
+        # non-blocking arcadedb-latest-canary job below. Bump deliberately:
+        # re-verify the suite locally, then update tag AND digest together.
+        image: arcadedata/arcadedb:26.8.1@sha256:49036720b1678b9c7a6dbf22fc34a812c8d7bed15508c22cbb02c0dddc0ca16a
         ports:
           - 2480:2480
         env:
@@ -150,3 +154,65 @@ jobs:
             || { echo "::error::guard broke mix.exs syntax (multi-line {:replicant, ...} tuple?) — harden the dep removal" >&2; exit 1; }
           mix deps.unlock replicant
           mix compile --force --warnings-as-errors
+
+  # Non-blocking drift tripwire: the test lanes run a digest-pinned ArcadeDB so
+  # they stay reproducible; this job runs the same suite against `latest` so an
+  # upstream behavior change (e.g. the 26.8→26.9 FULL_TEXT DDL change) surfaces
+  # HERE, loudly, instead of silently inside a green pinned lane. A red canary
+  # is information for the next deliberate pin bump, not a merge block.
+  arcadedb-latest-canary:
+    name: canary (ArcadeDB latest)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+
+    services:
+      arcadedb:
+        image: arcadedata/arcadedb:latest
+        ports:
+          - 2480:2480
+        env:
+          JAVA_OPTS: >-
+            -Darcadedb.server.rootPassword=arcadedb_dev_password
+            -Darcadedb.server.mode=development
+
+    env:
+      MIX_ENV: test
+      ARCADIC_TEST_URL: http://localhost:2480
+      ARCADIC_TEST_PASSWORD: arcadedb_dev_password
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Elixir/OTP
+        uses: erlef/setup-beam@v1
+        with:
+          elixir-version: "1.20.3"
+          otp-version: "29.0.5"
+
+      # Distinct key so the canary never evicts a pinned lane's cache; restore
+      # falls back to the pinned 1.20.3 lane's cache (same deps/build content).
+      - name: Cache deps and _build
+        uses: actions/cache@v4
+        with:
+          path: |
+            deps
+            _build
+          key: ${{ runner.os }}-mix-29.0.5-1.20.3-canary-${{ hashFiles('**/mix.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-mix-29.0.5-1.20.3-
+
+      - name: Install dependencies
+        run: mix deps.get
+
+      - name: Wait for ArcadeDB to be ready
+        run: |
+          for i in $(seq 1 60); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' -u root:arcadedb_dev_password http://localhost:2480/api/v1/ready || true)
+            if [ "$code" = "204" ]; then echo "ArcadeDB ready"; exit 0; fi
+            echo "waiting for ArcadeDB ($i)... last=$code"; sleep 2
+          done
+          echo "ArcadeDB did not become ready in time" >&2
+          exit 1
+
+      - name: Test (unit + integration) against latest
+        run: mix test --include integration
