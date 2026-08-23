@@ -2,7 +2,7 @@
 
 _An Ash DataLayer for ArcadeDB (native OpenCypher over HTTP)._
 
-> The full 0.2.0 surface is live: the `arcade do ... end` DSL section, query
+> The full 1.0.0 surface is live: the `arcade do ... end` DSL section, query
 > compilation (filter/sort/distinct/combinations), CRUD + upserts + atomics,
 > bulk writes, offset + keyset pagination, aggregates, calculations,
 > relationships + traversal + edge writes, vector search (dense/sparse/hybrid),

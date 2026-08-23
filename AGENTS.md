@@ -108,7 +108,7 @@ All gates pass before commit/PR. Update `CHANGELOG.md` under `[Unreleased]`.
 
 ## Current status
 
-The data layer is **built and released** — `ash_arcadic` 0.2.0 is on hex (the full
+The data layer is **built and released** — `ash_arcadic` 1.0.0 is on hex (the full
 Slice 1–11 surface: the `arcade` DSL, query push-down, CRUD/upserts/atomics, bulk
 writes, offset + keyset pagination, aggregates, calculations, relationships +
 traversal + edge writes, dense/sparse/hybrid vector search, transactions,

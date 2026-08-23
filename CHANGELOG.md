@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-08-22
+
 ### Changed
 
 - CI: ArcadeDB service image pinned to `26.8.1` by digest, plus a non-blocking
@@ -553,6 +555,7 @@ the initial surface.
   tenant space). ArcadeDB `CONTAINS`/`STARTS WITH`/`ENDS WITH` are case-sensitive (a
   `:ci_string` attribute's case-insensitive semantics are not preserved).
 
-[Unreleased]: https://github.com/baselabs/ash_arcadic/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/baselabs/ash_arcadic/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/baselabs/ash_arcadic/compare/v0.2.0...v1.0.0
 [0.2.0]: https://github.com/baselabs/ash_arcadic/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/baselabs/ash_arcadic/releases/tag/v0.1.0
