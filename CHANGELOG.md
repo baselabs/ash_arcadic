@@ -40,6 +40,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   publication — deterministic config rejection, no live Postgres). Mutation-red-proven
   (restart flip, config-call drop, fault-arm resume each red exactly the targeted
   tests).
+- `AshArcadic.Client` seam failure-mode tests: a host client whose `conn/0`
+  raises, and one returning an invalid conn, both fail the action LOUD as
+  `Ash.Error.Unknown` (Ash's callback-exception wrapper, original nested and
+  attributed) — never swallowed, never fallen back to a default connection.
+  The invalid conn dies at `resolve_conn/2`'s struct guard before any wire
+  call. Mutation-red-proven (a swallow-and-fallback rescue in `conn_for` and a
+  dropped `%Conn{}` guard each red exactly the targeted tests).
 
 ### Fixed
 
