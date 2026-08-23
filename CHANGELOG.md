@@ -14,13 +14,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (live 500 `DatabaseOperationException`, whose `detail` carries the database name)
   classes are now driven through real Ash actions, asserting the error an Ash caller
   receives is value-free: reason class only — no URL, database name, credential,
-  attribute value, server `error`/`detail` text, or Cypher — in the message, the
-  inspect, and the logs. Response-body fixtures are live-probed on the pinned 26.8.1
-  image. Documents the two-tier surface: reads surface the transport/error reason
-  class; writes inside Ash's transaction wrapper collapse at session BEGIN to the
-  static value-free "could not begin ArcadeDB transaction". The redaction contract is
-  mutation-red-proven (five scratch mutations of the wrap/begin paths each red exactly
-  the targeted tests).
+  attribute value, server `error`/`detail` text, or Cypher. Message and inspect are
+  asserted for every class; the log channel is captured where the code paths can log
+  (the read error arm and the write begin/unwind path), each log guard proven
+  red-capable by a leaky-log-site mutation. Response-body fixtures are live-probed on
+  the pinned 26.8.1 image. Documents the two-tier surface: reads surface the
+  transport/error reason class; writes inside Ash's transaction wrapper collapse at
+  session BEGIN to the static value-free "could not begin ArcadeDB transaction". The
+  redaction contract is mutation-red-proven (six scratch mutations — the wrap/begin
+  paths plus a leaky read-arm log site — each red exactly the targeted tests).
 - Driven large-value edge tests (live integration, boundaries probe-verified on the
   pinned 26.8.1): multi-MB `:string` (4 MB pinned; 16 MB probed) and `:binary`
   (3 MB) attributes round-trip byte-exact through Ash create + read; `:map` nesting

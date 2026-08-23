@@ -57,7 +57,8 @@ defmodule AshArcadic.Integration.LargeValueEdgesTest do
   @nest_depth_ok 30
   @nest_depth_over 31
 
-  defp nest(depth), do: Enum.reduce(1..depth, %{"leaf" => @leaf_sentinel}, fn _, acc -> %{"n" => acc} end)
+  defp nest(depth),
+    do: Enum.reduce(1..depth, %{"leaf" => @leaf_sentinel}, fn _, acc -> %{"n" => acc} end)
 
   defp create_doc!(attrs) do
     LargeValueDoc

@@ -87,15 +87,17 @@ defmodule AshArcadic.DataLayer.ConnectionFailureRedactionTest do
     @moduledoc false
     @behaviour AshArcadic.Client
 
+    @url "http://scripted.invalid"
     @db "s3nt1nel_cmdfail_db"
     @pw "SNT_cmd_pw_x51"
 
-    def sentinels, do: [@db, @pw]
+    def sentinels, do: [@url, @db, @pw]
 
     @impl true
     def conn,
       do:
-        Arcadic.connect("http://scripted.invalid", @db, auth: {"root", @pw},
+        Arcadic.connect(@url, @db,
+          auth: {"root", @pw},
           transport: CommandFailTransport
         )
   end
