@@ -3595,16 +3595,24 @@ defmodule AshArcadic.DataLayer do
 
   defp conn_for(resource), do: resource_conn(resource)
 
-  # R10: derive a per-op conn copy carrying `t` as its receive timeout — an Ash-resolved
+  # R10: derive a per-op conn copy carrying `t` as its timeout — an Ash-resolved
   # per-call timeout (read action DSL / changeset / data_layer context convention) or the
-  # resource default. pos_integer sets it; an explicit `:infinity` means "no receive bound for
-  # this call" (Ash's own timeout vocabulary); anything else (nil, a misshapen value) leaves
-  # the conn UNTOUCHED — the client conn's timeout (or Req's 15s default when the host set
-  # none) stays the floor. Never mutates: pure-data copy.
+  # resource default. `t` sets BOTH bounds: `timeout` (max wait per received chunk) and
+  # `request_timeout` (the whole-response cap, arcadic 1.1.0+ → Finch) — so each ATTEMPT
+  # of this wire call does not exceed `t` even against a peer that trickles bytes (a
+  # per-chunk bound alone cannot stop a slow drip). Per ATTEMPT, not per call-span:
+  # failover hosts and the autocommit conflict retry each re-arm both bounds; the
+  # Ash wall-clock (task wrapper, outside transactions) is what bounds the multi-attempt
+  # span. An explicit `:infinity` means "no bound for this call" (Ash's own timeout
+  # vocabulary); anything else (nil, a misshapen value) leaves the conn UNTOUCHED — the
+  # client conn's own settings (or Req's 15s per-chunk default when the host set none)
+  # stay the floor. Never mutates: pure-data copy.
   defp maybe_apply_timeout(%Arcadic.Conn{} = conn, t) when is_integer(t) and t > 0,
-    do: %{conn | timeout: t}
+    do: %{conn | timeout: t, request_timeout: t}
 
-  defp maybe_apply_timeout(%Arcadic.Conn{} = conn, :infinity), do: %{conn | timeout: :infinity}
+  defp maybe_apply_timeout(%Arcadic.Conn{} = conn, :infinity),
+    do: %{conn | timeout: :infinity, request_timeout: :infinity}
+
   defp maybe_apply_timeout(%Arcadic.Conn{} = conn, _t), do: conn
 
   # Maps a value-free conn-resolution error atom to a value-free reason string. The atom is

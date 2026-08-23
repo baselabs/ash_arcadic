@@ -19,11 +19,14 @@ defmodule AshArcadic.Integration.ConnectionFailureRedactionTest do
     "Database '<name>' is not available"}` → `:database_not_found`; the detail
     carries the database name.
 
-  A true 401 (no Authorization header) is unreachable through this stack —
-  `Arcadic.connect/3` mandates `:auth`, so the drivable credential-failure class is
-  the 403. (The probed no-header 401 body `{"error":"","requestId":…}` carries no
-  exception FQN and maps to arcadic's generic `:server_error` fallback — arcadic's
-  own `Error.from_response/2` unit tier covers that mapping.)
+  The 401 class IS drivable — via a BEARER conn (live-probed 2026-08-23 on the
+  pinned 26.8.1: a garbage bearer token gets HTTP 401, body
+  `{"error":"Invalid or expired authentication token","requestId":…}`, no
+  exception FQN). arcadic 1.1.0 maps it to `:unauthorized` (a 1.0.x client
+  collapsed it to the generic `:server_error`); the bad-bearer fixture below
+  drives it through a read with full redaction assertions. The no-Authorization
+  401 remains unreachable through `Arcadic.connect/3` (auth is mandated) — the
+  bearer shape is the drivable 401.
 
   Write-tier note: Ash wraps creates in a data-layer transaction, so a credential or
   500 failure on the session BEGIN collapses to the static value-free
@@ -50,7 +53,7 @@ defmodule AshArcadic.Integration.ConnectionFailureRedactionTest do
 
     @impl true
     def conn,
-      do: Arcadic.connect(System.fetch_env!("ARCADIC_TEST_URL"), @db, auth: {"root", @pw})
+      do: Arcadic.connect(AshArcadic.Test.TestURL.base(), @db, auth: {"root", @pw})
   end
 
   defmodule AbsentDbClient do
@@ -64,7 +67,41 @@ defmodule AshArcadic.Integration.ConnectionFailureRedactionTest do
     @impl true
     def conn do
       pass = System.get_env("ARCADIC_TEST_PASSWORD", "arcadedb_dev_password")
-      Arcadic.connect(System.fetch_env!("ARCADIC_TEST_URL"), @db, auth: {"root", pass})
+      Arcadic.connect(AshArcadic.Test.TestURL.base(), @db, auth: {"root", pass})
+    end
+  end
+
+  defmodule BadBearerClient do
+    @moduledoc false
+    @behaviour AshArcadic.Client
+
+    @db "s3nt1nel_bearer_db"
+    @token "SNT_garbage_bearer_x07"
+
+    def sentinels, do: [@db, @token]
+
+    @impl true
+    def conn,
+      do: Arcadic.connect(AshArcadic.Test.TestURL.base(), @db, auth: {:bearer, @token})
+  end
+
+  defmodule BadBearerDoc do
+    @moduledoc false
+    use Ash.Resource, domain: AshArcadic.Test.Domain, data_layer: AshArcadic.DataLayer
+
+    arcade do
+      client(AshArcadic.Integration.ConnectionFailureRedactionTest.BadBearerClient)
+      label(:BearerFailDoc)
+    end
+
+    attributes do
+      uuid_primary_key :id
+      attribute :name, :string, public?: true
+    end
+
+    actions do
+      default_accept [:name]
+      defaults [:read, :create]
     end
   end
 
@@ -119,6 +156,27 @@ defmodule AshArcadic.Integration.ConnectionFailureRedactionTest do
 
       # The probed 403 body's error/detail text is the leak vector on this class.
       for leak <- BadCredsClient.sentinels() ++ ["root", "Security error", "not valid"] do
+        refute Exception.message(error) =~ leak
+        refute inspect(error) =~ leak
+      end
+    end
+  end
+
+  # The 401 class (invalid/expired bearer token) was long believed unreachable through
+  # Arcadic ("Arcadic mandates auth — 403 is the drivable class"); live-probed 2026-08-23
+  # on the pinned 26.8.1, a garbage bearer gets HTTP 401 with a body of only
+  # {error, requestId} (no exception FQN) — drivable via the bearer conn shape.
+  # Requires arcadic 1.1.0+ (the 401 → :unauthorized mapping).
+  describe "an invalid bearer token (live 401) through a read" do
+    test "surfaces the unauthorized reason class only — no server text or token" do
+      assert {:error, error} = Ash.read(BadBearerDoc)
+
+      assert Enum.any?(error.errors, &match?(%AshArcadic.Errors.QueryFailed{}, &1)),
+             "expected the failure to surface as a QueryFailed, got: #{inspect(error.errors)}"
+
+      assert Exception.message(error) =~ "ArcadeDB error (unauthorized)"
+
+      for leak <- BadBearerClient.sentinels() ++ ["Invalid or expired", "authentication token"] do
         refute Exception.message(error) =~ leak
         refute inspect(error) =~ leak
       end

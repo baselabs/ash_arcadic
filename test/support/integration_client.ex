@@ -4,7 +4,7 @@ defmodule AshArcadic.Test.IntegrationClient do
 
   @impl true
   def conn do
-    url = System.fetch_env!("ARCADIC_TEST_URL")
+    url = AshArcadic.Test.TestURL.base()
     pass = System.get_env("ARCADIC_TEST_PASSWORD", "arcadedb_dev_password")
     database = Application.fetch_env!(:ash_arcadic, :integration_database)
     Arcadic.connect(url, database, auth: {"root", pass})

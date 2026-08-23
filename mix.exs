@@ -1,7 +1,7 @@
 defmodule AshArcadic.MixProject do
   use Mix.Project
 
-  @version "1.0.0"
+  @version "1.1.0"
   @source_url "https://github.com/baselabs/ash_arcadic"
 
   def project do
@@ -46,7 +46,7 @@ defmodule AshArcadic.MixProject do
       {:ash, "~> 3.11"},
       {:spark, ">= 2.3.3 and < 3.0.0-0"},
       {:splode, "~> 0.3"},
-      {:arcadic, "~> 1.0"},
+      {:arcadic, "~> 1.1"},
       # The CDC transport for the optional `AshArcadic.Replicant.*` sink. `optional: true`
       # so non-CDC hosts don't pull it (nor its Postgrex replication deps); a host that
       # uses the sink adds `replicant` to its own deps.

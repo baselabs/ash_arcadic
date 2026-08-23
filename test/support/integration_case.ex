@@ -15,7 +15,7 @@ defmodule AshArcadic.Test.IntegrationCase do
   end
 
   setup_all do
-    url = System.get_env("ARCADIC_TEST_URL") || flunk("set ARCADIC_TEST_URL")
+    url = AshArcadic.Test.TestURL.base()
     pass = System.get_env("ARCADIC_TEST_PASSWORD", "arcadedb_dev_password")
     database = "ashx_" <> Base.encode16(:crypto.strong_rand_bytes(4), case: :lower)
     admin = Arcadic.connect(url, database, auth: {"root", pass})

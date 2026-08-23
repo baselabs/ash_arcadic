@@ -5,10 +5,31 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.1.0] - 2026-08-23
 
 ### Added
 
+- **Whole-response bounding (arcadic 1.1.0).** A timeout applied by this data
+  layer (any of the three layers: Ash-resolved per-call, the resource default,
+  or the client conn) now sets BOTH wire bounds — `timeout` (max wait per
+  received chunk) and `request_timeout` (the whole-response cap, new in
+  arcadic 1.1.0 → Finch) — so the knob means what it reads: the call does not
+  exceed it, even against a peer that trickles bytes (a per-chunk bound alone
+  cannot stop a slow drip; the previous fine-print caveat is RETIRED).
+  Requires `arcadic ~> 1.1`.
+- **401 credential-failure coverage (live).** "A true 401 is unreachable
+  through this stack" was an unverified claim — live-probed on the pinned
+  26.8.1, a garbage bearer token gets HTTP 401 (body: only
+  `error`/`requestId`, no exception FQN). arcadic 1.1.0 maps the 401 class to
+  `:unauthorized` (previously fell to the generic `:server_error`), and the
+  integration redaction suite now drives the class through a read:
+  `ArcadeDB error (unauthorized)`, value-free (no server text, no token).
+- **Test-suite URL normalization.** `ARCADIC_TEST_URL` is userinfo-stripped in
+  test support (`AshArcadic.Test.TestURL`): credentials ride
+  `ARCADIC_TEST_PASSWORD` + the auth tuple. A userinfo URL previously
+  defeated credential-override fixtures silently (URL creds win at the HTTP
+  layer) and now raises at `Arcadic.connect/3` (arcadic 1.1.0 conflict
+  guard); the suite is green under BOTH env shapes.
 - **Performance & tuning guide (R13)** — `documentation/performance.md`,
   consolidating the previously scattered tuning one-liners, every
   server-behavior claim probe-verified live on the pinned 26.8.1 before

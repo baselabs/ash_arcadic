@@ -185,9 +185,12 @@ invisible to your config, so set one of the above explicitly.
 
 Fine print:
 
-- The receive bound is **per chunk**, not per whole response: a server that
-  trickles bytes can outlive it. Full-response bounding would need Finch's
-  `request_timeout` plumbed through `arcadic` (not wired today).
+- A timeout set by any layer sets **both** wire bounds for that call: the
+  per-chunk receive wait and (arcadic 1.1.0+) the **whole-response** cap — a
+  server that trickles bytes cannot stretch the call past it. Each ATTEMPT is
+  bounded: failover hosts and the autocommit conflict retry re-arm both bounds,
+  so a multi-attempt span is bounded by the Ash wall clock (outside
+  transactions), not by a single T.
 - Outside transactions, an action carrying an Ash timeout is ALSO wrapped in a
   wall-clock deadline by Ash (a task with a kill timer — the data layer declares
   `:async_engine`). Inside a transaction that wrapper is off (Ash's rule); the

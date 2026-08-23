@@ -31,7 +31,7 @@ defmodule AshArcadic.DataLayer.TimeoutTest do
 
     @impl true
     def begin(conn, _opts) do
-      Agent.update(__MODULE__, &[{:begin, conn.timeout} | &1])
+      Agent.update(__MODULE__, &[{:begin, conn.timeout, conn.request_timeout} | &1])
       {:ok, "capture-session"}
     end
 
@@ -43,7 +43,7 @@ defmodule AshArcadic.DataLayer.TimeoutTest do
 
     @impl true
     def execute(conn, mode, _request, _opts) do
-      Agent.update(__MODULE__, &[{mode, conn.timeout} | &1])
+      Agent.update(__MODULE__, &[{mode, conn.timeout, conn.request_timeout} | &1])
       {:ok, []}
     end
   end
@@ -156,7 +156,7 @@ defmodule AshArcadic.DataLayer.TimeoutTest do
   describe "the client conn floor" do
     test "a read with no other timeout sees the client conn's timeout at the wire" do
       assert {:ok, []} = Ash.read(PlainDoc)
-      assert [{:read, 3_000}] = CapturingTransport.captures()
+      assert [{:read, 3_000, nil}] = CapturingTransport.captures()
     end
 
     test "a write conn with no other timeout keeps the client conn's timeout (write_conn)" do
@@ -170,13 +170,16 @@ defmodule AshArcadic.DataLayer.TimeoutTest do
   describe "the per-resource default (arcade do timeout end)" do
     test "a read sees the resource timeout at the wire, beating the conn floor" do
       assert {:ok, []} = Ash.read(ResDoc)
-      assert [{:read, 7_000}] = CapturingTransport.captures()
+      assert [{:read, 7_000, 7_000}] = CapturingTransport.captures()
     end
 
-    test "a write conn carries the resource timeout (write_conn)" do
+    test "a write conn carries the resource timeout (write_conn) — BOTH bounds" do
       changeset = Ash.Changeset.for_create(ResDoc, :create, %{"name" => "x"})
 
-      assert {:ok, %Arcadic.Conn{timeout: 7_000}} =
+      # request_timeout (the whole-response cap, arcadic 1.1.0+) rides the same
+      # derivation: the knob means "this call does not exceed T", chunk-wise AND
+      # whole-response — a per-chunk bound alone cannot stop a trickling peer.
+      assert {:ok, %Arcadic.Conn{timeout: 7_000, request_timeout: 7_000}} =
                AshArcadic.DataLayer.write_conn(ResDoc, changeset)
     end
 
@@ -189,7 +192,7 @@ defmodule AshArcadic.DataLayer.TimeoutTest do
   describe "Ash-resolved per-call timeouts" do
     test "a read action's DSL timeout reaches the wire, beating the resource default" do
       assert {:ok, []} = Ash.read(SlowDoc)
-      assert [{:read, 5_000}] = CapturingTransport.captures()
+      assert [{:read, 5_000, 5_000}] = CapturingTransport.captures()
     end
 
     test "set_context stashes the action timeout (ash_postgres's repo_timeout sources)" do
@@ -227,10 +230,11 @@ defmodule AshArcadic.DataLayer.TimeoutTest do
           %{action: %{timeout: 5_000}, data_layer: %{}}
         )
 
-      assert {:ok, %Arcadic.Conn{timeout: 5_000}} = AshArcadic.DataLayer.read_conn(query, SlowDoc)
+      assert {:ok, %Arcadic.Conn{timeout: 5_000, request_timeout: 5_000}} =
+               AshArcadic.DataLayer.read_conn(query, SlowDoc)
 
       # no stash → the resource default stands
-      assert {:ok, %Arcadic.Conn{timeout: 7_000}} =
+      assert {:ok, %Arcadic.Conn{timeout: 7_000, request_timeout: 7_000}} =
                AshArcadic.DataLayer.read_conn(%AshArcadic.Query{resource: SlowDoc}, SlowDoc)
     end
 
@@ -244,13 +248,13 @@ defmodule AshArcadic.DataLayer.TimeoutTest do
     test "an explicit changeset :infinity means no receive bound for that call" do
       changeset = Ash.Changeset.for_create(ResDoc, :create, %{"name" => "x"}, timeout: :infinity)
 
-      assert {:ok, %Arcadic.Conn{timeout: :infinity}} =
+      assert {:ok, %Arcadic.Conn{timeout: :infinity, request_timeout: :infinity}} =
                AshArcadic.DataLayer.write_conn(ResDoc, changeset)
     end
 
     test "an aggregate read on a timeout action sees the action timeout at the wire" do
       assert {:ok, 0} = Ash.count(SlowDoc)
-      assert [{:read, 5_000}] = CapturingTransport.captures()
+      assert [{:read, 5_000, 5_000}] = CapturingTransport.captures()
     end
   end
 end

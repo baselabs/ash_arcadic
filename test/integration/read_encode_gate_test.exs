@@ -123,7 +123,7 @@ defmodule AshArcadic.Integration.ReadEncodeGateTest do
     on_exit(fn ->
       admin =
         Arcadic.connect(
-          System.get_env("ARCADIC_TEST_URL"),
+          AshArcadic.Test.TestURL.base(),
           Application.get_env(:ash_arcadic, :integration_database),
           auth: {"root", System.get_env("ARCADIC_TEST_PASSWORD", "arcadedb_dev_password")}
         )
@@ -142,7 +142,7 @@ defmodule AshArcadic.Integration.ReadEncodeGateTest do
     on_exit(fn ->
       admin =
         Arcadic.connect(
-          System.get_env("ARCADIC_TEST_URL"),
+          AshArcadic.Test.TestURL.base(),
           Application.get_env(:ash_arcadic, :integration_database),
           auth: {"root", System.get_env("ARCADIC_TEST_PASSWORD", "arcadedb_dev_password")}
         )

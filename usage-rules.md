@@ -70,7 +70,9 @@ chunk**), resolved most-specific-wins:
 
 Bulk writes ride the resource/conn bounds (an explicit `timeout:` opt to
 `Ash.bulk_create` is a wall clock only, defaulting to `:infinity`). A timed-out
-write is never retried. Details + failure modes:
+write is never retried. A timeout set by any layer bounds each wire-call
+ATTEMPT on both axes (per-chunk receive + whole-response); failover and the
+conflict retry re-arm the bounds per attempt. Details + failure modes:
 `documentation/troubleshooting.md` § Timeouts & hangs.
 
 ## CDC mirror — Postgres→ArcadeDB effect-once sink (`AshArcadic.Replicant.*`)
