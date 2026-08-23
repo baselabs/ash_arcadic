@@ -21,6 +21,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   static value-free "could not begin ArcadeDB transaction". The redaction contract is
   mutation-red-proven (five scratch mutations of the wrap/begin paths each red exactly
   the targeted tests).
+- Driven large-value edge tests (live integration, boundaries probe-verified on the
+  pinned 26.8.1): multi-MB `:string` (4 MB pinned; 16 MB probed) and `:binary`
+  (3 MB) attributes round-trip byte-exact through Ash create + read; `:map` nesting
+  is capped server-side at 32 parameter levels, of which the write envelope
+  (`$props` + attribute key) spends two — so a `:map` attribute holds at most 30
+  nesting levels, and deeper writes surface as a value-free `server_error`
+  (HTTP 400 nesting guard). Limits documented in `usage-rules.md`; the tests are
+  mutation-red-proven (serialize truncation, decode no-op, detail interpolation).
 
 ### Fixed
 

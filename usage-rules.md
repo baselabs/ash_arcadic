@@ -30,6 +30,13 @@ _An Ash DataLayer for ArcadeDB (native OpenCypher over HTTP)._
   app-side (`Base.encode64`) or use a `:binary`-typed attribute. The write path
   **pre-checks and fails closed** with a value-free error naming the attribute,
   rather than letting the JSON encoder raise with the bytes in the message.
+- **Size and nesting limits (ArcadeDB 26.x, probe-verified on 26.8.1).** Multi-MB
+  values are fine: `:string` attributes of at least 16 MB and `:binary` attributes
+  of at least 3 MB round-trip byte-exact. `:map` **nesting is capped server-side at
+  32 parameter levels** — the write envelope (`$props` + the attribute key) spends
+  two of them, so a `:map` attribute holds at most **30 nesting levels**; deeper
+  writes fail with a value-free `server_error` (HTTP 400, the server's
+  `IllegalArgumentException` nesting guard).
 - **Sensitive means encrypted-binary.** A `sensitive` attribute must be
   app-side-encrypted binary (e.g. AshCloak) or `skip`ped; the data layer verifies
   the type shape, not the ciphertext. The multitenancy discriminator is never
