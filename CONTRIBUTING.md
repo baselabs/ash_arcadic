@@ -45,6 +45,11 @@ mix dialyzer
 - Read `AGENTS.md` before touching multitenancy, sensitive-data, or Cypher
   generation code — its Critical Rules are binding.
 
+## Code of conduct
+
+This project follows the [Contributor Covenant](CODE_OF_CONDUCT.md). By
+participating, you agree to uphold it.
+
 ## License
 
 By contributing, you agree that your contributions will be licensed under the MIT License.

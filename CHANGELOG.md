@@ -58,6 +58,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   guide's timeouts section, with the host-side workaround (wrap the action at
   the caller's boundary).
 
+### Added (community)
+
+- `CODE_OF_CONDUCT.md` (Contributor Covenant 2.1, linked from CONTRIBUTING), a
+  bug-report and a feature-request issue template, and a PR checklist template
+  that encodes the repo's gates (format/credo/compile×2/test×2/dialyzer,
+  red-before-green, CHANGELOG, value-free boundary).
+
 ### Fixed
 
 - Docs build warnings: `documentation/telemetry.md`'s reference to the deliberately
