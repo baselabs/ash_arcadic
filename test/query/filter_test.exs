@@ -2,6 +2,7 @@ defmodule AshArcadic.Query.FilterTest do
   use ExUnit.Case, async: true
 
   require Ash.Query
+  alias Ash.Resource.Info
   alias AshArcadic.Errors.UnsupportedFilter
   alias AshArcadic.Query
   alias AshArcadic.Query.Filter
@@ -10,6 +11,21 @@ defmodule AshArcadic.Query.FilterTest do
   # translate its %Ash.Filter{} expression.
   defp t(%Ash.Query{} = q),
     do: Filter.translate(q.filter, %Query{resource: AshArcadic.Test.Basic})
+
+  # Ash >= 3.33 type-checks string-function arguments when it BUILDS a query, so a string function
+  # over a non-string field is refused before the data layer sees it. The data layer's own guard
+  # must still fail closed if such an expression reaches it, so the guard tests below hand it the
+  # expression directly (and assert Ash's refusal separately).
+  defp string_fn(mod, field, arg), do: struct(mod, arguments: [basic_ref(field), arg])
+
+  defp basic_ref(field),
+    do: %Ash.Query.Ref{
+      attribute: Info.attribute(AshArcadic.Test.Basic, field),
+      relationship_path: [],
+      resource: AshArcadic.Test.Basic
+    }
+
+  defp translate_expr(expr), do: Filter.translate(expr, %Query{resource: AshArcadic.Test.Basic})
 
   test "equality / inequality bind a $param and emit n.attr = / <>" do
     assert {:ok, query, "n.name = $param1"} =
@@ -127,17 +143,21 @@ defmodule AshArcadic.Query.FilterTest do
     end
 
     test "a string function on a SENSITIVE field fails closed value-free (per function)" do
-      # The string funcs route through string_op → binary_op's reject, carrying the FUNCTION module.
-      assert {:error, %UnsupportedFilter{operator: Ash.Query.Function.Contains, field: :secret}} =
-               t(Ash.Query.filter(AshArcadic.Test.Basic, contains(secret, "x")))
+      # Ash refuses the query itself (sensitive fields are :binary, not :string) ...
+      refute Ash.Query.filter(AshArcadic.Test.Basic, contains(secret, "x")).valid?
+      refute Ash.Query.filter(AshArcadic.Test.Basic, string_starts_with(secret, "x")).valid?
+      refute Ash.Query.filter(AshArcadic.Test.Basic, string_ends_with(secret, "x")).valid?
 
-      assert {:error,
-              %UnsupportedFilter{operator: Ash.Query.Function.StringStartsWith, field: :secret}} =
-               t(Ash.Query.filter(AshArcadic.Test.Basic, string_starts_with(secret, "x")))
-
-      assert {:error,
-              %UnsupportedFilter{operator: Ash.Query.Function.StringEndsWith, field: :secret}} =
-               t(Ash.Query.filter(AshArcadic.Test.Basic, string_ends_with(secret, "x")))
+      # ... and if the expression reaches the data layer anyway, the string funcs route through
+      # string_op → binary_op's reject, carrying the FUNCTION module.
+      for mod <- [
+            Ash.Query.Function.Contains,
+            Ash.Query.Function.StringStartsWith,
+            Ash.Query.Function.StringEndsWith
+          ] do
+        assert {:error, %UnsupportedFilter{operator: ^mod, field: :secret}} =
+                 translate_expr(string_fn(mod, :secret, "x"))
+      end
     end
 
     test "is_nil / not is_nil on a sensitive field are ALLOWED (presence, reads no value)" do
@@ -180,16 +200,21 @@ defmodule AshArcadic.Query.FilterTest do
       # contains(name, <other Ref>) — an attribute-to-attribute in function form. Currently reaches
       # Cast.serialize_value(%Ref{}) and fails LOUD at ArcadeDB; must be a clean UnsupportedFilter.
       # Cover ALL THREE string functions the guard lists (else a dropped module regresses silently).
-      assert {:error, %UnsupportedFilter{operator: Ash.Query.Function.Contains, field: :name}} =
-               t(Ash.Query.filter(AshArcadic.Test.Basic, contains(name, age)))
+      # Ash refuses a non-string second argument when it builds the query ...
+      refute Ash.Query.filter(AshArcadic.Test.Basic, contains(name, age)).valid?
+      refute Ash.Query.filter(AshArcadic.Test.Basic, string_starts_with(name, age)).valid?
+      refute Ash.Query.filter(AshArcadic.Test.Basic, string_ends_with(name, age)).valid?
 
-      assert {:error,
-              %UnsupportedFilter{operator: Ash.Query.Function.StringStartsWith, field: :name}} =
-               t(Ash.Query.filter(AshArcadic.Test.Basic, string_starts_with(name, age)))
-
-      assert {:error,
-              %UnsupportedFilter{operator: Ash.Query.Function.StringEndsWith, field: :name}} =
-               t(Ash.Query.filter(AshArcadic.Test.Basic, string_ends_with(name, age)))
+      # ... and the data layer rejects a Ref in the pattern argument whatever its type.
+      for mod <- [
+            Ash.Query.Function.Contains,
+            Ash.Query.Function.StringStartsWith,
+            Ash.Query.Function.StringEndsWith
+          ],
+          other <- [:age, :name] do
+        assert {:error, %UnsupportedFilter{operator: ^mod, field: :name}} =
+                 translate_expr(string_fn(mod, :name, basic_ref(other)))
+      end
     end
   end
 
