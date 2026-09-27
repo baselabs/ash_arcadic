@@ -15,7 +15,7 @@ defmodule AshArcadic.Integration.ReadEncodeGateTest do
   require Ash.Expr
 
   alias Ash.Query.Combination
-  alias AshArcadic.Test.{ReadEncodeDoc, TraverseAttrNode, VectorDoc}
+  alias AshArcadic.Test.{ReadEncodeDoc, TestURL, TraverseAttrNode, VectorDoc}
 
   @poison %{"k" => <<0xFF, 0x00, 0x42>>}
 
@@ -123,7 +123,7 @@ defmodule AshArcadic.Integration.ReadEncodeGateTest do
     on_exit(fn ->
       admin =
         Arcadic.connect(
-          AshArcadic.Test.TestURL.base(),
+          TestURL.base(),
           Application.get_env(:ash_arcadic, :integration_database),
           auth: {"root", System.get_env("ARCADIC_TEST_PASSWORD", "arcadedb_dev_password")}
         )
@@ -142,7 +142,7 @@ defmodule AshArcadic.Integration.ReadEncodeGateTest do
     on_exit(fn ->
       admin =
         Arcadic.connect(
-          AshArcadic.Test.TestURL.base(),
+          TestURL.base(),
           Application.get_env(:ash_arcadic, :integration_database),
           auth: {"root", System.get_env("ARCADIC_TEST_PASSWORD", "arcadedb_dev_password")}
         )

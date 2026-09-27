@@ -40,6 +40,8 @@ defmodule AshArcadic.Integration.ConnectionFailureRedactionTest do
 
   import ExUnit.CaptureLog
 
+  alias AshArcadic.Test.TestURL
+
   @moduletag :integration
 
   defmodule BadCredsClient do
@@ -53,7 +55,7 @@ defmodule AshArcadic.Integration.ConnectionFailureRedactionTest do
 
     @impl true
     def conn,
-      do: Arcadic.connect(AshArcadic.Test.TestURL.base(), @db, auth: {"root", @pw})
+      do: Arcadic.connect(TestURL.base(), @db, auth: {"root", @pw})
   end
 
   defmodule AbsentDbClient do
@@ -67,7 +69,7 @@ defmodule AshArcadic.Integration.ConnectionFailureRedactionTest do
     @impl true
     def conn do
       pass = System.get_env("ARCADIC_TEST_PASSWORD", "arcadedb_dev_password")
-      Arcadic.connect(AshArcadic.Test.TestURL.base(), @db, auth: {"root", pass})
+      Arcadic.connect(TestURL.base(), @db, auth: {"root", pass})
     end
   end
 
@@ -82,7 +84,7 @@ defmodule AshArcadic.Integration.ConnectionFailureRedactionTest do
 
     @impl true
     def conn,
-      do: Arcadic.connect(AshArcadic.Test.TestURL.base(), @db, auth: {:bearer, @token})
+      do: Arcadic.connect(TestURL.base(), @db, auth: {:bearer, @token})
   end
 
   defmodule BadBearerDoc do

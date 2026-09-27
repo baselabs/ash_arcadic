@@ -7,6 +7,8 @@ defmodule AshArcadic.Test.IntegrationCase do
   """
   use ExUnit.CaseTemplate
 
+  alias AshArcadic.Test.TestURL
+
   using do
     quote do
       @moduletag :integration
@@ -15,7 +17,7 @@ defmodule AshArcadic.Test.IntegrationCase do
   end
 
   setup_all do
-    url = AshArcadic.Test.TestURL.base()
+    url = TestURL.base()
     pass = System.get_env("ARCADIC_TEST_PASSWORD", "arcadedb_dev_password")
     database = "ashx_" <> Base.encode16(:crypto.strong_rand_bytes(4), case: :lower)
     admin = Arcadic.connect(url, database, auth: {"root", pass})
