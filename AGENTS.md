@@ -93,7 +93,9 @@ All gates pass before commit/PR. Update `CHANGELOG.md` under `[Unreleased]`.
 - **Integration** (`test/integration/**`, `@moduletag :integration`): require a
   live ArcadeDB; gate on `ARCADIC_TEST_URL`, skip when unset. ArcadeDB may not
   tolerate concurrent transactions on one connection — default integration tests
-  to `async: false` until proven otherwise.
+  to `async: false` until proven otherwise. When a shared server already runs,
+  `ARCADIC_TEST_URL` and `ARCADIC_TEST_PASSWORD` sit in the gitignored `.env`;
+  load them with `set -a; . ./.env; set +a`, then `mix test --include integration`.
 - **TDD:** test first (the `ash_age` convention).
 
 ## Docs & lifecycle-artifact policy
