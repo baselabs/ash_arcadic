@@ -284,46 +284,13 @@ defmodule AshArcadic.Replicant.VerifierTest do
     end
   end
 
-  # Check 7 (2026-10-16) — a BINARY-STORAGE sensitive attribute passes ValidateSensitive
-  # R2 (binary storage is its blessed shape) but the sink still halts delivery
-  # (:sensitive_plaintext) on the first row carrying that column, because the Postgres
-  # payload is plaintext. That contradiction was decidable only at runtime; the
-  # ValidateSensitiveSkipped verifier closes it to compile time.
-  test "a sensitive attribute not in replicant skip halts at runtime => compile error" do
-    err =
-      assert_dsl_error %Spark.Error.DslError{path: [:replicant, :skip]} do
-        defmodule Elixir.AshArcadic.Test.ReplicantSensitiveUnskipped do
-          use Ash.Resource,
-            domain: AshArcadic.Test.Domain,
-            validate_domain_inclusion?: false,
-            data_layer: AshArcadic.DataLayer,
-            extensions: [AshArcadic.Replicant]
-
-          arcade do
-            client(AshArcadic.Test.MockClient)
-            sensitive([:secret])
-          end
-
-          replicant do
-            source_table("orders")
-          end
-
-          attributes do
-            uuid_primary_key :id
-            attribute :secret, :binary
-          end
-
-          actions do
-            defaults [:read]
-          end
-        end
-      end
-
-    assert err.message =~ "sensitive_plaintext"
-    assert err.message =~ "skip"
-  end
-
-  test "a sensitive attribute IN the replicant skip list compiles clean" do
+  # Check 7 (delta-review adjudication, 2026-10-16): a sensitive attribute NOT in the
+  # replicant skip list COMPILES — a graph-only sensitive attribute with no corresponding
+  # source column is a valid configuration, so the constraint is not statically decidable
+  # (a provisional compile verifier was reverted for exactly that false positive). The
+  # runtime :sensitive_plaintext halt remains the enforcement for ARRIVING columns; this
+  # pins the compile-clean boundary both ways.
+  test "a binary-storage sensitive attribute compiles clean whether or not it is in replicant skip" do
     refute_dsl_errors do
       defmodule Elixir.AshArcadic.Test.ReplicantSensitiveSkipped do
         use Ash.Resource,

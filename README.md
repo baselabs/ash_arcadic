@@ -13,9 +13,10 @@ enforced **Ash-natively**. It executes through the
 [`arcadic`](https://github.com/baselabs/arcadic) client (the transport — the
 "`postgrex` of ArcadeDB").
 
-> **Status: released.** `v1.0.0` is on Hex — `{:ash_arcadic, "~> 1.0"}`. The full
-> capabilities roadmap has shipped, plus an optional Postgres→ArcadeDB CDC sink (811 tests
-> incl. live-ArcadeDB integration, dialyzer clean). Working rules for contributors are in
+> **Status: released.** `v1.2.0` is on Hex — `{:ash_arcadic, "~> 1.2"}`. The full
+> capabilities roadmap has shipped, plus an optional Postgres→ArcadeDB CDC sink (876
+> tests incl. live integration against ArcadeDB 26.10, dialyzer clean). Working rules
+> for contributors are in
 > [`AGENTS.md`](https://github.com/baselabs/ash_arcadic/blob/main/AGENTS.md); consumer
 > usage rules (the fine print per feature) are in [`usage-rules.md`](usage-rules.md).
 
@@ -80,13 +81,19 @@ Add `ash_arcadic` (and `ash`) to your deps:
 def deps do
   [
     {:ash, "~> 3.11"},
-    {:ash_arcadic, "~> 1.0"}
+    {:ash_arcadic, "~> 1.2"}
   ]
 end
 ```
 
-The Postgres→ArcadeDB CDC sink is optional — add `{:replicant, "~> 0.3"}` only if you
+The Postgres→ArcadeDB CDC sink is optional — add `{:replicant, "~> 1.2"}` only if you
 use it (see `usage-rules.md`); a non-CDC host builds `ash_arcadic` without it.
+
+Pairs well with the rest of the ecosystem: AshArcadic emits a full telemetry event
+catalog, so hosts commonly wire outbound delivery with
+[`ash_hooks`](https://hex.pm/packages/ash_hooks) (webhook signing/dedup) and one-time
+action semantics with [`ash_onetime`](https://hex.pm/packages/ash_onetime) on the same
+Ash resources.
 
 ## Connecting to ArcadeDB
 

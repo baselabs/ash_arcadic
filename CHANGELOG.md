@@ -5,6 +5,85 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.0] - 2026-10-16
+
+### Fixed
+
+- **Tenant isolation on destination-only multitenant edges (BLOCKING review catch).** An
+  edge whose SOURCE resource is not `:attribute`-multitenant but whose DESTINATION is
+  emitted NO tenant clause at all — the MATCH bound any tenant's vertex by bare
+  destination PK (create AND destroy), a cross-tenant write hole. Edge writes now scope
+  tenancy PER ENDPOINT (mirroring the traversal read path): every `:attribute` endpoint
+  is scoped by its own discriminator, each value is that resource's
+  `parse_attribute(to_tenant)` serialization bound as its own parameter, and a blank
+  tenant fails closed before any write. Live tripwire red-proven against the old code.
+  Two behavior refinements ride along: edge writes against a custom-`parse_attribute`
+  resource now MATCH stored rows (previously the raw tenant never matched, failing
+  whole), and an empty `to:` list remains a documented success (no tenant required).
+- **Improper-list vector stashes crash value-echoing (cross-vendor catch, executed
+  probe).** A crafted vector-search stash (public `set_context` surface) carrying an
+  improper list (`[1 | %{secret: …}]` — the `[_ | _]` pattern and `is_list/1` both
+  match any cons cell) passed the shape guard and raised `FunctionClauseError`
+  inspecting the tail inside arcadic's `Enum` traversal. A `non_empty_proper_list/1`
+  guard (`length/1` badarg fails the clause) now rejects improper
+  `query_vector`/`query_tokens`/`query_weights`/`arms`/arm lists value-free, and a
+  stash that is neither a map nor nil fails closed instead of silently degrading to an
+  ordinary (unranked, un-`k`-bounded) read.
+- **ArcadeDB 26.10 server drift — temporal comparisons.** 26.10 stopped coercing stored
+  ISO8601 strings to native temporals, silently inverting the 1.1 fix (the wrapped
+  param matched nothing; the bare string did). Comparisons now wrap BOTH sides —
+  `datetime(n.at) > datetime($p)` (and `localtime()` for `:time`) — correct on every
+  supported server version (probe-verified against 26.8.1 and 26.10.2, gt/eq/lt).
+- **ArcadeDB 26.10 server drift — `:map` attributes.** 26.10 enforces the openCypher
+  property-value rule (a map-valued property write is rejected 400
+  `InvalidPropertyTypeException`; upstream #7639). `:map` (and `{:array, :map}`)
+  values now ride the wire as a canonical JSON string — recursively sorted keys (equal
+  maps encode identically, so equality/`in` filters are order-insensitive), soft-fail
+  to the original value on unencodable content so the pre-wire encode gates stay the
+  Rule-4 defense, and a symmetric lenient decode that still reads legacy
+  embedded-document rows. The ≤26.9 32-level nesting cap is gone (60-level maps
+  round-trip). Known upgrade fine print: `:map` equality/`in` filters match
+  new-format rows only (see `documentation/upgrading.md`).
+- **Missing database across server lines.** arcadic 1.2.1 (a new dependency floor of
+  `~> 1.2`) maps 26.10's 404 `DatabaseNotAvailableException` to the same
+  `:database_not_found` reason ≤26.9 answered with 500
+  `DatabaseOperationException`.
+
+### Changed
+
+- **Dependency floors:** `arcadic ~> 1.2` (typed value-free `:invalid_params` encode
+  errors at the wire — arcadic 1.1 raised `Jason.EncodeError` echoing the bytes;
+  ash_arcadic's pre-wire encode gates still fire first and name the offending
+  attribute), `ash ~> 3.36` (closes EEF-CVE-2026-94201 HIGH and EEF-CVE-2026-101028;
+  `mint 1.11.0` rides arcadic's floor — `mix hex.audit` clean).
+- **Encode-gate symmetry:** single-row `update`/`destroy` now encode-gate the COMPLETE
+  params map (PK match values + changeset-filter literals) like their five sibling
+  write constructors — a poisoned filter literal fails closed value-free naming the
+  param instead of surfacing as the wire-level generic encode error.
+- **`vector_search` redaction narrowed to its live sources:** `safe_vector_call`
+  rescues only `ArgumentError` (arcadic's value-free client-side validators); the
+  arcadic-1.1-era `Jason.EncodeError`/`Protocol.UndefinedError` arms were dead on
+  arcadic ≥ 1.2 (the transport answers the typed `:invalid_params` error, which
+  redacts through the standard atom renderer) and keeping them masked genuine logic
+  bugs.
+
+### Added
+
+- **Replicant compile verifier:** a `replicant` mirror resource whose data layer is not
+  `AshArcadic.DataLayer` now fails at compile (the sink mirrors through AshArcadic's
+  own write machinery) instead of failing scrubbed at sink runtime.
+- **Snapshot watermark monotonicity:** the CDC sink's snapshot handoff write is
+  monotonic by construction (a repeated or older snapshot LSN never regresses the
+  durable checkpoint; a corrupt stored watermark self-heals) and the acknowledgment
+  returns the effective durable watermark.
+- **Unmapped-column observability:** the sink logs a value-free warning (once per
+  `{resource, column}` per BEAM) when an arriving source column maps to nothing —
+  schema drift that previously advanced the checkpoint silently.
+- **`write_conflict_retries` config validation:** a non-positive-integer value falls
+  back to the default instead of unbounded-looping (every integer sorts below atoms).
+- **`update_many` per-call timeout parity:** the changeset's `timeout` reaches the wire
+  on `update_many` like every other write path.
+
 ## [1.1.0] - 2026-08-23
 
 ### Added

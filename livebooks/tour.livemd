@@ -5,7 +5,7 @@
 ```elixir
 # Hex install (the published packages):
 Mix.install([
-  {:ash_arcadic, "~> 1.0"},
+  {:ash_arcadic, "~> 1.2"},
   # `replicant` is the CDC transport (Postgres logical replication → decoded
   # transactions) for the CDC-mirror section near the end. ash_arcadic declares
   # it `optional: true`, so a tour without that section can drop this line.
@@ -27,12 +27,13 @@ ArcadeDB: CRUD + upserts + atomics, query push-down, aggregates + calculations,
 keyset streaming, concurrent bulk writes, fail-closed multitenancy, vector
 search (dense, sparse, hybrid), graph traversal over edges, and the CDC mirror.
 
-**You need a running ArcadeDB.** One docker command:
+**You need a running ArcadeDB.** One docker command (pinned to the line the
+surface is verified against — any 26.10-or-newer image works):
 
 ```bash
 docker run --rm -d --name arcadedb-tour -p 2480:2480 \
   -e JAVA_OPTS="-Darcadedb.server.rootPassword=playwithdata" \
-  arcadedata/arcadedb:latest
+  arcadedata/arcadedb:26.10.2
 ```
 
 Then set the two environment variables below (Livebook: use the Secrets panel or
@@ -259,8 +260,10 @@ updated =
 ## Query push-down
 
 Filters, sorts, and counts compile to parameterized Cypher — including temporal
-comparisons (AshArcadic wraps datetime/time params in ArcadeDB's native temporal
-constructors, so they compare temporal-to-temporal, not string-to-native).
+comparisons (AshArcadic wraps BOTH sides in ArcadeDB's native temporal
+constructors — `datetime(n.at) > datetime($p)` — so they compare
+temporal-to-temporal on every supported server version, whether the server
+coerced the stored value to a native temporal or kept the ISO string).
 
 ```elixir
 Ash.update!(Ash.get!(Tour.Doc, "d1", tenant: "org1"), %{published_at: ~U[2024-06-15 12:00:00Z]})

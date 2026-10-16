@@ -82,6 +82,19 @@ JSON-wire-encodable (typically a raw non-UTF8 binary nested inside a `:map` /
 `:list` value). Fix: encode app-side (`Base.encode64`) or use a `:binary`-typed
 attribute (top-level binaries are handled).
 
+**`ArcadeDB error (invalid_params)`** — a value reached the transport that
+cannot be JSON-encoded (arcadic ≥ 1.2 answers this typed, value-free class at
+the wire). AshArcadic's own pre-wire gates usually name the offending attribute
+instead; seeing the generic class means a path the gates do not cover — report
+it. The message carries structure only, never the value.
+
+**A `:map` equality filter misses rows written by older ash_arcadic on an older
+server** — ≤1.1 stored `:map` attributes as embedded documents on ≤26.9
+servers; 26.10's openCypher property-value rule forbids that, so `:map` values
+now ride as canonical JSON strings. Both formats READ back, but equality/`in`
+filters match new-format rows only. Fix: re-write legacy rows once (read +
+write through Ash).
+
 **`:decimal` range filters rejected** — decimals store as exact strings;
 range/order comparisons would be lexicographic. Fix: integer minor units for
 money that needs range/sort.

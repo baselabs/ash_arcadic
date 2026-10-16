@@ -7,6 +7,53 @@ error structs, the telemetry event names + metadata allowlist, and the config
 knobs. Breaking changes, if ever needed, ship as a new major with an entry
 here.
 
+## 1.1.x → 1.2.0
+
+Adapts to the ArcadeDB 26.10 server line (all changes probed live against both
+26.8.1 and 26.10.2) and to arcadic 1.2's typed transport errors.
+
+- **`arcadic` floor is now `~> 1.2`.** Unencodable param values now surface as
+  the typed, value-free `ArcadeDB error (invalid_params)` class at the wire
+  (arcadic 1.1 raised `Jason.EncodeError` with the bytes in the message);
+  AshArcadic's pre-wire encode gates still fire first and name the offending
+  attribute wherever they cover the path.
+- **Temporal comparisons wrap both sides.** ArcadeDB 26.10 stopped coercing
+  stored ISO8601 strings to native temporals, which silently inverted the 1.1
+  fix's behavior on new servers. Filters and keyset cursors now render
+  `datetime(n.at) > datetime($p)` (and `localtime()` for `:time`), correct on
+  every supported server version. No action needed from you.
+- **`:map` attributes store as canonical JSON strings.** ArcadeDB 26.10
+  enforces the openCypher property-value rule (a map-valued property write is
+  rejected 400 `InvalidPropertyTypeException`), so `:map` (and
+  `{:array, :map}`) values ride the wire as a canonical JSON string — legal on
+  every supported server, order-insensitively comparable, and free of the old
+  32-level nesting cap. Rows written by ≤1.1 on a ≤26.9 server still read
+  back; **equality/`in` filters on `:map` match new-format rows only** —
+  re-write legacy rows once if you rely on map equality.
+- **Edge writes scope tenancy per endpoint.** An `:attribute`-multitenant
+  DESTINATION behind a global (non-multitenant) source is now scoped by its
+  own discriminator and requires a tenant (previously such an edge write bound
+  the destination by bare PK — a cross-tenant write hole; treat any workload
+  that relied on that shape as unintended behavior now correctly rejected).
+  Each endpoint's bound value is its own `parse_attribute(to_tenant)`
+  serialization, so edge writes against custom-parse resources now MATCH
+  stored rows (previously they failed whole under a non-default
+  `parse_attribute`).
+- **New Replicant compile verifier.** A mirror resource not on the AshArcadic
+  data layer now fails at compile instead of halting at sink runtime. (A
+  `sensitive` attribute outside `replicant skip` still compiles — a graph-only
+  sensitive attribute is valid; the runtime `:sensitive_plaintext` halt covers
+  arriving columns.)
+- **Snapshot watermark writes are monotonic by construction** (a repeated
+  snapshot LSN can never regress the durable checkpoint; a corrupt stored
+  watermark self-heals on the next snapshot).
+
+After upgrading, run:
+
+```console
+mix deps.get && mix compile
+```
+
 ## 0.2.x → 1.0.0
 
 No application-code changes are required. The release moves the dependency

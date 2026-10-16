@@ -266,11 +266,17 @@ defmodule AshArcadic.Cast do
 
   defp encode_canonical_list(list) do
     list
-    |> Enum.reduce_while({:ok, []}, fn element, {:ok, acc} ->
-      case canonical_value(element) do
-        {:ok, encoded} -> {:cont, {:ok, [encoded | acc]}}
-        :error -> {:halt, :error}
-      end
+    |> Enum.reduce_while({:ok, []}, fn
+      # A nil ELEMENT stays JSON null in the outer array (legal there), not the
+      # string "null".
+      nil, {:ok, acc} ->
+        {:cont, {:ok, [nil | acc]}}
+
+      element, {:ok, acc} ->
+        case canonical_value(element) do
+          {:ok, encoded} -> {:cont, {:ok, [encoded | acc]}}
+          :error -> {:halt, :error}
+        end
     end)
     |> case do
       {:ok, encoded} -> {:ok, Enum.reverse(encoded)}
@@ -286,6 +292,17 @@ defmodule AshArcadic.Cast do
   defp canonical_value(%Date{} = v), do: {:ok, inspect_json(Date.to_iso8601(v))}
   defp canonical_value(%Time{} = v), do: {:ok, inspect_json(Time.to_iso8601(v))}
   defp canonical_value(%Decimal{} = v), do: {:ok, inspect_json(Decimal.to_string(v, :normal))}
+
+  # Any OTHER struct with a Jason encoder (Ash.CiString, custom Derive structs) encodes as its
+  # JSON leaf — via Jason's TUPLE form, so a struct WITHOUT an encoder is a soft :error (the
+  # raw struct never rides a raise; the caller passes the original value through for the gates).
+  # The __struct__ pattern keeps PLAIN maps on the sorted-fragments path below.
+  defp canonical_value(%{__struct__: _} = v) do
+    case Jason.encode(v) do
+      {:ok, encoded} -> {:ok, encoded}
+      {:error, _} -> :error
+    end
+  end
 
   defp canonical_value(map) when is_map(map) do
     map
@@ -305,7 +322,8 @@ defmodule AshArcadic.Cast do
 
   defp canonical_value(list) when is_list(list) do
     case encode_canonical_list(list) do
-      {:ok, encoded} -> {:ok, "[" <> Enum.join(encoded, ",") <> "]"}
+      # nil elements render as JSON null INSIDE the joined array literal.
+      {:ok, encoded} -> {:ok, "[" <> Enum.map_join(encoded, ",", &render_list_element/1) <> "]"}
       :error -> :error
     end
   end
@@ -321,6 +339,12 @@ defmodule AshArcadic.Cast do
 
   defp canonical_key(key) when is_binary(key), do: encode_json_scalar(key)
   defp canonical_key(key) when is_atom(key), do: encode_json_scalar(Atom.to_string(key))
+  # Jason accepts numeric keys via String.Chars — the canonical form mirrors that, so a
+  # numeric-keyed map still ENCODES (a soft :error here would pass the raw map through, and
+  # the encode gate would wave it on — Jason encodes it too — sending a map to a 26.10 wire
+  # that rejects map properties).
+  defp canonical_key(key) when is_integer(key), do: encode_json_scalar(Integer.to_string(key))
+  defp canonical_key(key) when is_float(key), do: encode_json_scalar(Float.to_string(key))
   defp canonical_key(_other), do: :error
 
   defp inspect_json(s), do: Jason.encode!(s)
@@ -376,4 +400,7 @@ defmodule AshArcadic.Cast do
   defp normalize_spec(nil), do: :untyped
   defp normalize_spec({type, constraints}) when is_list(constraints), do: {type, constraints}
   defp normalize_spec(type), do: {type, []}
+
+  defp render_list_element(nil), do: "null"
+  defp render_list_element(fragment) when is_binary(fragment), do: fragment
 end

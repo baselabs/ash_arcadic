@@ -182,11 +182,11 @@ if Code.ensure_loaded?(Replicant.Sink) do
       # Fail closed on a WHOLESALE-empty index BEFORE the write (never advance the checkpoint
       # to "complete" a snapshot that mirrored nothing — that would lock in invisible loss).
       with :ok <- Apply.reject_empty_index(config),
-           {:ok, _} <-
+           {:ok, effective_lsn} <-
              Ash.transaction([config.checkpoint], fn ->
                advance_snapshot_checkpoint(config, snapshot_lsn)
              end) do
-        {:ok, snapshot_lsn}
+        {:ok, effective_lsn}
       else
         {:error, reason} -> {:error, Apply.boundary_error(reason)}
       end
@@ -201,10 +201,17 @@ if Code.ensure_loaded?(Replicant.Sink) do
     # apply path's replay gate): a snapshot LSN at or below the stored watermark is a NO-OP,
     # never a regression of the durable checkpoint (review catch 2026-10-16 — the apply
     # path's is_integer guard made the watermark monotonic there; this was the one
-    # unguarded writer of the same field).
+    # unguarded writer of the same field). Returns the EFFECTIVE durable watermark (the
+    # stored one on a no-op), so the acknowledgment never reports an LSN the checkpoint
+    # does not hold.
     defp advance_snapshot_checkpoint(config, snapshot_lsn) do
-      if snapshot_advance?(config.checkpoint.for_slot(config.slot), snapshot_lsn) do
+      stored = config.checkpoint.for_slot(config.slot)
+
+      if snapshot_advance?(stored, snapshot_lsn) do
         config.checkpoint.upsert_lsn(config.slot, snapshot_lsn)
+        snapshot_lsn
+      else
+        stored
       end
     end
 

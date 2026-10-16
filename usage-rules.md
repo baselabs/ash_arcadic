@@ -30,13 +30,20 @@ _An Ash DataLayer for ArcadeDB (native OpenCypher over HTTP)._
   app-side (`Base.encode64`) or use a `:binary`-typed attribute. The write path
   **pre-checks and fails closed** with a value-free error naming the attribute,
   rather than letting the JSON encoder raise with the bytes in the message.
-- **Size and nesting limits (ArcadeDB 26.x, probe-verified on 26.8.1).** Multi-MB
+- **Size limits (ArcadeDB 26.x, probe-verified on 26.8.1 and 26.10.2).** Multi-MB
   values are fine: `:string` attributes of at least 16 MB and `:binary` attributes
-  of at least 3 MB round-trip byte-exact. `:map` **nesting is capped server-side at
-  32 parameter levels** — the write envelope (`$props` + the attribute key) spends
-  two of them, so a `:map` attribute holds at most **30 nesting levels**; deeper
-  writes fail with a value-free `server_error` (HTTP 400, the server's
-  `IllegalArgumentException` nesting guard).
+  of at least 3 MB round-trip byte-exact. `:map` attributes ride the wire as a
+  **canonical JSON string** (keys recursively sorted): ArcadeDB's 26.10 line
+  enforces the openCypher property-value rule — a map-valued property write is
+  rejected 400 `InvalidPropertyTypeException` (≤26.9 servers accepted it as an
+  embedded document) — and a JSON string is a legal property value on every
+  supported server. The representation preserves the Ash-action round-trip AND
+  lifts the old ≤26.9 server-side nesting cap (60-level maps round-trip). Two
+  fine-print items: (1) rows written by ash_arcadic ≤1.1 on a ≤26.9 server
+  (stored as embedded documents) still read back, but an **equality/in filter on
+  a `:map` attribute matches only new-format rows** — re-write legacy rows if you
+  rely on map equality; (2) the canonical encoding makes equal maps encode
+  identically, so equality is order-insensitive.
 - **Sensitive means encrypted-binary.** A `sensitive` attribute must be
   app-side-encrypted binary (e.g. AshCloak) or `skip`ped; the data layer verifies
   the type shape, not the ciphertext. The multitenancy discriminator is never
@@ -216,17 +223,21 @@ dep, and the three modules that hard-reference `%Replicant.*{}` structs / `Repli
    a mirror resource; a mismatched client makes the watermark upsert a cross-database write that
    fails the session).
 
-2. **Sensitive source columns must be skipped (compile verifier + runtime halt).** AshArcadic holds
+2. **Sensitive source columns must be skipped (runtime halt).** AshArcadic holds
    no key material, so it cannot safely emit an arriving Postgres value into an encrypted-binary
    column. A non-`skip`ped source column whose name matches a `sensitive` target attribute **HALTS
    the transaction value-free** (`:sensitive_plaintext`) at apply time — so list every such column in
    the `replicant` `skip`. (If a column genuinely arrives already-ciphertext and you want it
    mirrored, model the target as a plain `:binary` attribute, NOT `sensitive` — the
-   searchable-encryption escape hatch; `sensitive` is the do-not-mirror-as-plaintext contract.) A
+   searchable-encryption escape hatch; `sensitive` is the do-not-mirror-as-plaintext contract. A
+   graph-only `sensitive` attribute with no corresponding source column is fine — the halt fires
+   only on ARRIVING columns.) A
    `sensitive` **primary key** is additionally rejected at compile
    (`ValidatePrimaryKeyNotSensitive`) — the sink builds the mirror identity from the source's
    plaintext key to MATCH the vertex, and a sensitive PK would both leak the value and break
-   idempotent matching.
+   idempotent matching. A mirror resource whose data layer is not `AshArcadic.DataLayer` is also
+   rejected at compile (`ValidateArcadeDataLayer`) — the sink mirrors through AshArcadic's own
+   write machinery.
 
 3. **Write-action seam-lock (compile verifier + consumer policy).** A mirror resource with any
    create/update/destroy action **must declare at least one authorizer**
@@ -525,11 +536,13 @@ dep, and the three modules that hard-reference `%Replicant.*{}` structs / `Repli
   filtering or sorting. (`:binary` attributes are likewise unrangeable/unsortable —
   base64 is not byte-order-preserving.)
 - **Datetime/time comparisons work (`:utc_datetime`, `:naive_datetime`, `:time`, incl.
-  `precision: :microsecond`).** ArcadeDB auto-coerces stored ISO8601 datetime/time strings to its
-  native temporal types, so AshArcadic wraps the bound comparison param in the matching Cypher
-  constructor (`datetime()` / `localtime()`) — equality, range (`gt/lt/gte/lte`) and `in` compare
-  temporal-to-temporal, not string-to-coerced-value. `:date` needs no wrapper (ArcadeDB keeps
-  date-only strings as strings). A **compound** temporal comparison (a temporal attr against a
+  `precision: :microsecond`).** ArcadeDB coerced stored ISO8601 datetime/time strings to its
+  native temporal types on ≤26.9 servers but **stops doing so on the 26.10 line** (probed on
+  both) — either way, AshArcadic wraps **BOTH sides** of a comparison in the matching Cypher
+  constructor (`datetime(n.at) > datetime($p)`; `localtime()` for `:time`) — so equality,
+  range (`gt/lt/gte/lte`) and `in` compare temporal-to-temporal on every supported server
+  version. `:date` needs no wrapper (ArcadeDB keeps date-only strings as strings on both
+  lines). A **compound** temporal comparison (a temporal attr against a
   value-EXPRESSION RHS — an `if/3`, arithmetic, fragment) is NOT wrapped on the expression path, so it
   fails closed value-free (`UnsupportedFilter` naming the field) rather than silently mis-filtering —
   use a plain literal comparison, which IS wrapped.
@@ -960,10 +973,16 @@ dep, and the three modules that hard-reference `%Replicant.*{}` structs / `Repli
   duplicate). `true` → `CREATE` — parallel edges (each write is a new edge).
 - **Single-attribute destination PK required.** Edge destinations must have a
   single-attribute primary key (the endpoint match binds `b.<pk> = $dst`).
-- **Fail-closed multitenant.** For an `:attribute` resource, both endpoints are scoped
-  by the tenant discriminator in the `WHERE` *before* the MERGE/CREATE/DELETE
-  rel-pattern (never inlined into a node pattern), and the discriminator is stamped
-  onto the edge. A same-PK destination in another tenant is **not** bound — a
+- **Fail-closed multitenant.** Scoping is decided **per endpoint**: any endpoint
+  (source or destination) on an `:attribute`-multitenant resource is scoped by ITS
+  own discriminator in the `WHERE` *before* the MERGE/CREATE/DELETE rel-pattern
+  (never inlined into a node pattern) — each side's value is that resource's
+  `parse_attribute(to_tenant)` serialization, bound as its own param. This covers
+  the mixed shape where a **global source** links an `:attribute`-multitenant
+  destination: the destination is scoped by its own discriminator and the action
+  requires a tenant (a blank tenant fails closed before any write). When the
+  source is `:attribute`-multitenant, the discriminator is also stamped onto the
+  edge. A same-PK destination in another tenant is **not** bound — a
   cross-tenant edge write 0-rows (`InvalidRelationship`); a cross-tenant edge delete
   0-rows (`StaleRecord`). Deleting an absent edge also fails closed as `StaleRecord`.
 - **Sensitive edge properties (R4).** An `edge` `properties` key naming a `sensitive`

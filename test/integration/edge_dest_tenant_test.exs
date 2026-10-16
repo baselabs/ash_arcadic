@@ -38,6 +38,18 @@ defmodule AshArcadic.Integration.EdgeDestTenantTest do
     assert count_mentions(admin, "g") == 0
   end
 
+  test "an EMPTY to: list succeeds without a tenant (the documented no-op contract)", %{
+    admin: admin
+  } do
+    # Delta-review catch: the destination-only tenancy fix made the blank-tenant check
+    # fire even when there is NOTHING to write — an empty `to:` must stay a success.
+    {:ok, g} = create_global("g")
+
+    assert {:ok, _} = mention(g, [], nil)
+    assert {:ok, _} = Ash.Changeset.for_update(g, :unmention, %{to: []}) |> Ash.update()
+    assert count_mentions(admin, "g") == 0
+  end
+
   test "a cross-tenant destination is NOT reachable by bare PK (create + destroy)", %{
     admin: admin
   } do

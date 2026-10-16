@@ -65,18 +65,25 @@ defmodule AshArcadic.Changes.CreateEdge do
   end
 
   defp write_edges(changeset, record, resource, edge, dest_ids, props) do
-    with {:ok, conn} <- DataLayer.write_conn(resource, changeset),
-         {:ok, tenant} <- EdgeCypher.tenant_spec(resource, edge, changeset) do
-      src_key = EdgeCypher.source_key(resource, record)
-      dest_ids = EdgeCypher.serialize_destination_ids(edge.destination, dest_ids)
-      create_all(conn, record, dest_ids, resource, edge, src_key, props, tenant)
+    # The documented empty-`to:` contract: nil or [] removes no edge and the action SUCCEEDS —
+    # short-circuit BEFORE tenant resolution (a destination-only-:attribute edge with no tenant
+    # and an empty list must not fail; delta-review catch 2026-10-16).
+    if dest_ids == [] do
+      {:ok, record}
     else
-      {:error, reason} ->
-        {:error,
-         InvalidRelationship.exception(
-           relationship: edge.name,
-           message: EdgeCypher.conn_reason(reason)
-         )}
+      with {:ok, conn} <- DataLayer.write_conn(resource, changeset),
+           {:ok, tenant} <- EdgeCypher.tenant_spec(resource, edge, changeset) do
+        src_key = EdgeCypher.source_key(resource, record)
+        dest_ids = EdgeCypher.serialize_destination_ids(edge.destination, dest_ids)
+        create_all(conn, record, dest_ids, resource, edge, src_key, props, tenant)
+      else
+        {:error, reason} ->
+          {:error,
+           InvalidRelationship.exception(
+             relationship: edge.name,
+             message: EdgeCypher.conn_reason(reason)
+           )}
+      end
     end
   end
 
