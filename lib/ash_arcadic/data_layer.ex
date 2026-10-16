@@ -1019,10 +1019,12 @@ defmodule AshArcadic.DataLayer do
   # Runs the kind-appropriate arcadic search with the optional candidate-set `filter:` prepended.
   # `[filter: rids] ++ vs.opts` — NOT `filter: rids ++ vs.opts` (the latter concatenates opts onto
   # the RID list and validate_rids! raises). The malformed guard validates the stash SHAPE, but a
-  # CRAFTED stash (public set_context) can still carry a non-encodable VALUE — a non-UTF8 binary in
-  # tokens/weights/text (a `Jason.EncodeError` on the wire echoes the offending BYTES → Rule-4 leak) —
-  # or a bad opt (`k: -1` → an arcadic `ArgumentError`). `safe_vector_call` rescues those to a
-  # value-free error (the redaction-fail-path class: a value-free wrapper on a new raising sink).
+  # CRAFTED stash (public set_context) can still carry a bad VALUE — a non-number vector element or
+  # bad opt (`k: -1`) raises an arcadic client-side `ArgumentError`, and a non-encodable value (a
+  # non-UTF8 binary in text) returns arcadic >= 1.2's typed `:invalid_params` error (arcadic 1.1
+  # raised `Jason.EncodeError` echoing the bytes). `safe_vector_call` turns the raises into a
+  # value-free error; the typed errors redact through `wrap_vector/1` (the redaction-fail-path
+  # class: a value-free wrapper on a new raising sink).
   defp run_vector_kind(conn, type, %{kind: :dense} = vs, filter_opts) do
     safe_vector_call(fn ->
       Arcadic.Vector.neighbors(
@@ -1056,16 +1058,18 @@ defmodule AshArcadic.DataLayer do
     safe_vector_call(fn -> Arcadic.Vector.fuse(conn, specs, filter_opts ++ vs.opts) end)
   end
 
-  # Value-free redaction backstop: rescue the value-carrying / validation raises the arcadic client
-  # (or the wire encoder) can throw on a crafted value — a `Jason.EncodeError` carries the offending
-  # bytes; an `ArgumentError` from `require_pos_int!`/`require_number!` is an uncaught crash. Both
-  # become a value-free error rather than reaching Ash's generic handler (which would echo the
-  # message). Targeted (not a bare `rescue`) so a genuine ash_arcadic logic bug is NOT masked.
+  # Value-free redaction backstop for arcadic's CLIENT-SIDE validator raises: a bad `k`, a
+  # non-number vector element, or an unknown `fusion:` raises a value-free `ArgumentError`
+  # (`require_pos_int!`/`require_list!`/`require_number!`/`enum!`) — uncaught, it crosses the
+  # callback boundary as a crash. Unencodable param VALUES no longer raise here: arcadic >= 1.2
+  # fails closed at the transport with a typed value-free
+  # `{:error, %Arcadic.Error{reason: :invalid_params}}` (arcadic 1.1 raised `Jason.EncodeError`
+  # with the offending bytes), which `wrap_vector/1` redacts like any other transport error.
+  # Targeted (not a bare `rescue`) so a genuine ash_arcadic logic bug is NOT masked.
   defp safe_vector_call(fun) do
     wrap_vector(fun.())
   rescue
-    _error in [ArgumentError, Jason.EncodeError, Protocol.UndefinedError] ->
-      {:error, vector_failed("vector search failed")}
+    ArgumentError -> {:error, vector_failed("vector search failed")}
   end
 
   defp wrap_vector({:ok, rows}), do: {:ok, rows}
@@ -1919,8 +1923,8 @@ defmodule AshArcadic.DataLayer do
     # The encode-gate covers EVERYTHING that rides the wire: $props (gated per attribute,
     # preserving the attribute-naming contract encode_gate_test pins) AND the atomic-fragment
     # $paramN literals (Expression binds an atomic-RHS literal RAW, so a poisoned non-UTF8
-    # binary there would otherwise crash Jason.EncodeError at the wire with the bytes in the
-    # message — AGENTS.md Rule 4).
+    # binary there would otherwise surface only at the wire — a typed `:invalid_params`
+    # under arcadic >= 1.2, a byte-echoing `Jason.EncodeError` raise on 1.1 (Rule 4).
     with {:ok, atomic_set, atomic_params} <- create_atomic_set(resource, changeset),
          :ok <- encode_gate(resource, props, CreateFailed),
          :ok <- encode_gate(resource, atomic_params, CreateFailed) do
@@ -2044,8 +2048,9 @@ defmodule AshArcadic.DataLayer do
 
   defp do_bulk_create(resource, entries, options) do
     # Fail closed value-free (naming the attribute) if ANY row carries a
-    # non-JSON-encodable value — one poisoned row would otherwise raise
-    # Jason.EncodeError with the bytes in the message at the wire.
+    # non-JSON-encodable value — one poisoned row would otherwise fail only at the
+    # wire (a byte-echoing `Jason.EncodeError` raise on arcadic 1.1; a generic
+    # typed `:invalid_params` on >= 1.2).
     case first_encode_failure(entries) do
       nil ->
         run_bulk_create(resource, entries, options)
@@ -2156,7 +2161,8 @@ defmodule AshArcadic.DataLayer do
     # ON CREATE and ON MATCH params never collide (exactly run_upsert's ordering). Then gate
     # every wire value before any DB touch: `%{"rows" => rows}` (identity + all + set) AND
     # the atomic params (bound RAW by Expression — a poisoned non-UTF8 literal there would
-    # otherwise crash Jason.EncodeError with the bytes in the message, Rule 4).
+    # otherwise surface only at the wire: a typed `:invalid_params` under arcadic >= 1.2, a
+    # byte-echoing `Jason.EncodeError` raise on 1.1 — Rule 4).
     with {:ok, match_set, params} <- upsert_atomic_set(resource, rep_changeset.atomics, %{}),
          {:ok, create_set, params} <-
            upsert_atomic_set(resource, rep_changeset.create_atomics, params),
@@ -2304,8 +2310,9 @@ defmodule AshArcadic.DataLayer do
     # Everything that rides the wire is gated BEFORE any DB touch: $props/$on_match per
     # attribute (props already carries the identity values too; attribute-naming contract
     # preserved) AND the atomic $paramN literals — an atomic-RHS literal is bound RAW by
-    # Expression, so a poisoned non-UTF8 binary there would otherwise crash Jason.EncodeError
-    # with the bytes in the message (Rule 4). BOTH atomic phases fold (V8): changeset.atomics →
+    # Expression, so a poisoned non-UTF8 binary there would otherwise surface only at the
+    # wire (a byte-echoing `Jason.EncodeError` raise on arcadic 1.1; a generic typed
+    # `:invalid_params` on >= 1.2 — Rule 4). BOTH atomic phases fold (V8): changeset.atomics →
     # ON MATCH SET (`atomic_update`, references the matched row), changeset.create_atomics → ON
     # CREATE SET (`atomic_set`, the insert branch — dropping it silently loses the atomic on an
     # upsert-insert). The two share one $paramN accumulator (threaded) so their params never collide.
@@ -2683,7 +2690,7 @@ defmodule AshArcadic.DataLayer do
     with {:ok, set_clause, params} <- Write.build_set(resource, changeset, where_params),
          # Gate EVERY bound value — the $paramN atomic-RHS/WHERE scalars AND the nested
          # "static" map (Jason.encode recurses into it). A poisoned binary in ANY of them
-         # fails closed value-free here instead of leaking bytes via Jason.EncodeError.
+         # fails closed value-free here instead of surfacing as the wire-level encode error.
          :ok <- encode_gate(resource, params, UpdateFailed),
          {:ok, conn} <- query_write_conn(query, resource) do
       label = validated_label(resource)
@@ -2901,8 +2908,9 @@ defmodule AshArcadic.DataLayer do
 
     # Gate the WHERE $paramN scalars before the wire — SYMMETRIC with update_query (whose merged
     # params are gated at do_update_query_statement). Ash's :string cast accepts a non-UTF8 binary,
-    # so a poisoned filter literal reaches params un-gated and would otherwise crash Jason.EncodeError
-    # with the bytes in the message (Rule 4). Value-free QueryFailed, before any conn/DELETE.
+    # so a poisoned filter literal reaches params un-gated and would otherwise surface only
+    # at the wire (a byte-echoing `Jason.EncodeError` raise on arcadic 1.1; a generic typed
+    # `:invalid_params` on >= 1.2 — Rule 4). Value-free QueryFailed, before any conn/DELETE.
     with :ok <- destroy_where_encode_gate(params),
          {:ok, conn} <- query_write_conn(query, resource) do
       label = validated_label(resource)
@@ -3233,7 +3241,7 @@ defmodule AshArcadic.DataLayer do
   # Final wire step: encode-gate the COMPLETE params map ONCE (the `rows` set maps — Jason recurses —
   # plus the atomic/filter `$paramN` scalars and the `$tenant` value), then command. SYMMETRIC with
   # update_query's single encode_gate: any un-encodable value fails closed value-free naming only the
-  # $param KEY, before the wire, never a Jason.EncodeError leaking bytes (AGENTS.md Rule 4).
+  # $param KEY, before the wire — never the wire-level encode failure (AGENTS.md Rule 4 lineage).
   defp emit_update_many(resource, conn, cypher, params) do
     case encode_gate(resource, params, UpdateFailed) do
       :ok ->
@@ -3293,10 +3301,12 @@ defmodule AshArcadic.DataLayer do
 
   # Fail-closed pre-gate for the write surface. serialize_value/2 only base64s
   # TOP-LEVEL binaries; a raw non-UTF8 binary nested inside a `:map`/`:list` value
-  # reaches the wire verbatim, where Req's JSON encoder raises `Jason.EncodeError`
-  # with the bytes in the message — a value leak (AGENTS.md Rule 4) AND an uncaught
-  # crash instead of a value-free {:error, _}. `encode_gate/3` catches it BEFORE any
-  # DB touch and returns a value-free error naming only the offending ATTRIBUTE.
+  # reaches the wire verbatim. There, arcadic >= 1.2 fails closed with a typed
+  # value-free `{:error, %Arcadic.Error{reason: :invalid_params}}` (arcadic 1.1
+  # raised `Jason.EncodeError` echoing the bytes — the AGENTS.md Rule 4 leak this
+  # gate was ported against). The gate stays FIRST because its error names the
+  # offending ATTRIBUTE — a diagnosis the wire-level class error cannot give —
+  # and because it fires without a wasted round trip.
   # (Ported from the ash_age sibling's encode_check/first_encode_failure.)
   defp encode_gate(resource, props, error_module) do
     case encode_check(props) do
@@ -3416,9 +3426,10 @@ defmodule AshArcadic.DataLayer do
 
   # Value-free encode gate for READ params (build_where/to_cypher-derived, so caller-poisonable). A
   # non-UTF8 binary nested in a `:map`/`:list` filter literal is not base64'd by serialize_value →
-  # reaches the wire, where Req/Jason raises `Jason.EncodeError` with the bytes in its message
-  # (AGENTS.md Rule 4) AND an uncaught crash crosses the callback boundary. This catches it BEFORE the
-  # wire and returns a value-free %QueryFailed{}. Read params are POSITIONAL ($paramN), so the reason
+  # reaches the wire, where arcadic >= 1.2 answers a typed value-free `:invalid_params` error
+  # (arcadic 1.1 raised `Jason.EncodeError` with the bytes in its message — AGENTS.md Rule 4). This
+  # catches it BEFORE the wire, so the failure names its class positionally instead of a generic
+  # transport error after a wasted round trip. Read params are POSITIONAL ($paramN), so the reason
   # names the failure CLASS, never an attribute or value (encode_error_reason/1's "attribute $paramN…"
   # would be value-free but semantically wrong for a read).
   defp read_encode_gate(params) do

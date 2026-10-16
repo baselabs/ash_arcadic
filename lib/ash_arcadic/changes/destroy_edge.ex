@@ -79,8 +79,9 @@ defmodule AshArcadic.Changes.DestroyEdge do
 
     # Rule-4 full-param encode-gate BEFORE the command (spec §6.3 — the gate runs before
     # EVERY edge command, create AND destroy): an unencodable param (e.g. a raw non-UTF8
-    # binary destination id) must fail closed value-free, never reach the transport and
-    # raise Jason.EncodeError with the bytes in the message.
+    # binary destination id) must fail closed value-free, never surface at the wire —
+    # arcadic >= 1.2 answers only a generic typed `:invalid_params` there (arcadic 1.1
+    # raised `Jason.EncodeError` with the bytes in the message).
     case EdgeCypher.encode_gate(params) do
       {:error, key} ->
         {:error,

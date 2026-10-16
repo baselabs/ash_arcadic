@@ -21,6 +21,19 @@ defmodule AshArcadic.DataLayer.RedactDbErrorTest do
     assert reason =~ "closed"
   end
 
+  # arcadic >= 1.2 returns this typed error when a param value fails JSON encoding
+  # (value-free at the source: the offending bytes ride only `detail`, never the message).
+  # The generic atom render must surface it value-free with no special-casing needed.
+  test "the arcadic 1.2 :invalid_params reason renders value-free" do
+    err = %Arcadic.Error{
+      reason: :invalid_params,
+      message: "params or statement failed value encoding"
+    }
+
+    reason = AshArcadic.DataLayer.redact_db_error(err)
+    assert reason =~ "invalid_params"
+  end
+
   test "any other term is redacted to a static value-free reason (never inspected)" do
     reason = AshArcadic.DataLayer.redact_db_error({:leak, "secret@user.com"})
     assert is_binary(reason)

@@ -46,7 +46,7 @@ defmodule AshArcadic.MixProject do
       {:ash, "~> 3.11"},
       {:spark, ">= 2.3.3 and < 3.0.0-0"},
       {:splode, "~> 0.3"},
-      {:arcadic, "~> 1.1"},
+      {:arcadic, "~> 1.2"},
       # The CDC transport for the optional `AshArcadic.Replicant.*` sink. `optional: true`
       # so non-CDC hosts don't pull it (nor its Postgrex replication deps); a host that
       # uses the sink adds `replicant` to its own deps.

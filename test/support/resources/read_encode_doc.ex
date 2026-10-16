@@ -2,9 +2,10 @@ defmodule AshArcadic.Test.ReadEncodeDoc do
   @moduledoc """
   Slice 11 read-path encode-gate test resource (LIVE client, `:map` attribute). A non-UTF8 binary
   NESTED in a `:map` filter literal is not base64'd by `serialize_value` (only top-level binaries are),
-  so it reaches the wire where Req/Jason raises `Jason.EncodeError` with the bytes in its message —
-  a value leak (AGENTS.md Rule 4) AND an uncaught crash. `read_encode_gate/1` catches it value-free
-  BEFORE the wire at every read `Arcadic.query` site.
+  so it reaches the wire, where arcadic >= 1.2 answers a typed value-free `:invalid_params` (arcadic
+  1.1 raised `Jason.EncodeError` with the bytes in its message — AGENTS.md Rule 4).
+  `read_encode_gate/1` catches it value-free BEFORE the wire at every read `Arcadic.query` site,
+  naming the failure class instead of relying on the wire-level error.
   """
   use Ash.Resource, domain: AshArcadic.Test.Domain, data_layer: AshArcadic.DataLayer
 

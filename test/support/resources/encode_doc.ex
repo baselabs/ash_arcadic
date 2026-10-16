@@ -2,8 +2,9 @@ defmodule AshArcadic.Test.EncodeDoc do
   @moduledoc false
   # A resource with a `:map` attribute — the vector for the JSON-encode leak: a raw
   # non-UTF8 binary nested inside a `:map`/`:list` value is not base64'd by
-  # serialize_value (only top-level binaries are), so it reaches the wire and
-  # Jason.EncodeError would embed the bytes in its message (AGENTS.md Rule 4).
+  # serialize_value (only top-level binaries are), so it reaches the wire, where
+  # arcadic >= 1.2 answers a typed value-free `:invalid_params` (arcadic 1.1 raised
+  # `Jason.EncodeError` embedding the bytes in its message — AGENTS.md Rule 4).
   use Ash.Resource, domain: AshArcadic.Test.Domain, data_layer: AshArcadic.DataLayer
 
   arcade do

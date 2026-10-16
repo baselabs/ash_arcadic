@@ -111,7 +111,8 @@ defmodule AshArcadic.Changes.EdgeCypher do
   # value; return `{:error, key}` (naming only the attribute/param KEY, never the
   # value) for the first non-encodable one, else `:ok`. A raw non-UTF8 binary nested
   # in a `:map`/`:list` value (e.g. a non-sensitive `:map` property argument) would
-  # otherwise raise `Jason.EncodeError` with the bytes in the message at the wire.
+  # otherwise surface only at the wire — a generic typed `:invalid_params` under
+  # arcadic >= 1.2, a byte-echoing `Jason.EncodeError` raise on 1.1.
   # Mirrors AshArcadic.DataLayer.encode_check + traverse.ex check_ids_encodable.
   def encode_gate(params) do
     Enum.find_value(params, :ok, fn {key, value} ->

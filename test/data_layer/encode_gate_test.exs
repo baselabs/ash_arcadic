@@ -8,10 +8,11 @@ defmodule AshArcadic.DataLayer.EncodeGateTest do
 
   # A raw non-UTF8 binary nested in a :map value. serialize_value/2 leaves it
   # verbatim (only TOP-LEVEL binaries are base64'd), so it reaches the JSON encoder
-  # at the wire. Without the pre-gate, Arcadic.command → Req :json → Jason RAISES
-  # `Jason.EncodeError` whose message embeds the bytes ("invalid byte 0xFF in
-  # <<255, ...>>") — a value leak (AGENTS.md Rule 4) AND an uncaught crash crossing
-  # the callback boundary instead of a value-free {:error, _}.
+  # at the wire. Without the pre-gate, the failure surfaces only there: a typed
+  # value-free `:invalid_params` under arcadic >= 1.2, or (arcadic 1.1) a raised
+  # `Jason.EncodeError` whose message embeds the bytes — a value leak (AGENTS.md
+  # Rule 4) AND an uncaught crash across the callback boundary. The gate returns a
+  # value-free {:error, _} naming the attribute instead.
   @poison %{"k" => <<0xFF, 0x00, 0x42>>}
 
   # The sentinel byte 0xFF renders as "255" in the raised Jason message; a
@@ -61,7 +62,7 @@ defmodule AshArcadic.DataLayer.EncodeGateTest do
   # rows}` param at line 1629 BEFORE bulk_conn, so the poison never reaches the wire. The gate keys on
   # the top-level param ("rows"), so the reason names it rather than "data" — the anchor is the
   # value-free encode-gate signature, not the attribute name. Deleting that encode_gate line lets the
-  # poison reach Arcadic.command → Jason.EncodeError with the bytes → RED (leak or crash).
+  # poison reach the wire → the generic typed encode error (no attribute diagnosis) → RED.
   test "bulk upsert fails closed value-free on a nested non-encodable binary (new wire surface)" do
     cs = %Ash.Changeset{resource: EncodeDoc, attributes: %{id: "e1", data: @poison}}
 
@@ -79,7 +80,7 @@ defmodule AshArcadic.DataLayer.EncodeGateTest do
   # update_many is the OTHER new wire surface: emit_update_many gates the COMPLETE params map at
   # line 2565 before Arcadic.command. Non-multitenant EncodeDoc on MockClient resolves the write conn
   # (passthrough) but never touches the DB — the gate fires first. Deleting that encode_gate line lets
-  # the poison reach the wire → Jason.EncodeError with the bytes → RED.
+  # the poison reach the wire → the generic typed encode error (no attribute diagnosis) → RED.
   test "update_many fails closed value-free on a nested non-encodable binary (new wire surface)" do
     cs = %Ash.Changeset{
       resource: EncodeDoc,

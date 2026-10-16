@@ -402,7 +402,9 @@ defmodule AshArcadic.ManualRelationships.Traverse do
       # Value-free read encode-gate (F2), shared with the flat/aggregate/combination read sites via
       # DataLayer.gated_query/3. The $ids are already checked at check_ids_encodable/1 above; this
       # backstops the FULL params map ($tenant included) before the wire — a non-encodable value
-      # returns a value-free %QueryFailed{}, never a Jason.EncodeError echoing the bytes.
+      # returns a value-free %QueryFailed{}, never the wire-level encode failure it would
+      # otherwise become (a byte-echoing `Jason.EncodeError` raise on arcadic 1.1; a generic
+      # typed `:invalid_params` on >= 1.2).
       case DataLayer.gated_query(conn, cypher, params) do
         {:ok, rows} ->
           reach_spec = %{
@@ -583,9 +585,9 @@ defmodule AshArcadic.ManualRelationships.Traverse do
   end
 
   # Fail closed value-free if any serialized $ids value is not JSON-encodable — without
-  # this, Req/Jason raises `Jason.EncodeError` with the offending bytes in its message at
-  # the wire (AGENTS.md Rule 4) AND an uncaught crash crosses the callback boundary
-  # instead of a redacted `{:error, _}`. Mirrors the write path's `encode_check`.
+  # this, the failure surfaces only at the wire (a byte-echoing `Jason.EncodeError` raise
+  # on arcadic 1.1 — AGENTS.md Rule 4; a generic typed `:invalid_params` on >= 1.2).
+  # Mirrors the write path's `encode_check`.
   defp check_ids_encodable(ids) do
     case first_unencodable_id_field(ids) do
       nil -> :ok
