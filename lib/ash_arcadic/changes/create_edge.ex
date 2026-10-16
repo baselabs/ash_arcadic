@@ -65,13 +65,12 @@ defmodule AshArcadic.Changes.CreateEdge do
   end
 
   defp write_edges(changeset, record, resource, edge, dest_ids, props) do
-    case DataLayer.write_conn(resource, changeset) do
-      {:ok, conn} ->
-        tenant = EdgeCypher.tenant_spec(resource, edge, changeset)
-        src_key = EdgeCypher.source_key(resource, record)
-        dest_ids = EdgeCypher.serialize_destination_ids(edge.destination, dest_ids)
-        create_all(conn, record, dest_ids, resource, edge, src_key, props, tenant)
-
+    with {:ok, conn} <- DataLayer.write_conn(resource, changeset),
+         {:ok, tenant} <- EdgeCypher.tenant_spec(resource, edge, changeset) do
+      src_key = EdgeCypher.source_key(resource, record)
+      dest_ids = EdgeCypher.serialize_destination_ids(edge.destination, dest_ids)
+      create_all(conn, record, dest_ids, resource, edge, src_key, props, tenant)
+    else
       {:error, reason} ->
         {:error,
          InvalidRelationship.exception(
@@ -155,7 +154,14 @@ defmodule AshArcadic.Changes.CreateEdge do
 
     {src_where, src_params} = EdgeCypher.source_where(src_key)
     {tenant_where, tenant_params} = EdgeCypher.tenant_where(tenant)
-    stamp = if tenant, do: ", e.#{tenant_attr(tenant)} = $tenant", else: ""
+    # Stamp the edge with the SOURCE's discriminator (the same attribute traversal's edge
+    # scoping reads) — only when the source itself is `:attribute`-scoped; a
+    # destination-only scope carries no edge discriminator (consistent with traverse's
+    # edge predicate, which keys on the source's strategy).
+    stamp =
+      if tenant[:src],
+        do: ", e.#{tenant_attr(tenant)} = $tenant",
+        else: ""
 
     arrow =
       case edge.direction do
@@ -228,5 +234,5 @@ defmodule AshArcadic.Changes.CreateEdge do
 
   defp argument_types(_changeset), do: %{}
 
-  defp tenant_attr({src_attr, _dest_attr, _value}), do: Identifier.validate!(to_string(src_attr))
+  defp tenant_attr(%{src: {src_attr, _bound}}), do: Identifier.validate!(to_string(src_attr))
 end

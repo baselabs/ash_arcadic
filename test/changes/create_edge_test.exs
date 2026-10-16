@@ -25,12 +25,15 @@ defmodule AshArcadic.Changes.CreateEdgeTest do
           %{"id" => "p1"},
           "p2",
           %{"since" => "2020"},
-          {:tenant, :tenant, "org1"}
+          %{src: {:tenant, "org1"}, dest: {:tenant, "org1"}}
         )
 
       # WHERE scopes endpoints BEFORE MERGE (the locked isolation invariant)
       assert cypher =~ "MATCH (a:EAPerson), (b:EAPerson) WHERE a.id = $src_id AND b.id = $dst"
-      assert cypher =~ "AND a.tenant = $tenant AND b.tenant = $tenant MERGE (a)-[e:KNOWS]->(b)"
+
+      assert cypher =~
+               "AND a.tenant = $tenant AND b.tenant = $tenant_dest MERGE (a)-[e:KNOWS]->(b)"
+
       assert cypher =~ "ON CREATE SET e += $props, e.tenant = $tenant"
       assert cypher =~ "ON MATCH SET e += $props"
       assert cypher =~ "RETURN e"
@@ -39,6 +42,7 @@ defmodule AshArcadic.Changes.CreateEdgeTest do
       assert params["src_id"] == "p1"
       assert params["dst"] == "p2"
       assert params["tenant"] == "org1"
+      assert params["tenant_dest"] == "org1"
       assert params["props"] == %{"since" => "2020"}
     end
 
@@ -66,11 +70,11 @@ defmodule AshArcadic.Changes.CreateEdgeTest do
           %{"id" => "p1"},
           "p2",
           %{"since" => "2020"},
-          {:tenant, :tenant, "org1"}
+          %{src: {:tenant, "org1"}, dest: {:tenant, "org1"}}
         )
 
       assert cypher =~
-               "WHERE a.id = $src_id AND b.id = $dst AND a.tenant = $tenant AND b.tenant = $tenant"
+               "WHERE a.id = $src_id AND b.id = $dst AND a.tenant = $tenant AND b.tenant = $tenant_dest"
 
       assert cypher =~ "CREATE (a)-[e:KNOWS]->(b) SET e += $props, e.tenant = $tenant RETURN e"
       refute cypher =~ "MERGE"

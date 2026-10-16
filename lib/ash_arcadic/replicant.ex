@@ -89,6 +89,8 @@ defmodule AshArcadic.Replicant do
       AshArcadic.Replicant.Verifiers.ValidateSingleDbTenancy,
       AshArcadic.Replicant.Verifiers.ValidateWriteActionsAuthorized,
       AshArcadic.Replicant.Verifiers.ValidatePrimaryKeyNotSensitive,
-      AshArcadic.Replicant.Verifiers.ValidatePrimaryKeyNotSkipped
+      AshArcadic.Replicant.Verifiers.ValidatePrimaryKeyNotSkipped,
+      AshArcadic.Replicant.Verifiers.ValidateSensitiveSkipped,
+      AshArcadic.Replicant.Verifiers.ValidateArcadeDataLayer
     ]
 end

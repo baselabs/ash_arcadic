@@ -33,6 +33,8 @@ defmodule AshArcadic.Replicant.Resolver do
   alias AshArcadic.Replicant.Error
   alias AshArcadic.Replicant.Info
 
+  require Logger
+
   @type source_key :: {schema :: String.t(), table :: String.t()}
 
   @spec build_index([module()]) ::
@@ -140,11 +142,41 @@ defmodule AshArcadic.Replicant.Resolver do
     col = to_existing_atom(source_col)
 
     cond do
-      is_nil(col) -> :skip
-      col in skip -> :skip
-      col in sensitive -> raise Error.exception(reason: :sensitive_plaintext, resource: resource)
-      MapSet.member?(attrs, col) -> {:ok, col}
-      true -> :skip
+      is_nil(col) ->
+        # Schema drift (a NEW upstream column with no mapped attribute yet) is
+        # indistinguishable here from a deliberately-unmapped column — both drop — but
+        # dropping SILENTLY while the checkpoint advances hides the drift until someone
+        # compares schemas by hand. Warn value-free ONCE per {resource, column} per BEAM
+        # (structural names only: resource + column name, never a row value).
+        warn_unmapped_once(resource, source_col)
+        :skip
+
+      col in skip ->
+        :skip
+
+      col in sensitive ->
+        raise Error.exception(reason: :sensitive_plaintext, resource: resource)
+
+      MapSet.member?(attrs, col) ->
+        {:ok, col}
+
+      true ->
+        warn_unmapped_once(resource, source_col)
+        :skip
+    end
+  end
+
+  defp warn_unmapped_once(resource, source_col) do
+    key = {__MODULE__, :unmapped_column, resource, source_col}
+
+    unless :persistent_term.get(key, false) do
+      :persistent_term.put(key, true)
+
+      Logger.warning(
+        "AshArcadic Replicant: dropping unmapped source column #{inspect(source_col)} " <>
+          "on #{inspect(resource)} (declare the attribute to mirror it, or add it to " <>
+          "the replicant skip list to silence this)"
+      )
     end
   end
 

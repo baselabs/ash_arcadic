@@ -283,4 +283,104 @@ defmodule AshArcadic.Replicant.VerifierTest do
       end
     end
   end
+
+  # Check 7 (2026-10-16) — a BINARY-STORAGE sensitive attribute passes ValidateSensitive
+  # R2 (binary storage is its blessed shape) but the sink still halts delivery
+  # (:sensitive_plaintext) on the first row carrying that column, because the Postgres
+  # payload is plaintext. That contradiction was decidable only at runtime; the
+  # ValidateSensitiveSkipped verifier closes it to compile time.
+  test "a sensitive attribute not in replicant skip halts at runtime => compile error" do
+    err =
+      assert_dsl_error %Spark.Error.DslError{path: [:replicant, :skip]} do
+        defmodule Elixir.AshArcadic.Test.ReplicantSensitiveUnskipped do
+          use Ash.Resource,
+            domain: AshArcadic.Test.Domain,
+            validate_domain_inclusion?: false,
+            data_layer: AshArcadic.DataLayer,
+            extensions: [AshArcadic.Replicant]
+
+          arcade do
+            client(AshArcadic.Test.MockClient)
+            sensitive([:secret])
+          end
+
+          replicant do
+            source_table("orders")
+          end
+
+          attributes do
+            uuid_primary_key :id
+            attribute :secret, :binary
+          end
+
+          actions do
+            defaults [:read]
+          end
+        end
+      end
+
+    assert err.message =~ "sensitive_plaintext"
+    assert err.message =~ "skip"
+  end
+
+  test "a sensitive attribute IN the replicant skip list compiles clean" do
+    refute_dsl_errors do
+      defmodule Elixir.AshArcadic.Test.ReplicantSensitiveSkipped do
+        use Ash.Resource,
+          domain: AshArcadic.Test.Domain,
+          validate_domain_inclusion?: false,
+          data_layer: AshArcadic.DataLayer,
+          extensions: [AshArcadic.Replicant]
+
+        arcade do
+          client(AshArcadic.Test.MockClient)
+          sensitive([:secret])
+        end
+
+        replicant do
+          source_table("orders")
+          skip([:secret])
+        end
+
+        attributes do
+          uuid_primary_key :id
+          attribute :secret, :binary
+        end
+
+        actions do
+          defaults [:read]
+        end
+      end
+    end
+  end
+
+  # Check 8 (2026-10-16) — the sink mirrors through AshArcadic's own write machinery; a
+  # replicant extension on a different data layer compiled clean and failed only at sink
+  # runtime (scrubbed :sink_failed). Statically decidable => compile error.
+  test "a replicant resource on a non-AshArcadic data layer => compile error" do
+    err =
+      assert_dsl_error %Spark.Error.DslError{path: [:replicant]} do
+        defmodule Elixir.AshArcadic.Test.ReplicantEtsMirror do
+          use Ash.Resource,
+            domain: AshArcadic.Test.Domain,
+            validate_domain_inclusion?: false,
+            data_layer: Ash.DataLayer.Ets,
+            extensions: [AshArcadic.Replicant]
+
+          replicant do
+            source_table("orders")
+          end
+
+          attributes do
+            uuid_primary_key :id
+          end
+
+          actions do
+            defaults [:read]
+          end
+        end
+      end
+
+    assert err.message =~ "AshArcadic.DataLayer"
+  end
 end

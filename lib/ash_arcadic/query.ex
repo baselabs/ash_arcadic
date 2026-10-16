@@ -390,14 +390,16 @@ defmodule AshArcadic.Query do
   defp build_skip(0), do: []
   defp build_skip(offset) when is_integer(offset) and offset > 0, do: ["SKIP #{offset}"]
 
-  defp build_skip(offset) do
-    raise ArgumentError, "invalid offset: #{inspect(offset)} (expected a non-negative integer)"
+  defp build_skip(_offset) do
+    # Static message (Rule 4 posture): the term is caller-reachable on hand-crafted ingress
+    # and must not ride the raise.
+    raise ArgumentError, "invalid offset (expected a non-negative integer)"
   end
 
   defp build_limit(nil), do: []
   defp build_limit(limit) when is_integer(limit) and limit >= 0, do: ["LIMIT #{limit}"]
 
-  defp build_limit(limit) do
-    raise ArgumentError, "invalid limit: #{inspect(limit)} (expected a non-negative integer)"
+  defp build_limit(_limit) do
+    raise ArgumentError, "invalid limit (expected a non-negative integer)"
   end
 end

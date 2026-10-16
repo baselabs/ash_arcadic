@@ -257,4 +257,30 @@ defmodule AshArcadic.DataLayer.TimeoutTest do
       assert [{:read, 5_000, 5_000}] = CapturingTransport.captures()
     end
   end
+
+  describe "update_many per-call timeout (write_conn parity)" do
+    test "a changeset timeout on the update_many rep reaches the wire, beating the floor" do
+      # Without the per-call derivation, update_many resolved its conn via
+      # write_conn_for_tenant directly and silently dropped the changeset timeout
+      # (only the resource/client default applied) — the one write path out of parity.
+      cs = %Ash.Changeset{
+        resource: PlainDoc,
+        data: %PlainDoc{id: Ash.UUID.generate()},
+        attributes: %{name: "x"},
+        atomics: [],
+        filter: nil,
+        timeout: 777
+      }
+
+      assert {:ok, []} =
+               AshArcadic.DataLayer.update_many(PlainDoc, [cs], %{
+                 tenant: nil,
+                 return_records?: false,
+                 calculations: []
+               })
+
+      # The write fired (then failed on the 0-row decode) with BOTH bounds = 777.
+      assert [{:write, 777, 777}] = CapturingTransport.captures()
+    end
+  end
 end

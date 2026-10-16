@@ -22,7 +22,7 @@ defmodule AshArcadic.DataLayer.RedactDbErrorTest do
   end
 
   # arcadic >= 1.2 returns this typed error when a param value fails JSON encoding
-  # (value-free at the source: the offending bytes ride only `detail`, never the message).
+  # (value-free at the source: a static message, no value-derived detail attached).
   # The generic atom render must surface it value-free with no special-casing needed.
   test "the arcadic 1.2 :invalid_params reason renders value-free" do
     err = %Arcadic.Error{

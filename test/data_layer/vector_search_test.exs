@@ -170,6 +170,75 @@ defmodule AshArcadic.DataLayer.VectorSearchTest do
       assert message(result) =~ "malformed"
     end
 
+    # Cross-vendor catch (2026-10-16): `[_ | _]` alone matches an IMPROPER list, which passed
+    # this guard and crashed value-echoing (FunctionClauseError inspecting the tail) inside
+    # arcadic's Enum traversal. The `length/1` guard rejects it here, value-free.
+    test "an improper list in query_vector fails closed malformed, never crashes (value-free)" do
+      result = run(vquery(vector_search: %{@dense | query_vector: [1.0 | %{secret: "CANARY"}]}))
+      assert {:error, _} = result
+      assert message(result) =~ "malformed"
+      refute message(result) =~ "CANARY"
+    end
+
+    test "an improper list in sparse query_tokens fails closed malformed, never crashes" do
+      result = run(vquery(vector_search: %{@sparse | query_tokens: [1 | %{secret: "CANARY"}]}))
+      assert {:error, _} = result
+      assert message(result) =~ "malformed"
+      refute message(result) =~ "CANARY"
+    end
+
+    test "an improper list in a hybrid dense arm fails closed malformed, never crashes" do
+      bad_arm = %{kind: :dense, property: :embedding, query_vector: [1.0 | %{s: "CANARY"}], k: 3}
+      result = run(vquery(vector_search: %{@hybrid | arms: [bad_arm, Enum.at(@hybrid.arms, 1)]}))
+      assert {:error, _} = result
+      assert message(result) =~ "malformed"
+      refute message(result) =~ "CANARY"
+    end
+
+    test "an improper hybrid ARMS list itself fails closed malformed, never crashes" do
+      # `Enum.all?/2` in the hybrid guard body would crash on an improper arms list.
+      result =
+        run(vquery(vector_search: %{@hybrid | arms: [hd(@hybrid.arms) | %{evil: "CANARY"}]}))
+
+      assert {:error, _} = result
+      assert message(result) =~ "malformed"
+      refute message(result) =~ "CANARY"
+    end
+
+    # Cross-vendor + same-family catch (2026-10-16): a stash that is neither a map nor nil
+    # previously fell through the is_map dispatch to the ORDINARY read head — the vector
+    # request (and its k bound) silently vanished. It must fail closed instead.
+    test "a non-map, non-nil stash fails closed malformed (never silently an ordinary read)" do
+      for junk <- ["dense", [1.0, 2.0], {:dense, :tuple}, 3] do
+        result = run(vquery(vector_search: junk))
+
+        assert {:error, _} = result,
+               "a #{inspect(junk)} stash must not fall through to a plain read"
+
+        assert message(result) =~ "malformed"
+      end
+    end
+
+    test "a nil stash is an ordinary read, not malformed (nil is the no-vector-search value)" do
+      # Non-multitenant VectorMockDoc on MockClient: a nil-stash query takes the ORDINARY read
+      # head (whose conn resolution fails against the unreachable MockClient URL with a
+      # TRANSPORT reason) — not the new malformed clause. Every non-vector unit test in this
+      # suite carries an implicit nil stash too; this pins the boundary explicitly.
+      query =
+        struct(%AshArcadic.Query{
+          resource: AshArcadic.Test.VectorMockDoc,
+          label: "VectorMockDoc",
+          tenant: nil,
+          filters: [],
+          vector_search: nil
+        })
+
+      assert {:error, err} = AshArcadic.DataLayer.run_query(query, AshArcadic.Test.VectorMockDoc)
+      msg = Exception.message(err)
+      refute msg =~ "malformed"
+      assert msg =~ "transport"
+    end
+
     test "a non-boolean allow_global? is rejected — cannot open a global kNN" do
       # A hand-crafted truthy non-boolean must NOT resolve to :global (CV-2).
       malformed = %{

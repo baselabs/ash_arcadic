@@ -23,6 +23,45 @@ defmodule AshArcadic.Cast do
     if binary_storage_spec?(spec), do: Base.encode64(value), else: value
   end
 
+  # `:map`-storage values ride the wire as a CANONICAL JSON STRING (keys recursively sorted, so
+  # equal maps always encode to the SAME string — equality/in filters on new-format rows are
+  # consistent). Why: ArcadeDB's 26.10 line enforces the openCypher property-value rule — property
+  # values must be primitives or arrays of primitives — so a map-valued property write that ≤26.9
+  # servers stored as an embedded document is now rejected 400 (`InvalidPropertyTypeException`;
+  # SQL keeps MAP first-class but this data layer writes openCypher). A JSON string is a legal
+  # property value on EVERY supported server version, and it also lifts the old 32-level server
+  # nesting cap. On UNENCODABLE content (a non-UTF8 binary nested inside) the encoder returns
+  # :error and the value passes through UNCHANGED — the pre-wire encode gates then reject it
+  # value-free naming the attribute (Rule 4), exactly as they did when maps rode the wire raw.
+  def serialize_value(value, spec) when is_map(value) do
+    case storage_class(spec) do
+      :map_json ->
+        case encode_canonical_json(value) do
+          {:ok, json} -> json
+          :error -> value
+        end
+
+      _ ->
+        value
+    end
+  end
+
+  # `{:array, :map}` storage: element-wise — the array stays a server-visible LIST (arrays of
+  # primitives are legal property values), each map element becoming its canonical JSON string.
+  # Same soft-fail contract: one unencodable element returns the ORIGINAL list for the gates.
+  def serialize_value(value, spec) when is_list(value) do
+    case storage_class(spec) do
+      :array_of_map_json ->
+        case encode_canonical_list(value) do
+          {:ok, encoded} -> encoded
+          :error -> value
+        end
+
+      _ ->
+        value
+    end
+  end
+
   def serialize_value(value, _spec), do: value
 
   @doc "Decodes a JSON scalar back to its Ash attribute value, typed by `{type, constraints}`."
@@ -35,7 +74,29 @@ defmodule AshArcadic.Cast do
       :time -> decode_time(value)
       :decimal -> decode_decimal(value)
       :binary -> decode_binary(value)
+      :map_json -> decode_map_json(value)
       :other -> value
+    end
+  end
+
+  # New-format rows decode the canonical JSON string; rows stored as embedded documents by
+  # ash_arcadic <= 1.1 on a <=26.9 server come back as maps and pass through unchanged.
+  def load_value(value, _spec) when is_map(value), do: value
+
+  # `{:array, :map}` rows: a list of canonical JSON strings decodes element-wise (nil kept);
+  # a list of maps (legacy embedded rows) passes through unchanged.
+  def load_value(value, spec) when is_list(value) do
+    case storage_class(spec) do
+      :array_of_map_json ->
+        Enum.map(value, fn
+          %{} = element -> element
+          nil -> nil
+          element when is_binary(element) -> decode_map_json(element)
+          element -> element
+        end)
+
+      _ ->
+        value
     end
   end
 
@@ -187,6 +248,93 @@ defmodule AshArcadic.Cast do
     end
   end
 
+  # Lenient like every other decode arm: a non-JSON string (a legacy plain-string value, or a
+  # corrupted row) passes through raw rather than erroring mid-load.
+  defp decode_map_json(value) do
+    case Jason.decode(value) do
+      {:ok, decoded} -> decoded
+      {:error, _} -> value
+    end
+  end
+
+  # Canonical JSON: identical output for identical maps regardless of key insertion/hash order —
+  # maps render as sorted `"key":value` fragment lists, so the encoding is a pure function of the
+  # key-value SET (the equality law `serialize_value(m) == serialize_value(m') when m == m'`).
+  # Uses Jason's tuple form per fragment so a non-UTF8 binary/atom-key failure is a SOFT :error
+  # (the caller passes the original value through for the pre-wire encode gates), never a raise.
+  defp encode_canonical_json(value), do: canonical_value(value)
+
+  defp encode_canonical_list(list) do
+    list
+    |> Enum.reduce_while({:ok, []}, fn element, {:ok, acc} ->
+      case canonical_value(element) do
+        {:ok, encoded} -> {:cont, {:ok, [encoded | acc]}}
+        :error -> {:halt, :error}
+      end
+    end)
+    |> case do
+      {:ok, encoded} -> {:ok, Enum.reverse(encoded)}
+      :error -> :error
+    end
+  end
+
+  # Temporal/decimal leaves serialize exactly as Jason encodes them (ISO8601 / plain string), so
+  # a map written on <=26.9 servers (raw-map wire form) and the same map written as canonical
+  # JSON agree element-for-element. (Struct clauses precede the is_map clause — structs ARE maps.)
+  defp canonical_value(%DateTime{} = v), do: {:ok, inspect_json(DateTime.to_iso8601(v))}
+  defp canonical_value(%NaiveDateTime{} = v), do: {:ok, inspect_json(NaiveDateTime.to_iso8601(v))}
+  defp canonical_value(%Date{} = v), do: {:ok, inspect_json(Date.to_iso8601(v))}
+  defp canonical_value(%Time{} = v), do: {:ok, inspect_json(Time.to_iso8601(v))}
+  defp canonical_value(%Decimal{} = v), do: {:ok, inspect_json(Decimal.to_string(v, :normal))}
+
+  defp canonical_value(map) when is_map(map) do
+    map
+    |> Enum.reduce_while({:ok, []}, fn {key, value}, {:ok, acc} ->
+      with {:ok, key_json} <- canonical_key(key),
+           {:ok, value_json} <- canonical_value(value) do
+        {:cont, {:ok, ["#{key_json}:#{value_json}" | acc]}}
+      else
+        :error -> {:halt, :error}
+      end
+    end)
+    |> case do
+      {:ok, fragments} -> {:ok, "{" <> Enum.join(Enum.sort(fragments), ",") <> "}"}
+      :error -> :error
+    end
+  end
+
+  defp canonical_value(list) when is_list(list) do
+    case encode_canonical_list(list) do
+      {:ok, encoded} -> {:ok, "[" <> Enum.join(encoded, ",") <> "]"}
+      :error -> :error
+    end
+  end
+
+  defp canonical_value(nil), do: {:ok, "null"}
+  defp canonical_value(true), do: {:ok, "true"}
+  defp canonical_value(false), do: {:ok, "false"}
+  defp canonical_value(v) when is_number(v), do: encode_json_scalar(v)
+  defp canonical_value(v) when is_binary(v), do: encode_json_scalar(v)
+  # Jason encodes bare atom VALUES as strings; atoms as map keys go through canonical_key.
+  defp canonical_value(v) when is_atom(v), do: encode_json_scalar(Atom.to_string(v))
+  defp canonical_value(_other), do: :error
+
+  defp canonical_key(key) when is_binary(key), do: encode_json_scalar(key)
+  defp canonical_key(key) when is_atom(key), do: encode_json_scalar(Atom.to_string(key))
+  defp canonical_key(_other), do: :error
+
+  defp inspect_json(s), do: Jason.encode!(s)
+
+  # Normalizes Jason's {:error, %Jason.EncodeError{}} (whose message carries the offending
+  # bytes) to the soft :error the canonical encoder's callers branch on — the value NEVER
+  # rides out of this function.
+  defp encode_json_scalar(scalar) do
+    case Jason.encode(scalar) do
+      {:ok, encoded} -> {:ok, encoded}
+      {:error, _} -> :error
+    end
+  end
+
   defp binary_storage_spec?(spec) do
     case normalize_spec(spec) do
       {type, constraints} -> binary_storage?(type, constraints)
@@ -213,6 +361,12 @@ defmodule AshArcadic.Cast do
   defp classify(:time_usec), do: :time
   defp classify(:decimal), do: :decimal
   defp classify(:binary), do: :binary
+
+  # The map-family storage classes (see serialize_value's :map comment): `:map` (also the
+  # storage of :struct/:keyword/:tuple/:union — the same openCypher property-value rule hits
+  # them all) and `{:array, :map}`.
+  defp classify(:map), do: :map_json
+  defp classify({:array, :map}), do: :array_of_map_json
   defp classify(_other), do: :other
 
   # `nil` means "no type info" (a defensive direct call, not a resource attribute):

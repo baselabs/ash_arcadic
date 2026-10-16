@@ -39,7 +39,7 @@ defmodule AshArcadic.ReplicantSink do
   `Replicant.start_link/1` (hard compile-time dependencies), so those three modules are
   **compile-gated** on `if Code.ensure_loaded?(Replicant.Sink)` — a non-CDC host builds
   ash_arcadic without `replicant` and that subtree simply compiles away. A host that uses
-  the CDC sink adds `{:replicant, "~> 0.3"}` to its own deps; `use AshArcadic.ReplicantSink`
+  the CDC sink adds `{:replicant, "~> 1.2"}` to its own deps; `use AshArcadic.ReplicantSink`
   requires it (its `@behaviour Replicant.Sink` / delegation to `Apply` bind at the host's
   compile). If a host adds `replicant` AFTER an initial non-CDC compile, run
   `mix deps.get && mix deps.clean ash_arcadic --build && mix compile` so the gated subtree

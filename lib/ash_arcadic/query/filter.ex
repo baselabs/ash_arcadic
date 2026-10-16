@@ -327,16 +327,22 @@ defmodule AshArcadic.Query.Filter do
     if filterable_field?(query, attr) do
       field = identifier(attr)
       {query, ref} = Query.add_param(query, cast_value(value, attr))
-      {:ok, query, "n.#{field} #{cypher_op} #{temporal_wrap(ref, attr)}"}
+      {:ok, query, "#{temporal_wrap_field(field, attr)} #{cypher_op} #{temporal_wrap(ref, attr)}"}
     else
       {:error, UnsupportedFilter.exception(operator: operator, field: attr_name(attr))}
     end
   end
 
   # Wrap a bound comparison param in the attribute's Cypher temporal constructor
-  # (`datetime($p)`/`localtime($p)`) so ArcadeDB compares temporal-to-temporal — a bare string param
-  # against a coerced temporal property silently matches nothing (Cast.temporal_cypher_fn/2). A
-  # non-temporal (or `:date`) attr returns the ref unchanged.
+  # (`datetime($p)`/`localtime($p)`), and the STORED side in the same constructor
+  # (`datetime(n.at)`). BOTH sides are required: ArcadeDB's write-time coercion of ISO8601
+  # strings to native temporals was REMOVED in the 26.10 line (probed 26.8.1 vs 26.10.2 —
+  # live matrix in project memory), so the stored side is a native temporal on ≤26.9 (bare
+  # string param silently matches nothing) and a plain string on ≥26.10 (a `datetime($p)`
+  # param against a string property silently matches nothing). Wrapping both sides compares
+  # temporal-to-temporal on EVERY server version (probe-verified for gt/eq/lt, datetime and
+  # localtime, fractional-second/usec values). A non-temporal (or `:date`) attr renders both
+  # sides unchanged.
   defp temporal_wrap(ref, attr) do
     case Cast.temporal_cypher_fn(attr_type(attr), attr_constraints(attr)) do
       nil -> ref
@@ -344,9 +350,16 @@ defmodule AshArcadic.Query.Filter do
     end
   end
 
+  defp temporal_wrap_field(field, attr) do
+    case Cast.temporal_cypher_fn(attr_type(attr), attr_constraints(attr)) do
+      nil -> "n.#{field}"
+      fun -> "#{fun}(n.#{field})"
+    end
+  end
+
   # `field IN [...]`. A NON-temporal attr binds the whole list as one param (`IN $p`). A coerced
-  # temporal attr binds each element separately and wraps it (`IN [datetime($p1), datetime($p2)]`) —
-  # a bare string list never matches coerced temporal values (same silent-[] bug as scalar compare).
+  # temporal attr binds each element separately and wraps BOTH sides (`datetime(n.f) IN
+  # [datetime($p1), datetime($p2)]`) — same both-versions matrix as binary_op/2.
   defp in_clause(query, attr, values) do
     field = identifier(attr)
 
@@ -362,7 +375,7 @@ defmodule AshArcadic.Query.Filter do
             {q, ["#{fun}(#{ref})" | acc]}
           end)
 
-        {:ok, query, "n.#{field} IN [#{wrapped |> Enum.reverse() |> Enum.join(", ")}]"}
+        {:ok, query, "#{fun}(n.#{field}) IN [#{wrapped |> Enum.reverse() |> Enum.join(", ")}]"}
     end
   end
 

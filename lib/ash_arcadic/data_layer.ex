@@ -764,6 +764,14 @@ defmodule AshArcadic.DataLayer do
     end
   end
 
+  # A crafted stash that is neither a map nor nil (the stash rides the PUBLIC set_context
+  # surface) must fail closed here — without this clause the is_map dispatch above would let it
+  # fall through to the ordinary-read head below, silently running an unranked query and
+  # dropping the vector request (and its k bound) entirely.
+  defp do_run_query(%AshArcadic.Query{vector_search: vs}, _resource)
+       when not is_map(vs) and not is_nil(vs),
+       do: {:error, vector_failed("malformed vector search request")}
+
   # Aggregates/calculations OVER a combination are not supported this slice — fail closed value-free
   # rather than silently drop them. Ash runs add_aggregates/add_calculations on the combined
   # data_layer_query (deps/ash read.ex:1781-1789), so a combination read that loads a relationship
@@ -850,18 +858,27 @@ defmodule AshArcadic.DataLayer do
   # `allow_global?` would pass the truthiness scope check and open a global kNN. Each head PINS its
   # `kind` so kind+shape validate together (B1 plan-review — a `kind: _` wildcard would accept a
   # mis-kinded stash whose dispatch then KeyError-leaks the query values).
-  # Non-empty-list keys use the `[_ | _]` PATTERN (asserts list-and-non-empty in one match, no
-  # `is_list … and … != []` guard pair).
+  # `length/1` is the DELIBERATE mechanism: its badarg on an improper tail fails the guard
+  # (the empty-comparison form credo prefers would NOT reject improper lists), at O(list)
+  # over a crafted stash list — bounded and small.
+  # credo:disable-for-next-line Credo.Check.Warning.ExpensiveEmptyEnumCheck
+  defguardp non_empty_proper_list(list) when is_list(list) and length(list) > 0
+
+  # Non-empty-list keys use the `[_ | _]` pattern PLUS the non_empty_proper_list/1 guard:
+  # the pattern alone also matches an IMPROPER list (`[1 | %{secret: …}]` — is_list/1 is
+  # true for any cons cell), which would pass the shape guard and crash value-echoing deep
+  # in arcadic's Enum traversal (FunctionClauseError inspecting the tail — cross-vendor
+  # catch, 2026-10-16); the guard's `length/1` badarg rejects it, value-free.
   defp vector_reject_malformed(%{
          kind: :dense,
          index: index,
-         query_vector: [_ | _],
+         query_vector: [_ | _] = query_vector,
          k: k,
          allow_global?: allow_global?,
          opts: opts
        })
        when is_atom(index) and is_integer(k) and k > 0 and is_boolean(allow_global?) and
-              is_list(opts),
+              is_list(opts) and non_empty_proper_list(query_vector),
        do: :ok
 
   defp vector_reject_malformed(%{
@@ -869,24 +886,28 @@ defmodule AshArcadic.DataLayer do
          index: index,
          tokens_property: tp,
          weights_property: wp,
-         query_tokens: [_ | _],
-         query_weights: [_ | _],
+         query_tokens: [_ | _] = query_tokens,
+         query_weights: [_ | _] = query_weights,
          k: k,
          allow_global?: allow_global?,
          opts: opts
        })
        when is_atom(index) and is_atom(tp) and is_atom(wp) and
-              is_integer(k) and k > 0 and is_boolean(allow_global?) and is_list(opts),
+              is_integer(k) and k > 0 and is_boolean(allow_global?) and is_list(opts) and
+              non_empty_proper_list(query_tokens) and non_empty_proper_list(query_weights),
        do: :ok
 
-  # Hybrid: `arms` a list of length ≥ 2 (fuse requires ≥2 sources), each a valid per-kind arm map.
+  # Hybrid: `arms` a list of length ≥ 2 (fuse requires ≥2 sources), each a valid per-kind
+  # arm map. `arms` itself gets the proper-list guard too — `Enum.all?/2` on an improper
+  # arms list would crash the guard body.
   defp vector_reject_malformed(%{
          kind: :hybrid,
          arms: arms,
          allow_global?: allow_global?,
          opts: opts
        })
-       when is_list(arms) and is_boolean(allow_global?) and is_list(opts) do
+       when is_list(arms) and non_empty_proper_list(arms) and is_boolean(allow_global?) and
+              is_list(opts) do
     if length(arms) >= 2 and Enum.all?(arms, &valid_fuse_arm?/1),
       do: :ok,
       else: {:error, vector_failed("malformed vector search request")}
@@ -895,19 +916,22 @@ defmodule AshArcadic.DataLayer do
   defp vector_reject_malformed(_),
     do: {:error, vector_failed("malformed vector search request")}
 
-  defp valid_fuse_arm?(%{kind: :dense, property: p, query_vector: [_ | _], k: k})
-       when is_atom(p) and is_integer(k) and k > 0,
+  # Same non_empty_proper_list/1 guard as vector_reject_malformed (an improper arm list
+  # must fail closed here, not crash in arcadic's Enum traversal).
+  defp valid_fuse_arm?(%{kind: :dense, property: p, query_vector: [_ | _] = query_vector, k: k})
+       when is_atom(p) and is_integer(k) and k > 0 and non_empty_proper_list(query_vector),
        do: true
 
   defp valid_fuse_arm?(%{
          kind: :sparse,
          tokens_property: tp,
          weights_property: wp,
-         query_tokens: [_ | _],
-         query_weights: [_ | _],
+         query_tokens: [_ | _] = query_tokens,
+         query_weights: [_ | _] = query_weights,
          k: k
        })
-       when is_atom(tp) and is_atom(wp) and is_integer(k) and k > 0,
+       when is_atom(tp) and is_atom(wp) and is_integer(k) and k > 0 and
+              non_empty_proper_list(query_tokens) and non_empty_proper_list(query_weights),
        do: true
 
   defp valid_fuse_arm?(%{kind: :fulltext, property: p, text_query: tq, k: k})
@@ -2619,13 +2643,13 @@ defmodule AshArcadic.DataLayer do
 
         case changeset_where(changeset, where_clause, params0) do
           {:ok, full_where, params} ->
-            cypher = "MATCH (n:#{label}) WHERE #{full_where} SET n += $set RETURN n"
-
-            decode_update_result(
-              resource,
-              redacted_filter(pk),
-              write_command(conn, cypher, params)
-            )
+            # Gate the COMPLETE params map — the PK match values AND the changeset-filter
+            # literals (`$paramN`), not just the changed attributes gated in do_update.
+            # SYMMETRIC with update_many/emit_update_many and the destroy paths: a poisoned
+            # filter literal (Ash's :string cast accepts a non-UTF8 binary; a nested raw
+            # binary in a :map literal survives canonical encoding) fails closed here,
+            # value-free, instead of surfacing as the wire-level generic encode error.
+            emit_update(resource, conn, label, pk, full_where, params)
 
           {:error, _} ->
             {:error,
@@ -2641,6 +2665,18 @@ defmodule AshArcadic.DataLayer do
            resource: resource,
            reason: conn_error_reason(reason)
          )}
+    end
+  end
+
+  # The gated update emit shared shape: encode-gate the full params, then MATCH/SET/RETURN.
+  defp emit_update(resource, conn, label, pk, full_where, params) do
+    case encode_gate(resource, params, UpdateFailed) do
+      {:error, _} = err ->
+        err
+
+      :ok ->
+        cypher = "MATCH (n:#{label}) WHERE #{full_where} SET n += $set RETURN n"
+        decode_update_result(resource, redacted_filter(pk), write_command(conn, cypher, params))
     end
   end
 
@@ -2817,17 +2853,10 @@ defmodule AshArcadic.DataLayer do
 
         case changeset_where(changeset, where_clause, match_params) do
           {:ok, full_where, params} ->
-            # RETURN n makes ArcadeDB echo each deleted node ({"n":"<deleted>"}) so
-            # a real delete is distinguishable from a no-match — an empty result
-            # fails CLOSED as StaleRecord (a scoping-denied delete must not report
-            # success). Count only; never row_to_attrs the "<deleted>" shape.
-            cypher = "MATCH (n:#{label}) WHERE #{full_where} DETACH DELETE n RETURN n"
-
-            decode_destroy_result(
-              resource,
-              redacted_filter(pk),
-              write_command(conn, cypher, params)
-            )
+            # Gate the FULL params map (PK match values + filter literals) before the
+            # DELETE — SYMMETRIC with destroy_query's destroy_where_encode_gate and the
+            # update path above (the create/destroy gate asymmetry was a review catch).
+            emit_destroy(resource, conn, label, pk, full_where, params)
 
           {:error, _} ->
             {:error,
@@ -2843,6 +2872,28 @@ defmodule AshArcadic.DataLayer do
            query: "ArcadeDB delete query",
            reason: conn_error_reason(reason)
          )}
+    end
+  end
+
+  # The gated destroy emit: encode-check the full params, then MATCH/DETACH DELETE/RETURN.
+  defp emit_destroy(resource, conn, label, pk, full_where, params) do
+    case encode_check(params) do
+      {:error, key} ->
+        {:error,
+         QueryFailed.exception(query: "ArcadeDB delete query", reason: encode_error_reason(key))}
+
+      :ok ->
+        # RETURN n makes ArcadeDB echo each deleted node ({"n":"<deleted>"}) so
+        # a real delete is distinguishable from a no-match — an empty result
+        # fails CLOSED as StaleRecord (a scoping-denied delete must not report
+        # success). Count only; never row_to_attrs the "<deleted>" shape.
+        cypher = "MATCH (n:#{label}) WHERE #{full_where} DETACH DELETE n RETURN n"
+
+        decode_destroy_result(
+          resource,
+          redacted_filter(pk),
+          write_command(conn, cypher, params)
+        )
     end
   end
 
@@ -3156,6 +3207,10 @@ defmodule AshArcadic.DataLayer do
     with {:ok, atomic_frags, atomic_params} <-
            Write.atomic_fragments(resource, rep.atomics, %{}),
          {:ok, conn} <- write_conn_for_tenant(resource, tenant) do
+      # Per-call timeout parity with write_conn/2 (the changeset adapter): a caller's
+      # Ash.Changeset.timeout on update_many rows would otherwise be silently dropped
+      # (only the resource default from write_conn_for_tenant applied).
+      conn = maybe_apply_timeout(conn, rep.timeout)
       {match_pattern, tenant_clause, tenant_params} = update_many_scope(resource, pk, tenant)
       seed = Map.merge(atomic_params, Map.merge(tenant_params, %{"rows" => rows}))
       label = validated_label(resource)
@@ -3415,8 +3470,16 @@ defmodule AshArcadic.DataLayer do
     end
   end
 
+  # Config knob, validated like max_vector_candidates: a non-integer value (notably
+  # `:infinity` — vocabulary this module legitimizes for timeouts) would make
+  # `attempt < value` ALWAYS true under term ordering (every integer < every atom) —
+  # an unbounded retry loop. Any non-pos-integer falls back to the default, never
+  # fail-open. (Sibling-knob parity; review catch 2026-10-16.)
   defp write_conflict_attempts do
-    Application.get_env(:ash_arcadic, :write_conflict_retries, @write_conflict_attempts)
+    case Application.get_env(:ash_arcadic, :write_conflict_retries, @write_conflict_attempts) do
+      n when is_integer(n) and n >= 1 -> n
+      _ -> @write_conflict_attempts
+    end
   end
 
   # Exponential base + FULL jitter, capped — de-correlates concurrent retriers (thundering herd).

@@ -82,28 +82,82 @@ defmodule AshArcadic.Changes.EdgeCypher do
   end
 
   @doc false
-  # For an `:attribute` source, the `{src_attr, dest_attr, value}` spec scoping BOTH
-  # endpoints by the tenant discriminator; nil otherwise.
+  # Tenant scoping for an edge write, decided per ENDPOINT (mirrors traverse.ex's
+  # scope_decision — the same invariant on the write surface). Every `:attribute`
+  # endpoint — source, destination, or both — is scoped by its OWN discriminator: the
+  # value is that resource's `parse_attribute(to_tenant)`, serialized by that attribute's
+  # type (the exact normalization the vertex write path stores), bound as its own $param.
+  # A destination-only `:attribute` multitenancy previously produced NO tenant clause at
+  # all — the MATCH bound the victim tenant's vertex by bare PK (a cross-tenant edge
+  # write; review 2026-10-16). A blank tenant on any `:attribute` endpoint fails closed
+  # `{:error, :tenant_required}`. `:context` endpoints scope at the DATABASE level
+  # (write_conn resolves the per-tenant database), so they take no attribute clause.
+  # Returns `{:ok, nil}` when neither endpoint is `:attribute`, else
+  # `{:ok, %{src: {attr, bound}} and/or %{dest: {attr, bound}}}`.
   def tenant_spec(resource, edge, changeset) do
+    with {:ok, src_scope} <- endpoint_scope(resource, changeset),
+         {:ok, dest_scope} <- endpoint_scope(edge.destination, changeset) do
+      scope =
+        %{}
+        |> Map.put(:src, src_scope)
+        |> Map.put(:dest, dest_scope)
+        |> Map.reject(fn {_k, v} -> is_nil(v) end)
+
+      {:ok, if(scope == %{}, do: nil, else: scope)}
+    end
+  end
+
+  defp endpoint_scope(resource, changeset) do
     if Ash.Resource.Info.multitenancy_strategy(resource) == :attribute do
-      {Ash.Resource.Info.multitenancy_attribute(resource),
-       Ash.Resource.Info.multitenancy_attribute(edge.destination), changeset.to_tenant}
+      case changeset.to_tenant do
+        tenant when tenant in [nil, ""] ->
+          {:error, :tenant_required}
+
+        tenant ->
+          attr = Ash.Resource.Info.multitenancy_attribute(resource)
+          {m, f, a} = Ash.Resource.Info.multitenancy_parse_attribute(resource)
+          # The same normalize -> parse -> serialize composition as the vector and
+          # update_many tenant predicates (sibling parity): the discriminator a vertex
+          # row stores is serialize(parse(to_tenant)).
+          value =
+            tenant
+            |> Ash.ToTenant.to_tenant(resource)
+            |> then(&apply(m, f, [&1 | a]))
+            |> Cast.serialize_value(Map.get(Info.attribute_types(resource), attr))
+
+          {:ok, {attr, value}}
+      end
     else
-      nil
+      {:ok, nil}
     end
   end
 
   @doc false
-  # The tenant WHERE fragment. A non-multitenant destination (nil dest_attr) takes
-  # no destination clause. Returns `{clause, params}`.
+  # The tenant WHERE fragment over the scope built by tenant_spec/3. The SOURCE binds
+  # `$tenant` (unchanged name — the edge stamp in build_create uses it), a scoped
+  # destination binds its own `$tenant_dest`. Returns `{clause, params}`.
   def tenant_where(nil), do: {"", %{}}
 
-  def tenant_where({src_attr, dest_attr, value}) do
-    src = src_attr |> to_string() |> Identifier.validate!()
-    dest = if dest_attr, do: dest_attr |> to_string() |> Identifier.validate!()
+  def tenant_where(%{} = scope) do
+    # Fixed [:src, :dest] render order (NOT map iteration order) so the emitted Cypher
+    # is deterministic and reads source-first.
+    {clauses, params} =
+      Enum.reduce([:src, :dest], {[], %{}}, fn side, {clauses, params} ->
+        case scope do
+          %{^side => {attr, value}} when side == :src ->
+            src = attr |> to_string() |> Identifier.validate!()
+            {["a.#{src} = $tenant" | clauses], Map.put(params, "tenant", value)}
 
-    clause = " AND a.#{src} = $tenant" <> if(dest, do: " AND b.#{dest} = $tenant", else: "")
-    {clause, %{"tenant" => value}}
+          %{^side => {attr, value}} ->
+            dest = attr |> to_string() |> Identifier.validate!()
+            {["b.#{dest} = $tenant_dest" | clauses], Map.put(params, "tenant_dest", value)}
+
+          _ ->
+            {clauses, params}
+        end
+      end)
+
+    {" AND " <> (clauses |> Enum.reverse() |> Enum.join(" AND ")), params}
   end
 
   @doc false

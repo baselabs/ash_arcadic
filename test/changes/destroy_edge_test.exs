@@ -22,18 +22,19 @@ defmodule AshArcadic.Changes.DestroyEdgeTest do
         edge(),
         %{"id" => "p1"},
         "p2",
-        {:tenant, :tenant, "org1"}
+        %{src: {:tenant, "org1"}, dest: {:tenant, "org1"}}
       )
 
     assert cypher =~ "MATCH (a:EAPerson)-[r:KNOWS]->(b:EAPerson)"
 
     assert cypher =~
-             "WHERE a.id = $src_id AND b.id = $dst AND a.tenant = $tenant AND b.tenant = $tenant"
+             "WHERE a.id = $src_id AND b.id = $dst AND a.tenant = $tenant AND b.tenant = $tenant_dest"
 
     assert cypher =~ "DELETE r RETURN r"
     assert params["src_id"] == "p1"
     assert params["dst"] == "p2"
     assert params["tenant"] == "org1"
+    assert params["tenant_dest"] == "org1"
   end
 
   test "incoming direction flips the match pattern" do

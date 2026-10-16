@@ -1,6 +1,7 @@
 defmodule AshArcadic.DataLayer.EncodeGateTest do
   use ExUnit.Case, async: true
 
+  require Ash.Query
   alias AshArcadic.DataLayer, as: DL
   alias AshArcadic.Errors.CreateFailed
   alias AshArcadic.Errors.UpdateFailed
@@ -108,5 +109,50 @@ defmodule AshArcadic.DataLayer.EncodeGateTest do
     cs = %Ash.Changeset{resource: EncodeDoc, attributes: %{id: "e1", data: %{"k" => "ok"}}}
     assert {:error, %CreateFailed{} = err} = DL.create(EncodeDoc, cs)
     refute err.reason =~ "not JSON-encodable"
+  end
+
+  # The poisoned-filter-literal class (review catch): every OTHER write constructor gates
+  # the changeset-filter/PK wire params; single-row update and destroy historically gated
+  # only the changed attributes (update) or nothing (destroy). Ash's :string cast accepts
+  # a non-UTF8 binary, and a raw binary nested in a :map filter literal survives canonical
+  # encoding — without these gates the poison rode the WHERE params to the wire.
+  describe "changeset-filter params are gated on the single-row write paths" do
+    test "update gates the filter-literal params (poisoned :map filter, value-free)" do
+      filter = Ash.Query.filter(EncodeDoc, data == ^@poison).filter
+
+      cs = %Ash.Changeset{
+        resource: EncodeDoc,
+        data: %EncodeDoc{id: "e1"},
+        attributes: %{data: %{"k" => "ok"}},
+        filter: filter
+      }
+
+      assert {:error, %UpdateFailed{} = err} = DL.update(EncodeDoc, cs)
+      assert err.reason =~ "not JSON-encodable"
+      assert value_free?(err.reason)
+    end
+
+    test "destroy gates the PK + filter-literal params (poisoned :map filter, value-free)" do
+      filter = Ash.Query.filter(EncodeDoc, data == ^@poison).filter
+      cs = %Ash.Changeset{resource: EncodeDoc, data: %EncodeDoc{id: "e1"}, filter: filter}
+
+      assert {:error, %AshArcadic.Errors.QueryFailed{} = err} = DL.destroy(EncodeDoc, cs)
+      assert err.reason =~ "not JSON-encodable"
+      assert value_free?(err.reason)
+    end
+
+    test "a clean changeset filter on update still reaches the write path (no blanket reject)" do
+      filter = Ash.Query.filter(EncodeDoc, id == "e1").filter
+
+      cs = %Ash.Changeset{
+        resource: EncodeDoc,
+        data: %EncodeDoc{id: "e1"},
+        attributes: %{data: %{"k" => "ok"}},
+        filter: filter
+      }
+
+      assert {:error, %UpdateFailed{} = err} = DL.update(EncodeDoc, cs)
+      refute err.reason =~ "not JSON-encodable"
+    end
   end
 end

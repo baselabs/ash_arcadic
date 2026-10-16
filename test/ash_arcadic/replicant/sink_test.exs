@@ -324,6 +324,7 @@ defmodule AshArcadic.ReplicantSinkIntegrationTest do
   defp txn(lsn, changes), do: %Replicant.Transaction{commit_lsn: lsn, changes: changes}
 
   alias AshArcadic.Replicant.Error
+  alias AshArcadic.Replicant.Sink.Impl
   alias AshArcadic.Test.Replicant.SinkOrder
 
   test "handle_transaction/1 delegates to Apply: applies the change and advances the watermark" do
@@ -351,5 +352,21 @@ defmodule AshArcadic.ReplicantSinkIntegrationTest do
 
     # loss=0: neither delivery path advanced the checkpoint.
     assert EmptyDomainsSink.checkpoint() == {:ok, nil}
+  end
+
+  describe "Impl.snapshot_advance?/2 — the snapshot watermark monotonic gate" do
+    test "nil stored (first snapshot) and strictly-greater LSNs advance" do
+      assert Impl.snapshot_advance?(nil, 1)
+      assert Impl.snapshot_advance?(100, 101)
+    end
+
+    test "an equal or older snapshot LSN never regresses the durable watermark" do
+      refute Impl.snapshot_advance?(100, 100)
+      refute Impl.snapshot_advance?(100, 99)
+    end
+
+    test "a non-integer stored watermark falls back to advance (never silently drops)" do
+      assert Impl.snapshot_advance?(:garbage, 1)
+    end
   end
 end

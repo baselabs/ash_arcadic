@@ -184,7 +184,7 @@ if Code.ensure_loaded?(Replicant.Sink) do
       with :ok <- Apply.reject_empty_index(config),
            {:ok, _} <-
              Ash.transaction([config.checkpoint], fn ->
-               config.checkpoint.upsert_lsn(config.slot, snapshot_lsn)
+               advance_snapshot_checkpoint(config, snapshot_lsn)
              end) do
         {:ok, snapshot_lsn}
       else
@@ -195,6 +195,29 @@ if Code.ensure_loaded?(Replicant.Sink) do
     catch
       kind, value when kind in [:throw, :exit] -> {:error, Apply.boundary_error(value)}
     end
+
+    @doc false
+    # Monotonic by CONSTRUCTION inside the snapshot transaction (the same discipline as the
+    # apply path's replay gate): a snapshot LSN at or below the stored watermark is a NO-OP,
+    # never a regression of the durable checkpoint (review catch 2026-10-16 — the apply
+    # path's is_integer guard made the watermark monotonic there; this was the one
+    # unguarded writer of the same field).
+    defp advance_snapshot_checkpoint(config, snapshot_lsn) do
+      if snapshot_advance?(config.checkpoint.for_slot(config.slot), snapshot_lsn) do
+        config.checkpoint.upsert_lsn(config.slot, snapshot_lsn)
+      end
+    end
+
+    @doc false
+    # A nil/absent stored watermark (first snapshot), a CORRUPT non-integer stored value
+    # (self-heal by overwriting — matching the apply path's replay-gate posture), or a
+    # strictly-greater snapshot LSN advances; an equal or older integer LSN never regresses
+    # the durable checkpoint.
+    def snapshot_advance?(stored, snapshot_lsn)
+        when (not is_integer(stored) or stored < snapshot_lsn) and is_integer(snapshot_lsn),
+        do: true
+
+    def snapshot_advance?(_stored, _snapshot_lsn), do: false
 
     # A snapshot row arrives as %Change{op: :snapshot}; the apply invariant map upserts on
     # :insert (MERGE by PK). Rewrite the op via a MAP update so the whole T5 upsert path

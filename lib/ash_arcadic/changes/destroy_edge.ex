@@ -36,13 +36,12 @@ defmodule AshArcadic.Changes.DestroyEdge do
       dest_ids = List.wrap(Ash.Changeset.get_argument(changeset, Keyword.fetch!(opts, :to)))
 
       result =
-        case DataLayer.write_conn(resource, changeset) do
-          {:ok, conn} ->
-            tenant = EdgeCypher.tenant_spec(resource, edge, changeset)
-            src_key = EdgeCypher.source_key(resource, record)
-            serialized = EdgeCypher.serialize_destination_ids(edge.destination, dest_ids)
-            destroy_all(conn, record, serialized, resource, edge, src_key, tenant)
-
+        with {:ok, conn} <- DataLayer.write_conn(resource, changeset),
+             {:ok, tenant} <- EdgeCypher.tenant_spec(resource, edge, changeset) do
+          src_key = EdgeCypher.source_key(resource, record)
+          serialized = EdgeCypher.serialize_destination_ids(edge.destination, dest_ids)
+          destroy_all(conn, record, serialized, resource, edge, src_key, tenant)
+        else
           {:error, reason} ->
             {:error,
              InvalidRelationship.exception(
