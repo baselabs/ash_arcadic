@@ -85,7 +85,29 @@ mix dialyzer
 # or: mix quality
 ```
 
-All gates pass before commit/PR. Update `CHANGELOG.md` under `[Unreleased]`.
+`mix quality` is the declared local gate. Update `CHANGELOG.md` under `[Unreleased]`.
+
+## Workflow (owner ruling, October 28, 2026)
+
+Process is sized to the risk of the specific change, never the repository. Each check, gate,
+record or review names the failure it prevents.
+
+- **Heavy** when the diff touches Cypher generation and params (`lib/ash_arcadic/query*`,
+  `changes/edge_cypher.ex`), identifier validation (`identifier.ex`), tenant scoping
+  (`multitenancy.ex`, `set_tenant`/scoping paths in `data_layer.ex`, `traverse.ex`), the
+  sensitive verifiers, the redaction boundary (`errors/`, encode gates, `telemetry.ex`
+  allowlists), or the Replicant effect-once apply and watermark (`replicant/apply.ex`,
+  `checkpoint.ex`, `sink*`). Write the failing test first, get one independent
+  review and do one fix round, and run the declared local gate once before pushing. Heavy
+  pushes need the owner's approval.
+- **Light** for everything else: focused checks on the changed behavior, then push; hosted CI
+  is the gate. No outcome record, gauge or review; the commit message is the record. A light
+  change the owner asked for lands without a separate push approval.
+- Publishing, deploying and pushes to mirrors always need the owner's approval for that action.
+- A test that fails on every run is a defect: fix it, or quarantine it with a reason, in the
+  change that finds it.
+- Update the CHANGELOG when behavior, a dependency or a contract changes; other docs only when
+  a contract changes.
 
 ## Testing
 
@@ -96,7 +118,6 @@ All gates pass before commit/PR. Update `CHANGELOG.md` under `[Unreleased]`.
   to `async: false` until proven otherwise. When a shared server already runs,
   `ARCADIC_TEST_URL` and `ARCADIC_TEST_PASSWORD` sit in the gitignored `.env`;
   load them with `set -a; . ./.env; set +a`, then `mix test --include integration`.
-- **TDD:** test first (the `ash_age` convention).
 
 ## Docs & lifecycle-artifact policy
 
@@ -107,21 +128,8 @@ All gates pass before commit/PR. Update `CHANGELOG.md` under `[Unreleased]`.
 - **Never tracked:** the project charter (`docs/CHARTER.md`) plus brainstorm
   specs, plans, exec notes, reviews, and handoffs — under `/docs/`, which is
   **gitignored** (the `ash_age` convention). Keep them there.
-
-## Current status
-
-The data layer is **built and released** — `ash_arcadic` 1.2.0 is on hex (the full
-Slice 1–11 surface: the `arcade` DSL, query push-down, CRUD/upserts/atomics, bulk
-writes, offset + keyset pagination, aggregates, calculations, relationships +
-traversal + edge writes, dense/sparse/hybrid vector search, transactions,
-`:async_engine`, telemetry — all fail-closed multitenant), verified against the
-ArcadeDB 26.10 line (the 1.2.0 release adapts its temporal-coercion and
-openCypher property-value drift; see `CHANGELOG.md` and
-`documentation/upgrading.md`). The Stage-0 physical-multitenancy decision was
-resolved during the brainstorm. The newest subsystem is the
-**`AshArcadic.Replicant.*`** CDC sink (Postgres→ArcadeDB effect-once mirror;
-optional, compile-gated on `replicant`; shipped in 0.2.0). For the current surface,
-read `usage-rules.md`, `README.md`, and the runnable `livebooks/tour.livemd`.
+- **Instruction history:** `docs/reference/agent-history.md` (force-tracked) holds dated
+  narratives and superseded instructions moved out of this file; not binding.
 
 ## graphify (code knowledge graph)
 
