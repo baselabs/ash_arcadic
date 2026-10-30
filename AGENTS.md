@@ -73,41 +73,26 @@ here — read it there.
 Cypher run via `Arcadic`. Traversal ships as an Ash manual relationship. Generate
 DSL docs with `mix spark.cheat_sheets --extensions AshArcadic.DataLayer,AshArcadic.Replicant`.
 
-## Development workflow
+## Workflow
+
+Make the change, run the tests that cover it, commit with named paths, and push to `main`.
+CI runs once on `main`; if it goes red, fix forward.
 
 ```bash
 mix deps.get          # fetch deps (ash, arcadic, … from hex)
 mix format
-mix credo --strict
-mix compile --warnings-as-errors
 mix test
-mix dialyzer
-# or: mix quality
 ```
 
-`mix quality` is the declared local gate. Update `CHANGELOG.md` under `[Unreleased]`.
+CI runs: `mix format --check-formatted`, `mix compile --warnings-as-errors`, `mix credo --strict`,
+`mix hex.audit`, `mix test --include integration` (live ArcadeDB), `mix dialyzer` (`mix quality`
+bundles format, credo and dialyzer). Run the ones that cover your change.
 
-## Workflow (owner ruling, October 28, 2026)
-
-Process is sized to the risk of the specific change, never the repository. Each check, gate,
-record or review names the failure it prevents.
-
-- **Heavy** when the diff touches Cypher generation and params (`lib/ash_arcadic/query*`,
-  `changes/edge_cypher.ex`), identifier validation (`identifier.ex`), tenant scoping
-  (`multitenancy.ex`, `set_tenant`/scoping paths in `data_layer.ex`, `traverse.ex`), the
-  sensitive verifiers, the redaction boundary (`errors/`, encode gates, `telemetry.ex`
-  allowlists), or the Replicant effect-once apply and watermark (`replicant/apply.ex`,
-  `checkpoint.ex`, `sink*`). Write the failing test first, get one independent
-  review and do one fix round, and run the declared local gate once before pushing. Heavy
-  pushes need the owner's approval.
-- **Light** for everything else: focused checks on the changed behavior, then push; hosted CI
-  is the gate. No outcome record, gauge or review; the commit message is the record. A light
-  change the owner asked for lands without a separate push approval.
 - Publishing, deploying and pushes to mirrors always need the owner's approval for that action.
 - A test that fails on every run is a defect: fix it, or quarantine it with a reason, in the
   change that finds it.
-- Update the CHANGELOG when behavior, a dependency or a contract changes; other docs only when
-  a contract changes.
+- Update `CHANGELOG.md` under `[Unreleased]` when behavior, a dependency or a contract changes;
+  other docs only when a contract changes.
 
 ## Testing
 
