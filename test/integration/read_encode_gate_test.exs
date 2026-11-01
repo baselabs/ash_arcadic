@@ -37,9 +37,16 @@ defmodule AshArcadic.Integration.ReadEncodeGateTest do
   end
 
   # A value-free error names the failure class and NEVER the poison bytes (0xFF → "255"/"0xFF").
+  # Splode embeds the construction stacktrace INTO the message; frame line numbers are
+  # uncontrolled digits (ash 3.37.2 put Ash.aggregate/3 at ash.ex:1255, whose "1255"
+  # contains "255"), so value-freedom is asserted on the message with stack frames
+  # stripped — the leak payloads (a Jason raise, an inspect) are never frame lines.
   defp assert_value_free(msg) do
-    refute msg =~ "255", "message leaked the poison byte 0xFF (rendered 255): #{msg}"
-    refute msg =~ "0xFF", "message leaked the poison byte 0xFF: #{msg}"
+    payload =
+      msg |> String.split("\n") |> Enum.reject(&String.starts_with?(&1, "  (")) |> Enum.join("\n")
+
+    refute payload =~ "255", "message leaked the poison byte 0xFF (rendered 255): #{payload}"
+    refute payload =~ "0xFF", "message leaked the poison byte 0xFF: #{payload}"
 
     assert msg =~ "not JSON-encodable",
            "expected the value-free read-encode-gate reason, got: #{msg}"

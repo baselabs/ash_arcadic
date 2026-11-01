@@ -5,6 +5,29 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.1] - 2026-11-01
+
+### Security
+
+- Dependency lock refreshed: ash 3.37.2 closes **CVE-2026-96581 (HIGH)** — an upsert
+  on the primary key in Ash ignores attribute multitenancy, so one tenant can read,
+  overwrite and take over another tenant's records — and CVE-2026-114214 (MEDIUM) —
+  loading a through relationship with a limit of 1 ignores the through path and
+  returns unrelated destination records. Neither is in this layer's own code (its
+  writes scope tenancy per endpoint, tripwire-tested), but both apply to every host
+  app until the bump. arcadic 1.2.1 → 1.2.2 rides along (its library-wide value-free
+  conn-guard is transparent here — verified by the full live suite); with splode,
+  igniter, sourceror and crux transitive updates. `mix hex.audit` is clean.
+
+### Fixed
+
+- The read-encode-gate poison tripwire no longer false-fires on digits inside
+  stacktrace frames embedded in Splode error messages: ash 3.37.2 places
+  `Ash.aggregate/3` at `ash.ex:1255`, and the bare `"255"` sentinel check matched
+  the line number, not the poison. Value-freedom is now asserted on the message
+  with stack frames stripped — the leak payloads (a Jason raise, an inspect) are
+  never frame lines — and the assert stays red-capable for a payload leak.
+
 ## [1.2.0] - 2026-10-16
 
 ### Fixed
