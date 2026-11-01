@@ -169,12 +169,12 @@ jobs:
     name: canary (ArcadeDB latest)
     runs-on: ubuntu-latest
     continue-on-error: true
-    # 2026-11-01 drift (run 41327753934, observed on ash_arcadic 1.2.1 / arcadic
-    # 1.2.2 / ash 3.37.2): on the :latest snapshot a never-created database read
-    # surfaces :server_error where 26.8.1 and 26.10.2 surface :database_not_found
-    # (ConnectionFailureRedactionTest). Upstream response-shape drift, NOT the dep
-    # bump — the same test is green on the pinned 26.8.1 with the same deps.
-    # Adapt in arcadic's mapping once the snapshot's actual status/class is probed.
+    # 2026-11-01 drift (run 41327753934): :latest = 26.11.1-SNAPSHOT renamed the
+    # missing-database exception to DatabaseNotFoundException → :server_error (was
+    # :database_not_found). RESOLVED same day: arcadic 1.2.3 maps all three
+    # server-line shapes (26.11/26.10/<=26.9) to :database_not_found and carries a
+    # live drift-guard; this repo ships it from 1.2.2. Not the dep bump — the
+    # canary-red test was green on pinned 26.8.1 with the same deps.
 
     services:
       arcadedb:

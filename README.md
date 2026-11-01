@@ -13,7 +13,7 @@ enforced **Ash-natively**. It executes through the
 [`arcadic`](https://github.com/baselabs/arcadic) client (the transport — the
 "`postgrex` of ArcadeDB").
 
-> **Status: released.** `v1.2.1` is on Hex — `{:ash_arcadic, "~> 1.2"}`. The full
+> **Status: released.** `v1.2.2` is on Hex — `{:ash_arcadic, "~> 1.2"}`. The full
 > capabilities roadmap has shipped, plus an optional Postgres→ArcadeDB CDC sink (876
 > tests incl. live integration against ArcadeDB 26.10, dialyzer clean). Working rules
 > for contributors are in

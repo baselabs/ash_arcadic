@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.2] - 2026-11-01
+
+### Fixed
+
+- arcadic 1.2.2 → **1.2.3**: the 26.11 server line (26.11.1-SNAPSHOT) renamed the
+  missing-database exception to `DatabaseNotFoundException`, so a never-created
+  database read surfaced `:server_error` instead of `:database_not_found` — this
+  was the 2026-11-01 `arcadedb:latest` canary failure. arcadic now maps all three
+  server-line shapes to `:database_not_found` and carries a live drift-guard test;
+  verified here against 26.11.1-SNAPSHOT (`ConnectionFailureRedactionTest` 5/5, the
+  exact canary-red test).
+
 ## [1.2.1] - 2026-11-01
 
 ### Security
