@@ -16,28 +16,36 @@ permissions:
   contents: read
 
 jobs:
-  test:
-    name: test (elixir ${{ matrix.elixir }} / otp ${{ matrix.otp }})
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
+  # .tool-versions is the only home for runtime versions: its first version of each tool is
+  # the default every job below runs on, and every other listed Elixir build, paired with
+  # its Erlang by OTP major, is a compatibility lane. The lowest lane is the supported floor:
+  # the locked dep chain binds there (ash 3.32 → crux/reactor → ex_ast ~> 1.18 and
+  # yaml_elixir ~> 1.17), so a fresh resolution will not build below 1.18. CDC hosts also
+  # need replicant's own floor (1.20.3+); replicant is optional, and the floor lane runs the
+  # full suite with it because the lock pins it (it compiles on 1.18 with a requirement
+  # warning only).
+  toolchain:
+    name: toolchain
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      elixir: ${{ steps.versions.outputs.elixir }}
+      otp: ${{ steps.versions.outputs.otp }}
+      beam_lanes: ${{ steps.versions.outputs.beam_lanes }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: Read defaults and compatibility lanes
+        id: versions
+        run: sh scripts/toolchain.sh >> "$GITHUB_OUTPUT"
 
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          # Supported floor. The locked dep chain binds here: ash 3.32 → crux/reactor →
-          # ex_ast (~> 1.18) and yaml_elixir (~> 1.17); a fresh resolution will not build
-          # below 1.18. CDC hosts additionally need replicant's own floor (1.20.3+), but
-          # replicant is optional — the floor lane runs the full suite WITH it because the
-          # lock pins it here (it compiles on 1.18 with a requirement warning only).
-          - elixir: "1.18.3"
-            otp: "27.3"
-          # Current (latest stable release pair). New-compiler warnings surface here
-          # first — Elixir 1.20's unused-require and type-checker warnings were
-          # invisible on the 1.18 lane. Dialyzer runs on this one only.
-          - elixir: "1.20.3"
-            otp: "29.0.5"
-            dialyzer: true
+  # The default toolchain runs the whole suite plus the static checks and the docs build.
+  # New-compiler warnings surface here first (Elixir 1.20's unused-require and type-checker
+  # warnings were invisible on the 1.18 lane).
+  test:
+    name: "test + static (Elixir ${{ needs.toolchain.outputs.elixir }} / OTP ${{ needs.toolchain.outputs.otp }})"
+    needs: toolchain
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
 
     services:
       arcadedb:
@@ -46,7 +54,99 @@ jobs:
         # over an implicitly auto-created property) — under green CI, silently.
         # The full suite is verified on 26.8.1. Drift is watched by the scheduled
         # canary workflow (canary.yml), which runs this suite against `latest`. Bump
-        # deliberately: update tag AND digest together and land the bump like any change.
+        # deliberately: update tag AND digest together, here and in the compat job, and
+        # land the bump like any change.
+        image: arcadedata/arcadedb:26.8.1@sha256:49036720b1678b9c7a6dbf22fc34a812c8d7bed15508c22cbb02c0dddc0ca16a
+        ports:
+          - 2480:2480
+        env:
+          JAVA_OPTS: >-
+            -Darcadedb.server.rootPassword=arcadedb_dev_password
+            -Darcadedb.server.mode=development
+
+    env:
+      MIX_ENV: test
+      ARCADIC_TEST_URL: http://localhost:2480
+      ARCADIC_TEST_PASSWORD: arcadedb_dev_password
+
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up Elixir/OTP
+        uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1
+        with:
+          elixir-version: ${{ needs.toolchain.outputs.elixir }}
+          otp-version: ${{ needs.toolchain.outputs.otp }}
+
+      - name: Cache deps and _build
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            deps
+            _build
+          key: ${{ runner.os }}-mix-${{ needs.toolchain.outputs.otp }}-${{ needs.toolchain.outputs.elixir }}-${{ hashFiles('**/mix.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-mix-${{ needs.toolchain.outputs.otp }}-${{ needs.toolchain.outputs.elixir }}-
+
+      - name: Install dependencies
+        run: mix deps.get
+
+      # Formatter output is Elixir-version-dependent; the default toolchain's is canonical.
+      - name: Check formatting
+        run: mix format --check-formatted
+
+      - name: Compile (warnings as errors)
+        run: mix compile --warnings-as-errors
+
+      - name: Credo
+        run: mix credo --strict
+
+      - name: Hex audit (retired packages + security advisories)
+        run: mix hex.audit
+
+      - name: Wait for ArcadeDB to be ready
+        run: |
+          for i in $(seq 1 60); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' -u "root:$ARCADIC_TEST_PASSWORD" http://localhost:2480/api/v1/ready || true)
+            if [ "$code" = "204" ]; then echo "ArcadeDB ready"; exit 0; fi
+            echo "waiting for ArcadeDB ($i)... last=$code"; sleep 2
+          done
+          echo "ArcadeDB did not become ready in time" >&2
+          exit 1
+
+      - name: Test (unit + integration)
+        run: mix test --include integration
+
+      - name: Cache PLT
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: priv/plts
+          key: ${{ runner.os }}-plt-${{ needs.toolchain.outputs.otp }}-${{ needs.toolchain.outputs.elixir }}-${{ hashFiles('**/mix.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-plt-${{ needs.toolchain.outputs.otp }}-${{ needs.toolchain.outputs.elixir }}-
+
+      - name: Dialyzer
+        run: mix dialyzer
+
+      # The release builds these docs (publish.yml); a warning here would ship on hexdocs.
+      - name: Docs (warnings as errors)
+        env:
+          MIX_ENV: dev
+        run: mix docs --warnings-as-errors
+
+  compat:
+    name: "test (Elixir ${{ matrix.elixir }} / OTP ${{ matrix.otp }})"
+    needs: toolchain
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.toolchain.outputs.beam_lanes) }}
+
+    services:
+      arcadedb:
+        # The same digest-pinned image as the test job.
         image: arcadedata/arcadedb:26.8.1@sha256:49036720b1678b9c7a6dbf22fc34a812c8d7bed15508c22cbb02c0dddc0ca16a
         ports:
           - 2480:2480
@@ -82,9 +182,6 @@ jobs:
       - name: Install dependencies
         run: mix deps.get
 
-      - name: Check formatting
-        run: mix format --check-formatted
-
       - name: Compile (warnings as errors)
         run: mix compile --warnings-as-errors
 
@@ -107,26 +204,14 @@ jobs:
       - name: Test (unit + integration)
         run: mix test --include integration
 
-      - name: Cache PLT
-        if: matrix.dialyzer
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-        with:
-          path: priv/plts
-          key: ${{ runner.os }}-plt-${{ matrix.otp }}-${{ matrix.elixir }}-${{ hashFiles('**/mix.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-plt-${{ matrix.otp }}-${{ matrix.elixir }}-
-
-      - name: Dialyzer
-        if: matrix.dialyzer
-        run: mix dialyzer
-
   # Regression guard for the optional-dep contract: a non-CDC host must compile ash_arcadic
   # WITHOUT `replicant`. The AshArcadic.Replicant.{Apply,Sink.Impl,Pipeline} subtree is
   # compile-gated on Code.ensure_loaded?(Replicant.Sink); everything else is replicant-free.
   # Compile-only (no ArcadeDB service needed).
   compile-without-cdc:
     name: Compile without optional replicant (non-CDC host)
-    runs-on: ubuntu-latest
+    needs: toolchain
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
 
     steps:
@@ -135,8 +220,8 @@ jobs:
       - name: Set up Elixir/OTP
         uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1
         with:
-          elixir-version: "1.20.3"
-          otp-version: "29.0.5"
+          elixir-version: ${{ needs.toolchain.outputs.elixir }}
+          otp-version: ${{ needs.toolchain.outputs.otp }}
 
       - name: Install dependencies
         run: mix deps.get
@@ -166,7 +251,7 @@ jobs:
   # passes only when each one's result is exactly `success` (skipped or cancelled refuses).
   qualified:
     if: always()
-    needs: [test, compile-without-cdc]
+    needs: [toolchain, test, compat, compile-without-cdc]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:

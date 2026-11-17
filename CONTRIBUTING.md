@@ -5,7 +5,8 @@ Thank you for your interest in contributing to AshArcadic!
 ## Prerequisites
 
 - **Elixir** 1.18+ and **Erlang/OTP** 27+ (deps resolve from hex, including
-  [`arcadic`](https://github.com/baselabs/arcadic))
+  [`arcadic`](https://github.com/baselabs/arcadic)). `.tool-versions` lists the exact builds
+  CI runs: the first is the default, the rest are compatibility lanes.
 - **ArcadeDB** for integration tests, at the version CI pins: `docker run -p 2480:2480 \
   -e JAVA_OPTS="-Darcadedb.server.rootPassword=…" arcadedata/arcadedb:26.8.1`
 

@@ -91,8 +91,18 @@ mix test
 ```
 
 CI runs: `mix format --check-formatted`, `mix compile --warnings-as-errors`, `mix credo --strict`,
-`mix hex.audit`, `mix test --include integration` (live ArcadeDB), `mix dialyzer` (`mix quality`
-bundles format, credo and dialyzer). Run the ones that cover your change.
+`mix hex.audit`, `mix test --include integration` (live ArcadeDB), `mix dialyzer` and
+`mix docs --warnings-as-errors` on the default toolchain, and compile, credo, audit and the
+full suite on every compatibility lane (`mix quality` bundles format, credo and dialyzer).
+Run the ones that cover your change.
+
+`.tool-versions` is the only home for Elixir and Erlang versions: the first of each is the
+default every workflow runs on, and each further Elixir build, paired with its Erlang by OTP
+major, is a compatibility lane. The lowest lane is the supported floor. Change versions there,
+never in a workflow.
+
+Hex releases go out through `.github/workflows/publish.yml`, which an owner dispatches from
+`main` after the version commit has landed; the `v<version>` tag goes on that commit.
 
 - Publishing, deploying and pushes to mirrors always need the owner's approval for that action.
 - A test that fails on every run is a defect: fix it, or quarantine it with a reason, in the
