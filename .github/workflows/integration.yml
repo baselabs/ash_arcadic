@@ -113,7 +113,7 @@ jobs:
             | python3 -c 'import json,sys; print("ArcadeDB", json.load(sys.stdin).get("version"))' || true
 
       - name: Test (unit + integration)
-        run: mix test --include integration
+        run: mix test --warnings-as-errors --include integration
 
   # Every notebook the Hex package ships runs top to bottom against this checkout and a live
   # server. The list comes from the built package, so a new notebook is covered with no edit

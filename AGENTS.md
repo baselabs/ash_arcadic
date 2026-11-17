@@ -93,7 +93,7 @@ mix test
 CI runs `mix format --check-formatted`, `mix compile --warnings-as-errors`, `mix credo --strict`,
 `mix audit` (unused locks, Hex retirements, and dependency advisories), `mix dialyzer` and
 `mix docs --warnings-as-errors` on the default toolchain, and `mix compile --warnings-as-errors`,
-`mix credo --strict` and `mix test --include integration`
+`mix credo --strict` and `mix test --warnings-as-errors --include integration`
 against a live, digest-pinned ArcadeDB on every Elixir build (`mix quality` bundles format,
 credo and dialyzer). The pinned image is written once, in ci.yml's `integration` job; the
 reusable `integration.yml` also runs every notebook shipped in the Hex package, top to
