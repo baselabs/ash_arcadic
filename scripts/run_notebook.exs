@@ -116,9 +116,14 @@ defmodule AshArcadic.NotebookRunner do
       |> Macro.prewalk(%{install: 0, ash_arcadic: 0}, &rewrite_install/2)
 
     cond do
-      counts.install != 1 -> fail(path, "the first cell must hold the notebook's Mix.install/2")
-      counts.ash_arcadic != 1 -> fail(path, "the setup cell must install :ash_arcadic exactly once")
-      true -> :ok
+      counts.install != 1 ->
+        fail(path, "the first cell must hold the notebook's Mix.install/2")
+
+      counts.ash_arcadic != 1 ->
+        fail(path, "the setup cell must install :ash_arcadic exactly once")
+
+      true ->
+        :ok
     end
 
     Code.eval_quoted(quoted, [], file: path, line: line)
@@ -140,8 +145,12 @@ defmodule AshArcadic.NotebookRunner do
 
   defp rewrite_args(args), do: {args, 0}
 
-  defp rewrite_dep({:ash_arcadic, _requirement}, n), do: {{:ash_arcadic, [path: @checkout]}, n + 1}
-  defp rewrite_dep({:{}, _, [:ash_arcadic | _]}, n), do: {{:ash_arcadic, [path: @checkout]}, n + 1}
+  defp rewrite_dep({:ash_arcadic, _requirement}, n),
+    do: {{:ash_arcadic, [path: @checkout]}, n + 1}
+
+  defp rewrite_dep({:{}, _, [:ash_arcadic | _]}, n),
+    do: {{:ash_arcadic, [path: @checkout]}, n + 1}
+
   defp rewrite_dep(dep, n), do: {dep, n}
 
   defp refuse_install(path, {line, code}) do
