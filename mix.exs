@@ -72,7 +72,7 @@ defmodule AshArcadic.MixProject do
     [
       maintainers: ["rjpalermo"],
       files:
-        ~w(lib .formatter.exs mix.exs README* LICENSE* CHANGELOG* SECURITY.md CODE_OF_CONDUCT.md CONTRIBUTING.md usage-rules.md documentation),
+        ~w(lib .formatter.exs mix.exs README* LICENSE* CHANGELOG* SECURITY.md CODE_OF_CONDUCT.md CONTRIBUTING.md usage-rules.md documentation livebooks),
       licenses: ["MIT"],
       links: %{
         "GitHub" => @source_url,
@@ -86,8 +86,19 @@ defmodule AshArcadic.MixProject do
       main: "readme",
       source_ref: "v#{@version}",
       source_url: @source_url,
-      extras: [
-        "README.md",
+      extras: extras(),
+      groups_for_extras: [
+        Livebooks: ~r"livebooks/.*",
+        Guides: ~r"documentation/(?!dsls/).*",
+        "DSL Reference": ~r"documentation/dsls/.*"
+      ]
+    ]
+  end
+
+  # Every shipped notebook is also a docs page.
+  defp extras do
+    ["README.md" | Enum.sort(Path.wildcard("livebooks/**/*.livemd"))] ++
+      [
         "SECURITY.md",
         "CODE_OF_CONDUCT.md",
         "usage-rules.md",
@@ -100,12 +111,7 @@ defmodule AshArcadic.MixProject do
         "CHANGELOG.md",
         "CONTRIBUTING.md",
         "LICENSE"
-      ],
-      groups_for_extras: [
-        Guides: ~r"documentation/(?!dsls/).*",
-        "DSL Reference": ~r"documentation/dsls/.*"
       ]
-    ]
   end
 
   defp aliases do

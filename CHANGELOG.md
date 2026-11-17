@@ -24,6 +24,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - arcadic 1.2.4 requires grpc `~> 1.1` for its optional gRPC transport, which closes
   EEF-CVE-2026-121808 (Erlpack codec memory exhaustion) for applications that enable it.
 
+### Documentation
+
+- Ship the Livebooks in the Hex package and ExDoc, and run every shipped notebook against
+  a live ArcadeDB on each qualification run and the latest-image canary.
+
 ## [1.2.2] - 2026-11-01
 
 ### Fixed

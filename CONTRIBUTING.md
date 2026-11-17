@@ -37,6 +37,29 @@ mix dialyzer
 5. Open a Pull Request against `main`. A maintainer lands an accepted change through
    one CI run on `kci/<full sha>`; `main` moves only when that run's `qualified` job passes.
 
+## Live integration and notebooks
+
+`integration.yml` runs the full suite on every toolchain in `.tool-versions` and every
+shipped Livebook on the default toolchain. CI calls it with the digest-pinned ArcadeDB
+image in `ci.yml`; `canary.yml` calls it daily and on demand with `arcadedata/arcadedb:latest`.
+The qualification verdict requires the entire reusable workflow to succeed.
+
+The Hex package includes `livebooks/`; its notebooks also appear in the docs under
+Livebooks. CI discovers notebooks from `mix hex.build --unpack` and fails if none are
+shipped or a tracked `.livemd` is missing from the package. Every shipped notebook runs
+top to bottom in its own VM, preserving cell bindings and aliases. The runner rewrites
+only the setup cell's `:ash_arcadic` dependency to this checkout; other dependencies
+(including `replicant`) resolve from Hex.
+
+To run the tour against a live ArcadeDB, set `ARCADEDB_URL` and `ARCADEDB_PASSWORD`, then:
+
+```bash
+elixir scripts/run_notebook.exs livebooks/tour.livemd
+```
+
+The tour creates and drops its own throwaway database. It needs HTTP only: no extra
+server plugins or Postgres service. Its Docker recipe matches CI's pinned image.
+
 ## Ash conventions
 
 - This is an Ash **data layer** — a `Spark.Dsl.Extension` implementing the

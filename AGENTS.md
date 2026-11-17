@@ -95,7 +95,11 @@ CI runs `mix format --check-formatted`, `mix compile --warnings-as-errors`, `mix
 and `mix compile --warnings-as-errors`, `mix credo --strict` and `mix test --include integration`
 against a live, digest-pinned ArcadeDB on every Elixir build (`mix quality` bundles format,
 credo and dialyzer). The pinned image is written once, in ci.yml's `integration` job; the
-canary runs the same suite against `latest`. Run the checks that cover your change.
+reusable `integration.yml` also runs every notebook shipped in the Hex package, top to
+bottom against this checkout and a live server, on the default toolchain. Its notebook list
+comes from `mix hex.build --unpack`; a tracked notebook omitted from the package fails CI.
+The canary runs both the suite and notebooks against `latest`. The `qualified` job depends
+on the reusable workflow, so both must pass. Run the checks that cover your change.
 
 `.tool-versions` is the only home for Elixir and Erlang versions: the first of each is the
 default every workflow runs on, and each further Elixir build, paired with its Erlang by OTP
@@ -111,6 +115,9 @@ Hex releases go out through `.github/workflows/publish.yml`, which an owner disp
 - Update `CHANGELOG.md` under `[Unreleased]` when behavior, a dependency or a contract changes;
   other docs only when a contract changes.
 
+The Hex package includes `livebooks/`, and every notebook there is an ExDoc extra in the
+Livebooks group.
+
 ## Testing
 
 - **Unit** (`test/*_test.exs`): DSL/verifier/compilation tests, no server.
@@ -120,6 +127,12 @@ Hex releases go out through `.github/workflows/publish.yml`, which an owner disp
   to `async: false` until proven otherwise. When a shared server already runs,
   `ARCADIC_TEST_URL` and `ARCADIC_TEST_PASSWORD` sit in the gitignored `.env`;
   load them with `set -a; . ./.env; set +a`, then `mix test --include integration`.
+
+- **Notebooks** (`livebooks/**/*.livemd`): run each in its own VM with
+  `elixir scripts/run_notebook.exs livebooks/tour.livemd`. The runner preserves cell bindings
+  and aliases, rewrites only `:ash_arcadic` to this checkout, and leaves other deps on Hex.
+  Set `ARCADEDB_URL` and `ARCADEDB_PASSWORD` for a live ArcadeDB; the tour creates and drops
+  its own throwaway database and needs no Postgres or extra server plugins.
 
 ## Docs & lifecycle-artifact policy
 

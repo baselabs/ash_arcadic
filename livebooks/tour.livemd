@@ -27,13 +27,14 @@ ArcadeDB: CRUD + upserts + atomics, query push-down, aggregates + calculations,
 keyset streaming, concurrent bulk writes, fail-closed multitenancy, vector
 search (dense, sparse, hybrid), graph traversal over edges, and the CDC mirror.
 
-**You need a running ArcadeDB.** One docker command (pinned to the line the
-surface is verified against — any 26.10-or-newer image works):
+**You need a running ArcadeDB.** One docker command, pinned to the image CI runs
+this tour against (CI also runs it daily against `arcadedata/arcadedb:latest`). No
+server plugins and no Postgres are needed:
 
 ```bash
 docker run --rm -d --name arcadedb-tour -p 2480:2480 \
   -e JAVA_OPTS="-Darcadedb.server.rootPassword=playwithdata" \
-  arcadedata/arcadedb:26.10.2
+  arcadedata/arcadedb:26.8.1@sha256:49036720b1678b9c7a6dbf22fc34a812c8d7bed15508c22cbb02c0dddc0ca16a
 ```
 
 Then set the two environment variables below (Livebook: use the Secrets panel or
