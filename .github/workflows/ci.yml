@@ -1,11 +1,11 @@
 name: CI
 
+# One qualification run per landing candidate: the candidate commit is pushed to `kci/<sha>`,
+# the `qualified` job below is its verdict, and only then does main move to it. Nothing else
+# starts this workflow; the ArcadeDB `latest` drift canary lives in canary.yml on a schedule.
 on:
   push:
-    branches: [main, 'kci/**']
-    paths-ignore: ['**/*.md', 'docs/**', 'LICENSE*', '.github/ISSUE_TEMPLATE/**']
-  pull_request:
-    branches: [main]
+    branches: ['kci/**']
 
 # Cancel superseded runs on the same ref.
 concurrency:
@@ -43,9 +43,9 @@ jobs:
         # Digest-pinned: `latest` is a moving SNAPSHOT (as of 2026-08-22 it is
         # 26.9.1-SNAPSHOT), and the 26.8→26.9 jump changed DDL behavior (FULL_TEXT
         # over an implicitly auto-created property) — under green CI, silently.
-        # The full 785-test suite is verified on 26.8.1. Drift is watched by the
-        # non-blocking arcadedb-latest-canary job below. Bump deliberately:
-        # re-verify the suite locally, then update tag AND digest together.
+        # The full suite is verified on 26.8.1. Drift is watched by the scheduled
+        # canary workflow (canary.yml), which runs this suite against `latest`. Bump
+        # deliberately: update tag AND digest together and land the bump like any change.
         image: arcadedata/arcadedb:26.8.1@sha256:49036720b1678b9c7a6dbf22fc34a812c8d7bed15508c22cbb02c0dddc0ca16a
         ports:
           - 2480:2480
@@ -160,70 +160,22 @@ jobs:
           mix deps.unlock replicant
           mix compile --force --warnings-as-errors
 
-  # Non-blocking drift tripwire: the test lanes run a digest-pinned ArcadeDB so
-  # they stay reproducible; this job runs the same suite against `latest` so an
-  # upstream behavior change (e.g. the 26.8→26.9 FULL_TEXT DDL change) surfaces
-  # HERE, loudly, instead of silently inside a green pinned lane. A red canary
-  # is information for the next deliberate pin bump, not a merge block.
-  arcadedb-latest-canary:
-    name: canary (ArcadeDB latest)
-    runs-on: ubuntu-latest
-    continue-on-error: true
-    # 2026-11-01 drift (run 41327753934): :latest = 26.11.1-SNAPSHOT renamed the
-    # missing-database exception to DatabaseNotFoundException → :server_error (was
-    # :database_not_found). RESOLVED same day: arcadic 1.2.3 maps all three
-    # server-line shapes (26.11/26.10/<=26.9) to :database_not_found and carries a
-    # live drift-guard; this repo ships it from 1.2.2. Not the dep bump — the
-    # canary-red test was green on pinned 26.8.1 with the same deps.
-
-    services:
-      arcadedb:
-        image: arcadedata/arcadedb:latest
-        ports:
-          - 2480:2480
-        env:
-          JAVA_OPTS: >-
-            -Darcadedb.server.rootPassword=arcadedb_dev_password
-            -Darcadedb.server.mode=development
-
-    env:
-      MIX_ENV: test
-      ARCADIC_TEST_URL: http://localhost:2480
-      ARCADIC_TEST_PASSWORD: arcadedb_dev_password
-
+  # The landing verdict: always runs, needs every other job in this workflow, and
+  # passes only when each one's result is exactly `success` (skipped or cancelled refuses).
+  qualified:
+    if: always()
+    needs: [test, compile-without-cdc]
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-
-      - name: Set up Elixir/OTP
-        uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1
-        with:
-          elixir-version: "1.20.3"
-          otp-version: "29.0.5"
-
-      # Distinct key so the canary never evicts a pinned lane's cache; restore
-      # falls back to the pinned 1.20.3 lane's cache (same deps/build content).
-      - name: Cache deps and _build
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-        with:
-          path: |
-            deps
-            _build
-          key: ${{ runner.os }}-mix-29.0.5-1.20.3-canary-${{ hashFiles('**/mix.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-mix-29.0.5-1.20.3-
-
-      - name: Install dependencies
-        run: mix deps.get
-
-      - name: Wait for ArcadeDB to be ready
+      - name: Require every qualification job to succeed
+        env:
+          NEEDS: ${{ toJSON(needs) }}
         run: |
-          for i in $(seq 1 60); do
-            code=$(curl -s -o /dev/null -w '%{http_code}' -u "root:$ARCADIC_TEST_PASSWORD" http://localhost:2480/api/v1/ready || true)
-            if [ "$code" = "204" ]; then echo "ArcadeDB ready"; exit 0; fi
-            echo "waiting for ArcadeDB ($i)... last=$code"; sleep 2
-          done
-          echo "ArcadeDB did not become ready in time" >&2
-          exit 1
-
-      - name: Test (unit + integration) against latest
-        run: mix test --include integration
+          python3 - <<'PY'
+          import json, os, sys
+          results = json.loads(os.environ['NEEDS'])
+          failed = [name for name, job in results.items() if job['result'] != 'success']
+          if failed:
+              print('Qualification refused: ' + ', '.join(failed))
+          sys.exit(bool(failed) or not results)
+          PY
