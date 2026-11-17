@@ -4,19 +4,21 @@
 
 ```elixir
 # Hex install (the published packages):
-Mix.install([
-  {:ash_arcadic, "~> 1.2"},
-  # `replicant` is the CDC transport (Postgres logical replication → decoded
-  # transactions) for the CDC-mirror section near the end. ash_arcadic declares
-  # it `optional: true`, so a tour without that section can drop this line.
-  {:replicant, "~> 1.2"}
-])
+Mix.install(
+  [
+    {:ash_arcadic, "~> 1.2"},
+    # `replicant` is the CDC transport (Postgres logical replication → decoded
+    # transactions) for the CDC-mirror section near the end. ash_arcadic declares
+    # it `optional: true`, so a tour without that section can drop this line.
+    {:replicant, "~> 1.2"}
+  ],
+  # Ash requires an explicit string-length rule; this is the one it recommends.
+  config: [ash: [default_string_length_count: :codepoints]]
+)
 
-# Local dev from a checkout instead: path-install both.
-#   Mix.install([
-#     {:ash_arcadic, path: Path.join(__DIR__, "..")},
-#     {:replicant, path: Path.join(__DIR__, "../../replicant")}
-#   ])
+# Local dev from a checkout instead: path-install both, with the same `config:`.
+#   {:ash_arcadic, path: Path.join(__DIR__, "..")},
+#   {:replicant, path: Path.join(__DIR__, "../../replicant")}
 ```
 
 ## What this is

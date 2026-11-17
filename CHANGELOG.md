@@ -26,6 +26,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Documentation
 
+- The tour runs again on current Ash: its `Mix.install` sets
+  `config :ash, default_string_length_count: :codepoints`, which Ash now requires
+  (without it every resource definition raises `Ash.Error.Framework.DslError`). The README's
+  install steps show the same line.
 - Ship the Livebooks in the Hex package and ExDoc, and run every shipped notebook against
   a live ArcadeDB on each qualification run and the latest-image canary.
 

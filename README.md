@@ -87,6 +87,13 @@ def deps do
 end
 ```
 
+Ash requires an explicit string-length rule in `config/config.exs`; the one it recommends
+(and this library's own config uses) is:
+
+```elixir
+config :ash, default_string_length_count: :codepoints
+```
+
 The Postgres→ArcadeDB CDC sink is optional — add `{:replicant, "~> 1.2"}` only if you
 use it (see `usage-rules.md`); a non-CDC host builds `ash_arcadic` without it.
 
