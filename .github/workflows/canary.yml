@@ -1,7 +1,7 @@
 name: Canary (ArcadeDB latest)
 
-# Drift tripwire. CI's test lanes run a digest-pinned ArcadeDB so a landing's verdict is
-# reproducible; this workflow runs the same suite against the moving `latest` image so an
+# Drift tripwire. CI's live suite runs a digest-pinned ArcadeDB so a landing's verdict is
+# reproducible; this workflow runs the same suite, on every build, against the moving `latest` image so an
 # upstream behavior change (e.g. the 26.8→26.9 FULL_TEXT DDL change, or the 26.11
 # DatabaseNotFoundException rename) surfaces here, loudly, before the next deliberate pin
 # bump. It reads an input that changes outside this repository, so the same commit can pass
@@ -23,68 +23,8 @@ permissions:
   contents: read
 
 jobs:
-  arcadedb-latest-canary:
+  latest:
     name: canary (ArcadeDB latest)
-    runs-on: ubuntu-24.04
-    timeout-minutes: 20
-
-    services:
-      arcadedb:
-        image: arcadedata/arcadedb:latest
-        ports:
-          - 2480:2480
-        env:
-          JAVA_OPTS: >-
-            -Darcadedb.server.rootPassword=arcadedb_dev_password
-            -Darcadedb.server.mode=development
-
-    env:
-      MIX_ENV: test
-      ARCADIC_TEST_URL: http://localhost:2480
-      ARCADIC_TEST_PASSWORD: arcadedb_dev_password
-
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-
-      - name: Read the default toolchain
-        id: versions
-        run: sh scripts/toolchain.sh >> "$GITHUB_OUTPUT"
-
-      - name: Set up Elixir/OTP
-        uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1
-        with:
-          elixir-version: ${{ steps.versions.outputs.elixir }}
-          otp-version: ${{ steps.versions.outputs.otp }}
-
-      # Distinct key so the canary never evicts a pinned lane's cache; restore falls back
-      # to the default toolchain's CI cache (same deps/build content).
-      - name: Cache deps and _build
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-        with:
-          path: |
-            deps
-            _build
-          key: ${{ runner.os }}-mix-${{ steps.versions.outputs.otp }}-${{ steps.versions.outputs.elixir }}-canary-${{ hashFiles('**/mix.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-mix-${{ steps.versions.outputs.otp }}-${{ steps.versions.outputs.elixir }}-
-
-      - name: Install dependencies
-        run: mix deps.get
-
-      - name: Wait for ArcadeDB to be ready
-        run: |
-          for i in $(seq 1 60); do
-            code=$(curl -s -o /dev/null -w '%{http_code}' -u "root:$ARCADIC_TEST_PASSWORD" http://localhost:2480/api/v1/ready || true)
-            if [ "$code" = "204" ]; then echo "ArcadeDB ready"; exit 0; fi
-            echo "waiting for ArcadeDB ($i)... last=$code"; sleep 2
-          done
-          echo "ArcadeDB did not become ready in time" >&2
-          exit 1
-
-      - name: Report the ArcadeDB version under test
-        run: |
-          curl -s -u "root:$ARCADIC_TEST_PASSWORD" http://localhost:2480/api/v1/server?mode=basic \
-            | python3 -c 'import json,sys; print("ArcadeDB", json.load(sys.stdin).get("version"))' || true
-
-      - name: Test (unit + integration) against latest
-        run: mix test --include integration
+    uses: ./.github/workflows/integration.yml
+    with:
+      image: arcadedata/arcadedb:latest

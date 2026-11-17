@@ -38,36 +38,17 @@ jobs:
         id: versions
         run: sh scripts/toolchain.sh >> "$GITHUB_OUTPUT"
 
-  # The default toolchain runs the whole suite plus the static checks and the docs build.
-  # New-compiler warnings surface here first (Elixir 1.20's unused-require and type-checker
-  # warnings were invisible on the 1.18 lane).
-  test:
-    name: "test + static (Elixir ${{ needs.toolchain.outputs.elixir }} / OTP ${{ needs.toolchain.outputs.otp }})"
+  # Static checks and the docs build, on the default toolchain. The suite itself runs in
+  # the `integration` job below, on every build. New-compiler warnings surface on the default
+  # toolchain first (Elixir 1.20's unused-require and type-checker warnings were invisible on
+  # the 1.18 lane).
+  static:
+    name: "static (Elixir ${{ needs.toolchain.outputs.elixir }} / OTP ${{ needs.toolchain.outputs.otp }})"
     needs: toolchain
     runs-on: ubuntu-24.04
     timeout-minutes: 25
-
-    services:
-      arcadedb:
-        # Digest-pinned: `latest` is a moving SNAPSHOT (as of 2026-08-22 it is
-        # 26.9.1-SNAPSHOT), and the 26.8→26.9 jump changed DDL behavior (FULL_TEXT
-        # over an implicitly auto-created property) — under green CI, silently.
-        # The full suite is verified on 26.8.1. Drift is watched by the scheduled
-        # canary workflow (canary.yml), which runs this suite against `latest`. Bump
-        # deliberately: update tag AND digest together, here and in the compat job, and
-        # land the bump like any change.
-        image: arcadedata/arcadedb:26.8.1@sha256:49036720b1678b9c7a6dbf22fc34a812c8d7bed15508c22cbb02c0dddc0ca16a
-        ports:
-          - 2480:2480
-        env:
-          JAVA_OPTS: >-
-            -Darcadedb.server.rootPassword=arcadedb_dev_password
-            -Darcadedb.server.mode=development
-
     env:
       MIX_ENV: test
-      ARCADIC_TEST_URL: http://localhost:2480
-      ARCADIC_TEST_PASSWORD: arcadedb_dev_password
 
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -104,19 +85,6 @@ jobs:
       - name: Hex audit (retired packages + security advisories)
         run: mix hex.audit
 
-      - name: Wait for ArcadeDB to be ready
-        run: |
-          for i in $(seq 1 60); do
-            code=$(curl -s -o /dev/null -w '%{http_code}' -u "root:$ARCADIC_TEST_PASSWORD" http://localhost:2480/api/v1/ready || true)
-            if [ "$code" = "204" ]; then echo "ArcadeDB ready"; exit 0; fi
-            echo "waiting for ArcadeDB ($i)... last=$code"; sleep 2
-          done
-          echo "ArcadeDB did not become ready in time" >&2
-          exit 1
-
-      - name: Test (unit + integration)
-        run: mix test --include integration
-
       - name: Cache PLT
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
@@ -134,75 +102,15 @@ jobs:
           MIX_ENV: dev
         run: mix docs --warnings-as-errors
 
-  compat:
-    name: "test (Elixir ${{ matrix.elixir }} / OTP ${{ matrix.otp }})"
-    needs: toolchain
-    runs-on: ubuntu-24.04
-    timeout-minutes: 20
-    strategy:
-      fail-fast: false
-      matrix:
-        include: ${{ fromJSON(needs.toolchain.outputs.beam_lanes) }}
-
-    services:
-      arcadedb:
-        # The same digest-pinned image as the test job.
-        image: arcadedata/arcadedb:26.8.1@sha256:49036720b1678b9c7a6dbf22fc34a812c8d7bed15508c22cbb02c0dddc0ca16a
-        ports:
-          - 2480:2480
-        env:
-          JAVA_OPTS: >-
-            -Darcadedb.server.rootPassword=arcadedb_dev_password
-            -Darcadedb.server.mode=development
-
-    env:
-      MIX_ENV: test
-      ARCADIC_TEST_URL: http://localhost:2480
-      ARCADIC_TEST_PASSWORD: arcadedb_dev_password
-
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-
-      - name: Set up Elixir/OTP
-        uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1
-        with:
-          elixir-version: ${{ matrix.elixir }}
-          otp-version: ${{ matrix.otp }}
-
-      - name: Cache deps and _build
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-        with:
-          path: |
-            deps
-            _build
-          key: ${{ runner.os }}-mix-${{ matrix.otp }}-${{ matrix.elixir }}-${{ hashFiles('**/mix.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-mix-${{ matrix.otp }}-${{ matrix.elixir }}-
-
-      - name: Install dependencies
-        run: mix deps.get
-
-      - name: Compile (warnings as errors)
-        run: mix compile --warnings-as-errors
-
-      - name: Credo
-        run: mix credo --strict
-
-      - name: Hex audit (retired packages + security advisories)
-        run: mix hex.audit
-
-      - name: Wait for ArcadeDB to be ready
-        run: |
-          for i in $(seq 1 60); do
-            code=$(curl -s -o /dev/null -w '%{http_code}' -u "root:$ARCADIC_TEST_PASSWORD" http://localhost:2480/api/v1/ready || true)
-            if [ "$code" = "204" ]; then echo "ArcadeDB ready"; exit 0; fi
-            echo "waiting for ArcadeDB ($i)... last=$code"; sleep 2
-          done
-          echo "ArcadeDB did not become ready in time" >&2
-          exit 1
-
-      - name: Test (unit + integration)
-        run: mix test --include integration
+  # Digest-pinned: `latest` is a moving SNAPSHOT, and the 26.8→26.9 jump changed DDL behavior
+  # (FULL_TEXT over an implicitly auto-created property) under green CI, silently. Drift is
+  # watched by canary.yml, which runs the same suite against `latest`. Bump deliberately:
+  # tag and digest together, here only, landed like any change.
+  integration:
+    name: live suite (ArcadeDB 26.8.1)
+    uses: ./.github/workflows/integration.yml
+    with:
+      image: arcadedata/arcadedb:26.8.1@sha256:49036720b1678b9c7a6dbf22fc34a812c8d7bed15508c22cbb02c0dddc0ca16a
 
   # Regression guard for the optional-dep contract: a non-CDC host must compile ash_arcadic
   # WITHOUT `replicant`. The AshArcadic.Replicant.{Apply,Sink.Impl,Pipeline} subtree is
@@ -251,7 +159,7 @@ jobs:
   # passes only when each one's result is exactly `success` (skipped or cancelled refuses).
   qualified:
     if: always()
-    needs: [toolchain, test, compat, compile-without-cdc]
+    needs: [toolchain, static, integration, compile-without-cdc]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:

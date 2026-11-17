@@ -1,0 +1,110 @@
+name: Live integration
+
+# The full suite (unit + live integration) on every Elixir build .tool-versions lists, shared
+# by two callers: ci.yml runs it against a digest-pinned ArcadeDB image so a landing's
+# verdict is reproducible, and canary.yml runs it against the moving `latest` image so
+# upstream drift surfaces before the next deliberate pin bump.
+on:
+  workflow_call:
+    inputs:
+      image:
+        description: ArcadeDB image reference (tag, or tag@digest)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  # The default build and every compatibility lane, paired with its Erlang by OTP major.
+  toolchain:
+    name: toolchain
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      builds: ${{ steps.builds.outputs.builds }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Read defaults and compatibility lanes
+        id: versions
+        run: sh scripts/toolchain.sh >> "$GITHUB_OUTPUT"
+      - name: List every build
+        id: builds
+        env:
+          ELIXIR: ${{ steps.versions.outputs.elixir }}
+          OTP: ${{ steps.versions.outputs.otp }}
+          LANES: ${{ steps.versions.outputs.beam_lanes }}
+        run: |
+          echo "builds=$(jq -cn --arg e "$ELIXIR" --arg o "$OTP" --argjson lanes "$LANES" \
+            '[{elixir: $e, otp: $o}] + $lanes')" >> "$GITHUB_OUTPUT"
+
+  suite:
+    name: "suite (Elixir ${{ matrix.elixir }} / OTP ${{ matrix.otp }})"
+    needs: toolchain
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.toolchain.outputs.builds) }}
+
+    services:
+      arcadedb:
+        image: ${{ inputs.image }}
+        ports:
+          - 2480:2480
+        env:
+          JAVA_OPTS: >-
+            -Darcadedb.server.rootPassword=arcadedb_dev_password
+            -Darcadedb.server.mode=development
+
+    env:
+      MIX_ENV: test
+      ARCADIC_TEST_URL: http://localhost:2480
+      ARCADIC_TEST_PASSWORD: arcadedb_dev_password
+
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up Elixir/OTP
+        uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1
+        with:
+          elixir-version: ${{ matrix.elixir }}
+          otp-version: ${{ matrix.otp }}
+
+      - name: Cache deps and _build
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            deps
+            _build
+          key: ${{ runner.os }}-mix-${{ matrix.otp }}-${{ matrix.elixir }}-${{ hashFiles('**/mix.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-mix-${{ matrix.otp }}-${{ matrix.elixir }}-
+
+      - name: Install dependencies
+        run: mix deps.get
+
+      - name: Compile (warnings as errors)
+        run: mix compile --warnings-as-errors
+
+      - name: Credo
+        run: mix credo --strict
+
+      - name: Wait for ArcadeDB to be ready
+        run: |
+          for i in $(seq 1 60); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' -u "root:$ARCADIC_TEST_PASSWORD" http://localhost:2480/api/v1/ready || true)
+            if [ "$code" = "204" ]; then echo "ArcadeDB ready"; exit 0; fi
+            echo "waiting for ArcadeDB ($i)... last=$code"; sleep 2
+          done
+          echo "ArcadeDB did not become ready in time" >&2
+          exit 1
+
+      - name: Report the ArcadeDB version under test
+        run: |
+          curl -s -u "root:$ARCADIC_TEST_PASSWORD" "http://localhost:2480/api/v1/server?mode=basic" \
+            | python3 -c 'import json,sys; print("ArcadeDB", json.load(sys.stdin).get("version"))' || true
+
+      - name: Test (unit + integration)
+        run: mix test --include integration

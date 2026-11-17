@@ -90,11 +90,12 @@ mix format
 mix test
 ```
 
-CI runs: `mix format --check-formatted`, `mix compile --warnings-as-errors`, `mix credo --strict`,
-`mix hex.audit`, `mix test --include integration` (live ArcadeDB), `mix dialyzer` and
-`mix docs --warnings-as-errors` on the default toolchain, and compile, credo, audit and the
-full suite on every compatibility lane (`mix quality` bundles format, credo and dialyzer).
-Run the ones that cover your change.
+CI runs `mix format --check-formatted`, `mix compile --warnings-as-errors`, `mix credo --strict`,
+`mix hex.audit`, `mix dialyzer` and `mix docs --warnings-as-errors` on the default toolchain,
+and `mix compile --warnings-as-errors`, `mix credo --strict` and `mix test --include integration`
+against a live, digest-pinned ArcadeDB on every Elixir build (`mix quality` bundles format,
+credo and dialyzer). The pinned image is written once, in ci.yml's `integration` job; the
+canary runs the same suite against `latest`. Run the checks that cover your change.
 
 `.tool-versions` is the only home for Elixir and Erlang versions: the first of each is the
 default every workflow runs on, and each further Elixir build, paired with its Erlang by OTP
