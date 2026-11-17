@@ -6,8 +6,8 @@ Thank you for your interest in contributing to AshArcadic!
 
 - **Elixir** 1.18+ and **Erlang/OTP** 27+ (deps resolve from hex, including
   [`arcadic`](https://github.com/baselabs/arcadic))
-- **ArcadeDB** for integration tests: `docker run -p 2480:2480 \
-  -e JAVA_OPTS="-Darcadedb.server.rootPassword=…" arcadedata/arcadedb:latest`
+- **ArcadeDB** for integration tests, at the version CI pins: `docker run -p 2480:2480 \
+  -e JAVA_OPTS="-Darcadedb.server.rootPassword=…" arcadedata/arcadedb:26.8.1`
 
 ## Getting Started
 
@@ -33,7 +33,8 @@ mix dialyzer
 ```
 
 4. Update `CHANGELOG.md` under `[Unreleased]`.
-5. Open a Pull Request against `main`.
+5. Open a Pull Request against `main`. A maintainer lands an accepted change through
+   one CI run on `kci/<full sha>`; `main` moves only when that run's `qualified` job passes.
 
 ## Ash conventions
 

@@ -75,8 +75,14 @@ DSL docs with `mix spark.cheat_sheets --extensions AshArcadic.DataLayer,AshArcad
 
 ## Workflow
 
-Make the change, run the tests that cover it, commit with named paths, and push to `main`.
-CI runs once on `main`; if it goes red, fix forward.
+Make the change, run the tests that cover it, and commit with named paths. Nobody pushes
+`main`. A commit lands through one CI run on `kci/<full sha>`; that workflow's final
+`qualified` job is the verdict, and `main` moves to the commit only after `qualified` succeeds.
+If it goes red, fix forward in a new commit.
+
+The `arcadedb:latest` canary (`.github/workflows/canary.yml`) runs daily and on demand
+against the moving upstream image. It never gates a landing: a red canary is upstream drift
+to fix before the next deliberate ArcadeDB pin bump.
 
 ```bash
 mix deps.get          # fetch deps (ash, arcadic, … from hex)
