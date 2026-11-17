@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.3] - 2026-11-17
+
+### Fixed
+
+- arcadic 1.2.3 → **1.2.4**, and the floor rises to `~> 1.2.4`. The ArcadeDB 26.12 line
+  rejects the three-argument `SEARCH_INDEX(ref, q, {metadata:true})` that arcadic emitted
+  for scored full-text search, so a hybrid vector search with a full-text arm failed on
+  26.12. This was the 2026-11-17 `arcadedb:latest` canary failure (three
+  `VectorSearchSparseHybridTest` cases). arcadic 1.2.4 emits the two-argument form, with
+  identical rows, order and scores on the older lines.
+
+### Security
+
+- The lock moves ecto to 3.14.3, which closes EEF-CVE-2026-118391 (HIGH: unbounded query
+  cache growth from interpolated JSON paths and splice lists). ecto reaches this library
+  through Ash; a host application resolves its own ecto, so update it there too.
+- arcadic 1.2.4 requires grpc `~> 1.1` for its optional gRPC transport, which closes
+  EEF-CVE-2026-121808 (Erlpack codec memory exhaustion) for applications that enable it.
+
 ## [1.2.2] - 2026-11-01
 
 ### Fixed

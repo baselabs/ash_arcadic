@@ -13,9 +13,10 @@ enforced **Ash-natively**. It executes through the
 [`arcadic`](https://github.com/baselabs/arcadic) client (the transport — the
 "`postgrex` of ArcadeDB").
 
-> **Status: released.** `v1.2.2` is on Hex — `{:ash_arcadic, "~> 1.2"}`. The full
-> capabilities roadmap has shipped, plus an optional Postgres→ArcadeDB CDC sink (876
-> tests incl. live integration against ArcadeDB 26.10, dialyzer clean). Working rules
+> **Status: released.** `v1.2.3` is on Hex — `{:ash_arcadic, "~> 1.2"}`. The full
+> capabilities roadmap has shipped, plus an optional Postgres→ArcadeDB CDC sink (883
+> tests incl. live integration against ArcadeDB 26.8.1, and daily against the latest
+> ArcadeDB image; dialyzer clean). Working rules
 > for contributors are in
 > [`AGENTS.md`](https://github.com/baselabs/ash_arcadic/blob/main/AGENTS.md); consumer
 > usage rules (the fine print per feature) are in [`usage-rules.md`](usage-rules.md).
