@@ -84,6 +84,11 @@ The `arcadedb:latest` canary (`.github/workflows/canary.yml`) runs daily and on 
 against the moving upstream image. It never gates a landing: a red canary is upstream drift
 to fix before the next deliberate ArcadeDB pin bump.
 
+CI and the canary only restore caches; `.github/workflows/cache-warmer.yml` is the one writer.
+Daily and on demand, and only on the default branch, it builds any missing cache from scratch:
+`deps` and `_build` for each Elixir build, and the dialyzer PLT for the default build. A cache's
+path or key changes in the warmer and in every restore step together.
+
 ```bash
 mix deps.get          # fetch deps (ash, arcadic, … from hex)
 mix format

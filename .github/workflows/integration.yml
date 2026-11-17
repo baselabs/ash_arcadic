@@ -78,13 +78,14 @@ jobs:
           elixir-version: ${{ matrix.elixir }}
           otp-version: ${{ matrix.otp }}
 
-      - name: Cache deps and _build
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      # Restore only: cache-warmer.yml on the default branch is the one writer.
+      - name: Restore deps and _build
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             deps
             _build
-          key: ${{ runner.os }}-mix-${{ matrix.otp }}-${{ matrix.elixir }}-${{ hashFiles('**/mix.lock') }}
+          key: ${{ runner.os }}-mix-${{ matrix.otp }}-${{ matrix.elixir }}-${{ hashFiles('mix.lock') }}
           restore-keys: |
             ${{ runner.os }}-mix-${{ matrix.otp }}-${{ matrix.elixir }}-
 
@@ -121,8 +122,8 @@ jobs:
   notebooks:
     name: notebooks
     runs-on: ubuntu-24.04
-    # 2x 1.6 min, run 44163206937
-    timeout-minutes: 4
+    # 2x 1.6 min, run 44163206937, raised to the 5 min floor
+    timeout-minutes: 5
     env:
       PW: probe-test-pw
       ARCADEDB_IMAGE: ${{ inputs.image }}
@@ -140,14 +141,8 @@ jobs:
           elixir-version: ${{ steps.versions.outputs.elixir }}
           otp-version: ${{ steps.versions.outputs.otp }}
 
-      - name: Restore deps cache
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: deps
-          key: ${{ runner.os }}-mix-${{ steps.versions.outputs.otp }}-${{ steps.versions.outputs.elixir }}-${{ hashFiles('**/mix.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-mix-${{ steps.versions.outputs.otp }}-${{ steps.versions.outputs.elixir }}-
-
+      # No cache: each notebook builds in its own Mix.install project, and this checkout's deps
+      # are fetched only to build the package.
       - run: mix deps.get --check-locked
 
       - name: Build and inspect the package and list its notebooks

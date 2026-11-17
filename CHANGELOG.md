@@ -16,6 +16,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   fails the build.
 - CI actions run on the Node.js 24 runtime: `actions/checkout` v7, `actions/cache` v6
   and `erlef/setup-beam` v1.
+- CI and the canary restore their caches and never write them. A daily
+  `cache-warmer.yml` run on the default branch is the one writer, so every landing run
+  starts from compiled `deps` and `_build` and a built dialyzer PLT.
 - Add the dev/test dependency `mix_audit ~> 2.1` and run both Hex and dependency
   security audits, with the unused-lock check, through `mix audit` in qualification.
 

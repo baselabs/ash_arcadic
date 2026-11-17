@@ -65,13 +65,14 @@ jobs:
           elixir-version: ${{ needs.toolchain.outputs.elixir }}
           otp-version: ${{ needs.toolchain.outputs.otp }}
 
-      - name: Cache deps and _build
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      # Restore only: cache-warmer.yml on the default branch is the one writer.
+      - name: Restore deps and _build
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             deps
             _build
-          key: ${{ runner.os }}-mix-${{ needs.toolchain.outputs.otp }}-${{ needs.toolchain.outputs.elixir }}-${{ hashFiles('**/mix.lock') }}
+          key: ${{ runner.os }}-mix-${{ needs.toolchain.outputs.otp }}-${{ needs.toolchain.outputs.elixir }}-${{ hashFiles('mix.lock') }}
           restore-keys: |
             ${{ runner.os }}-mix-${{ needs.toolchain.outputs.otp }}-${{ needs.toolchain.outputs.elixir }}-
 
@@ -91,11 +92,11 @@ jobs:
       - name: Dependency audits (unused locks, retirements, and security advisories)
         run: mix audit
 
-      - name: Cache PLT
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      - name: Restore the PLT
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: priv/plts
-          key: ${{ runner.os }}-plt-${{ needs.toolchain.outputs.otp }}-${{ needs.toolchain.outputs.elixir }}-${{ hashFiles('**/mix.lock') }}
+          key: ${{ runner.os }}-plt-${{ needs.toolchain.outputs.otp }}-${{ needs.toolchain.outputs.elixir }}-${{ hashFiles('mix.lock') }}
           restore-keys: |
             ${{ runner.os }}-plt-${{ needs.toolchain.outputs.otp }}-${{ needs.toolchain.outputs.elixir }}-
 
