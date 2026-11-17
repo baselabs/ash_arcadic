@@ -100,6 +100,8 @@ bottom against this checkout and a live server, on the default toolchain. Its no
 comes from `mix hex.build --unpack`; a tracked notebook omitted from the package fails CI.
 The canary runs both the suite and notebooks against `latest`. The `qualified` job depends
 on the reusable workflow, so both must pass. Run the checks that cover your change.
+Every job fetches with `mix deps.get --check-locked`, so a `mix.lock` that does not match
+`mix.exs` fails CI: commit lock changes with the change that causes them.
 
 `.tool-versions` is the only home for Elixir and Erlang versions: the first of each is the
 default every workflow runs on, and each further Elixir build, paired with its Erlang by OTP

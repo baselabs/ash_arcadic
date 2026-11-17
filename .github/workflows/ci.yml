@@ -70,7 +70,7 @@ jobs:
             ${{ runner.os }}-mix-${{ needs.toolchain.outputs.otp }}-${{ needs.toolchain.outputs.elixir }}-
 
       - name: Install dependencies
-        run: mix deps.get
+        run: mix deps.get --check-locked
 
       # Formatter output is Elixir-version-dependent; the default toolchain's is canonical.
       - name: Check formatting
@@ -132,7 +132,7 @@ jobs:
           otp-version: ${{ needs.toolchain.outputs.otp }}
 
       - name: Install dependencies
-        run: mix deps.get
+        run: mix deps.get --check-locked
 
       - name: Compile the replicant-free subtree (optional replicant dep dropped)
         run: |
