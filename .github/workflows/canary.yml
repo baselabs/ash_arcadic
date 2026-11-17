@@ -26,6 +26,7 @@ jobs:
   arcadedb-latest-canary:
     name: canary (ArcadeDB latest)
     runs-on: ubuntu-latest
+    timeout-minutes: 20
 
     services:
       arcadedb:
