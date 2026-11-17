@@ -91,8 +91,9 @@ mix test
 ```
 
 CI runs `mix format --check-formatted`, `mix compile --warnings-as-errors`, `mix credo --strict`,
-`mix hex.audit`, `mix dialyzer` and `mix docs --warnings-as-errors` on the default toolchain,
-and `mix compile --warnings-as-errors`, `mix credo --strict` and `mix test --include integration`
+`mix audit` (unused locks, Hex retirements, and dependency advisories), `mix dialyzer` and
+`mix docs --warnings-as-errors` on the default toolchain, and `mix compile --warnings-as-errors`,
+`mix credo --strict` and `mix test --include integration`
 against a live, digest-pinned ArcadeDB on every Elixir build (`mix quality` bundles format,
 credo and dialyzer). The pinned image is written once, in ci.yml's `integration` job; the
 reusable `integration.yml` also runs every notebook shipped in the Hex package, top to
@@ -134,11 +135,13 @@ release script or a secret. This file points at it and does not copy it.
   `.github/`, a Dockerfile, a release script or anything that touches a secret, send infra the
   branch and head commit and wait for its review. Any CI/CD, runner, build-machine or key
   problem goes to infra, not around it.
-- **On the build machine:** gate work on the remote runner's `where` check and your own routed
-  run, never on its `doctor`. Never list process arguments (no `ps` with `args` or `-f`, no
-  `/proc/*/cmdline`); use `ps -eo pid,etimes,pcpu,comm`. A secret never appears on a command
-  line, in a log or in a message; if you see one exposed, tell infra where it sits without
-  copying the value. Nothing that compiles or tests runs on a maintainer's workstation.
+- **Where checks run:** this repository is public, so it never uses a self-hosted runner or
+  the build machine, and nothing that compiles or tests runs on a maintainer's workstation.
+  Its checks run on GitHub-hosted runners: push the branch as `kci/<topic>` (ci.yml starts on
+  `kci/**`), read that run, fix forward, and delete `kci/<topic>` once the change has landed.
+  A secret never appears on a command line, in a log or in a message; if you see one exposed,
+  tell infra where it sits without copying the value. Never list process arguments (no `ps`
+  with `args` or `-f`, no `/proc/*/cmdline`).
 - **Messages to infra:** one per result, complete enough to act on without a reply. No
   acknowledgements and no status notes.
 - Every brief given to a sub-agent carries these same rules.

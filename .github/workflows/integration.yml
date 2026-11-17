@@ -20,11 +20,14 @@ jobs:
   toolchain:
     name: toolchain
     runs-on: ubuntu-24.04
+    # floor 5 min for runner start-up; slowest green 0.2 min, run 44157254512
     timeout-minutes: 5
     outputs:
       builds: ${{ steps.builds.outputs.builds }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
       - name: Read defaults and compatibility lanes
         id: versions
         run: sh scripts/toolchain.sh >> "$GITHUB_OUTPUT"
@@ -42,7 +45,8 @@ jobs:
     name: "suite (Elixir ${{ matrix.elixir }} / OTP ${{ matrix.otp }})"
     needs: toolchain
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    # 2x 2.5 min, run 44157784640
+    timeout-minutes: 5
     strategy:
       fail-fast: false
       matrix:
@@ -65,9 +69,11 @@ jobs:
 
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
 
       - name: Set up Elixir/OTP
-        uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1
+        uses: ./.github/actions/beam
         with:
           elixir-version: ${{ matrix.elixir }}
           otp-version: ${{ matrix.otp }}
@@ -115,18 +121,21 @@ jobs:
   notebooks:
     name: notebooks
     runs-on: ubuntu-24.04
-    timeout-minutes: 25
+    # 2x 1.6 min, run 44163206937
+    timeout-minutes: 4
     env:
       PW: probe-test-pw
       ARCADEDB_IMAGE: ${{ inputs.image }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
 
       - name: Read the default toolchain
         id: versions
         run: sh scripts/toolchain.sh >> "$GITHUB_OUTPUT"
 
-      - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1
+      - uses: ./.github/actions/beam
         with:
           elixir-version: ${{ steps.versions.outputs.elixir }}
           otp-version: ${{ steps.versions.outputs.otp }}
@@ -141,9 +150,12 @@ jobs:
 
       - run: mix deps.get --check-locked
 
-      - name: List the notebooks the package ships
+      - name: Build and inspect the package and list its notebooks
         run: |
+          VERSION=$(mix run --no-start --no-compile --no-deps-check -e 'IO.puts(Mix.Project.config()[:version])')
+          export VERSION
           mix hex.build --unpack --output "$RUNNER_TEMP/package"
+          elixir scripts/inspect_package.exs "$RUNNER_TEMP/package"
           (cd "$RUNNER_TEMP/package" && find . -name '*.livemd' | sed 's|^\./||' | sort) > "$RUNNER_TEMP/shipped"
           git ls-files '*.livemd' | sort > "$RUNNER_TEMP/tracked"
           unshipped=$(comm -23 "$RUNNER_TEMP/tracked" "$RUNNER_TEMP/shipped")

@@ -27,6 +27,7 @@ jobs:
   toolchain:
     name: toolchain
     runs-on: ubuntu-24.04
+    # floor 5 min for runner start-up; slowest green 0.2 min, run 44150018570
     timeout-minutes: 5
     outputs:
       elixir: ${{ steps.versions.outputs.elixir }}
@@ -34,6 +35,8 @@ jobs:
       beam_lanes: ${{ steps.versions.outputs.beam_lanes }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
       - name: Read defaults and compatibility lanes
         id: versions
         run: sh scripts/toolchain.sh >> "$GITHUB_OUTPUT"
@@ -46,15 +49,18 @@ jobs:
     name: "static (Elixir ${{ needs.toolchain.outputs.elixir }} / OTP ${{ needs.toolchain.outputs.otp }})"
     needs: toolchain
     runs-on: ubuntu-24.04
-    timeout-minutes: 25
+    # 2x 8.3 min, run 44163206937
+    timeout-minutes: 17
     env:
       MIX_ENV: test
 
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
 
       - name: Set up Elixir/OTP
-        uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1
+        uses: ./.github/actions/beam
         with:
           elixir-version: ${{ needs.toolchain.outputs.elixir }}
           otp-version: ${{ needs.toolchain.outputs.otp }}
@@ -82,8 +88,8 @@ jobs:
       - name: Credo
         run: mix credo --strict
 
-      - name: Hex audit (retired packages + security advisories)
-        run: mix hex.audit
+      - name: Dependency audits (unused locks, retirements, and security advisories)
+        run: mix audit
 
       - name: Cache PLT
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
@@ -120,13 +126,16 @@ jobs:
     name: Compile without optional replicant (non-CDC host)
     needs: toolchain
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    # 2x 2.4 min, run 29974064879
+    timeout-minutes: 5
 
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
 
       - name: Set up Elixir/OTP
-        uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1
+        uses: ./.github/actions/beam
         with:
           elixir-version: ${{ needs.toolchain.outputs.elixir }}
           otp-version: ${{ needs.toolchain.outputs.otp }}
@@ -161,6 +170,7 @@ jobs:
     if: always()
     needs: [toolchain, static, integration, compile-without-cdc]
     runs-on: ubuntu-24.04
+    # floor 5 min for runner start-up; slowest green 0.1 min, run 44125925649
     timeout-minutes: 5
     steps:
       - name: Require every qualification job to succeed

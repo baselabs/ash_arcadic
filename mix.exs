@@ -62,6 +62,7 @@ defmodule AshArcadic.MixProject do
       {:ex_doc, "~> 0.31", only: :dev, runtime: false},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false},
+      {:mix_audit, "~> 2.1", only: [:dev, :test], runtime: false},
       # Build-time only: powers `mix spark.cheat_sheets` (DSL doc generation). Optional dep of
       # spark; never a runtime dep of the published library.
       {:igniter, "~> 0.8", only: [:dev, :test], runtime: false}
@@ -117,7 +118,7 @@ defmodule AshArcadic.MixProject do
   defp aliases do
     [
       quality: ["format --check-formatted", "credo --strict", "dialyzer"],
-      "deps.audit": ["deps.unlock --check-unused", "hex.audit"],
+      audit: ["deps.unlock --check-unused", "hex.audit", "deps.audit"],
       # Regenerate the `arcade do … end` / `replicant do … end` DSL cheat sheets before
       # building docs so hexdocs always ships the current DSL reference.
       docs: ["spark.cheat_sheets --extensions AshArcadic.DataLayer,AshArcadic.Replicant", "docs"]
