@@ -41,7 +41,7 @@ jobs:
         id: versions
         run: sh scripts/toolchain.sh >> "$GITHUB_OUTPUT"
 
-  # Static checks and the docs build, on the default toolchain. The suite itself runs in
+  # Static checks on the default toolchain. The suite itself runs in
   # the `integration` job below, on every build. New-compiler warnings surface on the default
   # toolchain first (Elixir 1.20's unused-require and type-checker warnings were invisible on
   # the 1.18 lane).
@@ -103,12 +103,6 @@ jobs:
       - name: Dialyzer
         run: mix dialyzer
 
-      # The release builds these docs (publish.yml); a warning here would ship on hexdocs.
-      - name: Docs (warnings as errors)
-        env:
-          MIX_ENV: dev
-        run: mix docs --warnings-as-errors
-
   # Digest-pinned: `latest` is a moving SNAPSHOT, and the 26.8→26.9 jump changed DDL behavior
   # (FULL_TEXT over an implicitly auto-created property) under green CI, silently. Drift is
   # watched by canary.yml, which runs the same suite against `latest`. Bump deliberately:
@@ -165,11 +159,46 @@ jobs:
           mix deps.unlock replicant
           mix compile --force --warnings-as-errors
 
+  # The release builds these docs; a warning here would ship on hexdocs.
+  # Qualification proves the same inspected, reproducible archives as publication.
+  release-archives:
+    needs: toolchain
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90 # no green run yet
+    env:
+      MIX_ENV: dev
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: ./.github/actions/beam
+        with:
+          elixir-version: ${{ needs.toolchain.outputs.elixir }}
+          otp-version: ${{ needs.toolchain.outputs.otp }}
+
+      - name: Install the archive-building Hex client
+        run: mix local.hex "$(cat scripts/release/hex-version)" --force
+
+      # The warmer writes deps and both test and dev _build for the default toolchain.
+      - name: Restore deps and _build
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            deps
+            _build
+          key: ${{ runner.os }}-mix-${{ needs.toolchain.outputs.otp }}-${{ needs.toolchain.outputs.elixir }}-${{ hashFiles('mix.lock') }}
+
+      - run: mix deps.get --check-locked
+
+      - name: Build and inspect reproducible archives
+        run: scripts/release/build_archives.sh "$RUNNER_TEMP/release"
+
   # The landing verdict: always runs, needs every other job in this workflow, and
   # passes only when each one's result is exactly `success` (skipped or cancelled refuses).
   qualified:
     if: always()
-    needs: [toolchain, static, integration, compile-without-cdc]
+    needs: [toolchain, static, integration, compile-without-cdc, release-archives]
     runs-on: ubuntu-24.04
     # floor 5 min for runner start-up; slowest green 0.1 min, run 44125925649
     timeout-minutes: 5

@@ -7,6 +7,8 @@ name: Cache warmer
 # cache holds exactly what the lock and the toolchain produce. Paths and keys match the restore
 # steps in ci.yml and integration.yml exactly: change them together.
 on:
+  push:
+    branches: [main]
   schedule:
     - cron: "17 5 * * *"
   workflow_dispatch:
@@ -22,15 +24,14 @@ jobs:
   toolchain:
     name: toolchain
     runs-on: ubuntu-24.04
-    # floor 5 min for runner start-up; slowest green 0.2 min, run 44150018570 (ci.yml's toolchain)
-    timeout-minutes: 5
+    timeout-minutes: 90 # no green run yet
     outputs:
       elixir: ${{ steps.versions.outputs.elixir }}
       otp: ${{ steps.versions.outputs.otp }}
       builds: ${{ steps.builds.outputs.builds }}
     steps:
       # Each job reads the default branch from the API with this run's read-only token, which
-      # works the same on a schedule and a dispatch.
+      # works the same on a push, schedule and dispatch.
       - name: Require the default branch
         env:
           GH_TOKEN: ${{ github.token }}
@@ -62,9 +63,7 @@ jobs:
     name: "deps and _build (Elixir ${{ matrix.elixir }} / OTP ${{ matrix.otp }})"
     needs: toolchain
     runs-on: ubuntu-24.04
-    # Until a warmer run is measured: 2x two cold compiles of 1.9 min (compile-without-cdc,
-    # run 44190994631).
-    timeout-minutes: 8
+    timeout-minutes: 90 # no green run yet
     strategy:
       fail-fast: false
       matrix:
@@ -130,9 +129,7 @@ jobs:
     name: "PLT (Elixir ${{ needs.toolchain.outputs.elixir }} / OTP ${{ needs.toolchain.outputs.otp }})"
     needs: [toolchain, mix]
     runs-on: ubuntu-24.04
-    # Until a warmer run is measured: 2x 8.3 min, the cold static job that builds the PLT
-    # (run 44163206937).
-    timeout-minutes: 17
+    timeout-minutes: 90 # no green run yet
     env:
       MIX_ENV: test
     steps:
