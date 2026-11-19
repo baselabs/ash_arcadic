@@ -15,6 +15,11 @@ concurrency:
 permissions:
   contents: read
 
+# Every run step is bash -eo pipefail: a failure behind a pipe fails its step.
+defaults:
+  run:
+    shell: bash
+
 jobs:
   # .tool-versions is the only home for runtime versions: its first version of each tool is
   # the default every job below runs on, and every other listed Elixir build, paired with
@@ -143,10 +148,9 @@ jobs:
           # This CI checkout is disposable, so dropping the dep in place is safe. Assert the
           # dep line was actually removed (non-vacuity) so a mix.exs reformat can't turn this
           # guard into a silent pass.
-          before=$(md5sum mix.exs | cut -d' ' -f1)
+          cp mix.exs "$RUNNER_TEMP/mix.exs.before"
           sed -i '/{:replicant,/d' mix.exs
-          after=$(md5sum mix.exs | cut -d' ' -f1)
-          if [ "$before" = "$after" ]; then
+          if cmp -s mix.exs "$RUNNER_TEMP/mix.exs.before"; then
             echo "::error::guard vacuous — the {:replicant, ...} dep line was not found in mix.exs; update this guard" >&2
             exit 1
           fi

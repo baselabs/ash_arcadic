@@ -15,6 +15,11 @@ on:
 permissions:
   contents: read
 
+# Every run step is bash -eo pipefail: a failure behind a pipe fails its step.
+defaults:
+  run:
+    shell: bash
+
 jobs:
   # The default build and every compatibility lane, paired with its Erlang by OTP major.
   toolchain:
@@ -38,8 +43,9 @@ jobs:
           OTP: ${{ steps.versions.outputs.otp }}
           LANES: ${{ steps.versions.outputs.beam_lanes }}
         run: |
-          echo "builds=$(jq -cn --arg e "$ELIXIR" --arg o "$OTP" --argjson lanes "$LANES" \
-            '[{elixir: $e, otp: $o}] + $lanes')" >> "$GITHUB_OUTPUT"
+          builds=$(jq -cn --arg e "$ELIXIR" --arg o "$OTP" --argjson lanes "$LANES" \
+            '[{elixir: $e, otp: $o}] + $lanes')
+          echo "builds=$builds" >> "$GITHUB_OUTPUT"
 
   suite:
     name: "suite (Elixir ${{ matrix.elixir }} / OTP ${{ matrix.otp }})"
@@ -100,9 +106,10 @@ jobs:
 
       - name: Wait for ArcadeDB to be ready
         run: |
-          for i in $(seq 1 60); do
-            code=$(curl -s -o /dev/null -w '%{http_code}' -u "root:$ARCADIC_TEST_PASSWORD" http://localhost:2480/api/v1/ready || true)
-            if [ "$code" = "204" ]; then echo "ArcadeDB ready"; exit 0; fi
+          for i in {1..60}; do
+            # A refused connection is the expected answer while the server starts.
+            if code=$(curl -s -o /dev/null -w '%{http_code}' -u "root:$ARCADIC_TEST_PASSWORD" http://localhost:2480/api/v1/ready) \
+              && [ "$code" = "204" ]; then echo "ArcadeDB ready"; exit 0; fi
             echo "waiting for ArcadeDB ($i)... last=$code"; sleep 2
           done
           echo "ArcadeDB did not become ready in time" >&2
@@ -110,8 +117,8 @@ jobs:
 
       - name: Report the ArcadeDB version under test
         run: |
-          curl -s -u "root:$ARCADIC_TEST_PASSWORD" "http://localhost:2480/api/v1/server?mode=basic" \
-            | python3 -c 'import json,sys; print("ArcadeDB", json.load(sys.stdin).get("version"))' || true
+          server=$(curl -sS --fail -u "root:$ARCADIC_TEST_PASSWORD" "http://localhost:2480/api/v1/server?mode=basic")
+          python3 -c 'import json,sys; print("ArcadeDB", json.load(sys.stdin).get("version"))' <<< "$server"
 
       - name: Test (unit + integration)
         run: mix test --warnings-as-errors --include integration
@@ -169,7 +176,7 @@ jobs:
           docker run -d --name ash-arcadic-notebooks -p 2480:2480 \
             -e JAVA_OPTS="-Darcadedb.server.rootPassword=$PW" \
             "$ARCADEDB_IMAGE"
-          for _ in $(seq 1 60); do
+          for _ in {1..60}; do
             [ "$(curl -s -o /dev/null -w '%{http_code}' -u "root:$PW" http://localhost:2480/api/v1/ready)" = "204" ] && exit 0
             sleep 2
           done
