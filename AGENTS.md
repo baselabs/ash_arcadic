@@ -10,7 +10,8 @@ An Ash `DataLayer` for ArcadeDB — the "`ash_postgres` of ArcadeDB." It owns th
 Ash-native mechanism (multitenancy via `set_tenant/3`, sensitive-attribute
 verifiers, Cypher generation, traversal) and executes through the tenant-blind
 `arcadic` transport. It does **not** own transport, and does **not** re-implement
-Ash core's `multitenancy` DSL / tenant concept.
+Ash core's `multitenancy` DSL / tenant concept. For the current surface, read
+`usage-rules.md`, `README.md` and `livebooks/tour.livemd`.
 
 ## Architecture
 
@@ -177,7 +178,7 @@ release script or a secret. This file points at it and does not copy it.
 
 ## Docs & lifecycle-artifact policy
 
-- **Tracked / published:** `AGENTS.md`, `CLAUDE.md` (thin pointer, auto-loaded),
+- **Tracked / published:** `AGENTS.md` (there is no `CLAUDE.md`),
   `README.md`, `CHANGELOG.md`, `CONTRIBUTING.md`, `SECURITY.md`, `usage-rules.md`,
   `LICENSE`, `livebooks/`, and `documentation/` (published guides + generated
   DSL cheat sheets).
