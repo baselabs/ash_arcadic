@@ -164,7 +164,8 @@ jobs:
           mix compile --force --warnings-as-errors
 
   # The release builds these docs; a warning here would ship on hexdocs.
-  # Qualification proves the same inspected, reproducible archives as publication.
+  # Qualification builds and inspects the same archives as publication: a reproducible
+  # package and one docs build.
   release-archives:
     needs: toolchain
     runs-on: ubuntu-24.04
@@ -195,7 +196,7 @@ jobs:
 
       - run: mix deps.get --check-locked
 
-      - name: Build and inspect reproducible archives
+      - name: Build and inspect the release archives
         run: scripts/release/build_archives.sh "$RUNNER_TEMP/release"
 
   # The landing verdict: always runs, needs every other job in this workflow, and
