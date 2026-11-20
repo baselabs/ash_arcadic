@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-11-20
+
 ### Security
 
 - **The optional `replicant` floor rises to `~> 1.5.1`** (was `~> 1.2`). replicant 1.5.0
@@ -893,7 +895,13 @@ the initial surface.
   tenant space). ArcadeDB `CONTAINS`/`STARTS WITH`/`ENDS WITH` are case-sensitive (a
   `:ci_string` attribute's case-insensitive semantics are not preserved).
 
-[Unreleased]: https://github.com/baselabs/ash_arcadic/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/baselabs/ash_arcadic/compare/v1.3.0...HEAD
+[1.3.0]: https://github.com/baselabs/ash_arcadic/compare/v1.2.3...v1.3.0
+[1.2.3]: https://github.com/baselabs/ash_arcadic/compare/v1.2.2...v1.2.3
+[1.2.2]: https://github.com/baselabs/ash_arcadic/compare/v1.2.1...v1.2.2
+[1.2.1]: https://github.com/baselabs/ash_arcadic/compare/v1.2.0...v1.2.1
+[1.2.0]: https://github.com/baselabs/ash_arcadic/compare/v1.0.0...v1.2.0
+[1.1.0]: https://hex.pm/packages/ash_arcadic/1.1.0
 [1.0.0]: https://github.com/baselabs/ash_arcadic/compare/v0.2.0...v1.0.0
 [0.2.0]: https://github.com/baselabs/ash_arcadic/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/baselabs/ash_arcadic/releases/tag/v0.1.0

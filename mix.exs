@@ -1,7 +1,7 @@
 defmodule AshArcadic.MixProject do
   use Mix.Project
 
-  @version "1.2.3"
+  @version "1.3.0"
   @source_url "https://github.com/baselabs/ash_arcadic"
 
   def project do
