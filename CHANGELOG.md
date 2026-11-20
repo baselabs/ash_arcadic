@@ -15,7 +15,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   required one does. The floor lane therefore tests a non-CDC host (`replicant` needs
   1.20.3): the replicant-free build is force-compiled with warnings as errors and runs the
   unit and live integration tests, excluding CDC tests. Compatible lanes continue to run the
-  CDC tests. This replaces the default-toolchain replicant-free compile-only job.
+  CDC tests. The default-toolchain replicant-free compile-only job becomes
+  `without-optional`: `ci_host_mode.exs --without-optional` removes every optional
+  dependency, and the smallest host is force-compiled with warnings as errors and
+  unit-tested on the default Elixir, whatever the lanes' Elixir versions.
 - The publish job's timeout is measured: 5 minutes, from its first green run (103 s with no
   cache, run 44719239494, the 1.3.0 publication). It was 90 minutes while unmeasured.
 

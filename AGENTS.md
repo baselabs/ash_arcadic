@@ -113,7 +113,10 @@ credo and dialyzer). After fetching locked dependencies, `elixir scripts/ci_host
 reads every locked dependency's own Elixir requirement: an optional dependency whose chain
 needs a newer Elixir is removed and unlocked in the disposable checkout, and a required one
 fails the build. Lanes whose Elixir satisfies `replicant` run all CDC tests; the floor
-compiles and tests the replicant-free tree. CDC test files use the library's
+compiles and tests the replicant-free tree. ci.yml's `without-optional` job runs
+`ci_host_mode.exs --without-optional` on the default toolchain and compiles
+(`--force --warnings-as-errors`) and unit-tests the tree with every optional dependency
+removed. CDC test files use the library's
 `Code.ensure_loaded?(Replicant.Sink)` gate, with exclusions reported by `test_helper.exs`.
 The pinned image is written once, in ci.yml's `integration` job; the
 reusable `integration.yml` also runs every notebook shipped in the Hex package, top to
