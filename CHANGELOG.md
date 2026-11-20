@@ -9,11 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- Compatibility lanes select CDC support from `replicant`'s own Elixir requirement.
-  The floor lane tests a non-CDC host: the replicant-free build is force-compiled with
-  warnings as errors and runs the unit and live integration tests, excluding CDC tests.
-  Compatible lanes continue to run the CDC tests. This replaces the default-toolchain
-  replicant-free compile-only job.
+- Every lane tests the dependency tree a host on its Elixir can run:
+  `scripts/ci_host_mode.exs` reads every locked dependency's own Elixir requirement, leaves
+  out an optional dependency whose chain needs a newer Elixir, and fails the lane if a
+  required one does. The floor lane therefore tests a non-CDC host (`replicant` needs
+  1.20.3): the replicant-free build is force-compiled with warnings as errors and runs the
+  unit and live integration tests, excluding CDC tests. Compatible lanes continue to run the
+  CDC tests. This replaces the default-toolchain replicant-free compile-only job.
 - The publish job's timeout is measured: 5 minutes, from its first green run (103 s with no
   cache, run 44719239494, the 1.3.0 publication). It was 90 minutes while unmeasured.
 

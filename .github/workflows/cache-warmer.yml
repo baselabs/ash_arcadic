@@ -109,6 +109,13 @@ jobs:
         if: steps.lookup.outputs.cache-hit != 'true'
         run: mix deps.get --check-locked
 
+      # The same tree integration.yml's job for this build compiles (scripts/ci_host_mode.exs).
+      - name: Select the dependency tree this Elixir can run
+        if: steps.lookup.outputs.cache-hit != 'true'
+        env:
+          MIX_ENV: test
+        run: elixir scripts/ci_host_mode.exs
+
       - name: Compile for test
         if: steps.lookup.outputs.cache-hit != 'true'
         env:

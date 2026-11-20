@@ -98,8 +98,10 @@ jobs:
       - name: Install dependencies
         run: mix deps.get --check-locked
 
-      - name: Select CDC or non-CDC host from replicant's Elixir requirement
-        run: scripts/ci_host_mode.sh
+      # Optional dependencies whose own Elixir floor is above this build's (replicant needs
+      # 1.20.3) leave this checkout, so each build tests the tree a host on its Elixir gets.
+      - name: Select the dependency tree this Elixir can run
+        run: elixir scripts/ci_host_mode.exs
 
       - name: Compile (warnings as errors)
         run: mix compile --force --warnings-as-errors
