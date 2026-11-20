@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- arcadic moves to `~> 2.0` (2.0.0). arcadic 2's breaking changes are all in its optional
+  Bolt transport, which ash_arcadic does not use; the HTTP data layer is unchanged. A host
+  that also depends on arcadic directly needs `~> 2.0` there too.
 - Every lane tests the dependency tree a host on its Elixir can run:
   `scripts/ci_host_mode.exs` reads every locked dependency's own Elixir requirement, leaves
   out an optional dependency whose chain needs a newer Elixir, and fails the lane if a
