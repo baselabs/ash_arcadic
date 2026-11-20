@@ -181,7 +181,9 @@ if Code.ensure_loaded?(Replicant.Sink) do
         refute Exception.message(err) =~ "orphan"
       end
 
-      test "a truncate with on_truncate :halt (default) fails closed value-free", %{config: config} do
+      test "a truncate with on_truncate :halt (default) fails closed value-free", %{
+        config: config
+      } do
         err =
           assert_raise Error, fn ->
             Apply.apply_change(config, change(:truncate, "things", nil))

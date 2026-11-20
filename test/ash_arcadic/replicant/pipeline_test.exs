@@ -158,7 +158,8 @@ if Code.ensure_loaded?(Replicant.Sink) do
     end
 
     describe "start_link/1 — required opts are enforced" do
-      test "a missing :connection fails loud", do: assert_raise(KeyError, run_missing(:connection))
+      test "a missing :connection fails loud",
+        do: assert_raise(KeyError, run_missing(:connection))
 
       test "a missing :publication fails loud",
         do: assert_raise(KeyError, run_missing(:publication))

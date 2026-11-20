@@ -370,7 +370,11 @@ if Code.ensure_loaded?(Replicant.Sink) do
         assert err.resource == PeopleSensitiveMirror
         # Value-free: the refused plaintext never appears in the error.
         refute Exception.message(err) =~ "top-secret-plaintext-ssn"
-        refute err |> Map.from_struct() |> Map.values() |> Enum.member?("top-secret-plaintext-ssn")
+
+        refute err
+               |> Map.from_struct()
+               |> Map.values()
+               |> Enum.member?("top-secret-plaintext-ssn")
       end
 
       # Skip wins over the F5 halt: a sensitive column listed in replicant `skip` is the

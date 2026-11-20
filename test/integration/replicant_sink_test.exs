@@ -178,7 +178,8 @@ if Code.ensure_loaded?(Replicant.Sink) do
         org = "org1"
 
         # Seed a genuine already-applied state (checkpoint advances to 11).
-        assert {:ok, 10} = Sink.handle_transaction(txn(10, [change(:insert, rec("r1", org, "v1"))]))
+        assert {:ok, 10} =
+                 Sink.handle_transaction(txn(10, [change(:insert, rec("r1", org, "v1"))]))
 
         assert {:ok, 11} =
                  Sink.handle_transaction(
@@ -190,7 +191,8 @@ if Code.ensure_loaded?(Replicant.Sink) do
 
         # Re-deliver the OLDER lsn 10 (a replay: 10 <= 11). The gate SKIPS it, returning the held
         # watermark; r1 stays deleted.
-        assert {:ok, 11} = Sink.handle_transaction(txn(10, [change(:insert, rec("r1", org, "v1"))]))
+        assert {:ok, 11} =
+                 Sink.handle_transaction(txn(10, [change(:insert, rec("r1", org, "v1"))]))
 
         assert count_by_id(admin, "r1") == 0
         assert Checkpoint.for_slot(@slot) == 11
