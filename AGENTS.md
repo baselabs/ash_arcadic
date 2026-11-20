@@ -82,6 +82,15 @@ Make the change, run the tests that cover it, and commit with named paths. Nobod
 If it goes red, fix forward in a new commit. Compatibility checks test the host dependency
 set supported by each lane's Elixir, including a replicant-free host on the floor.
 
+A landing is finished only when its residue is gone, removed in the same step and checked
+before it is reported: every branch it used other than `main` (`kci/*`, which
+`kimosabe-land` deletes itself, plus any `review/*` or topic branch, local and on origin),
+every worktree and scratch clone made for it, the scratchpad logs and scripts it wrote, and
+anything a test or check left behind (containers and their volumes, databases,
+`erl_crash.dump`, PLTs and `doc/` built outside CI). A fork branch and upstream clone made for
+an outside pull request go when that pull request merges or closes. `git worktree list`,
+`git branch -a` and the scratchpad hold none of the landing's work when it is reported.
+
 The `arcadedb:latest` canary (`.github/workflows/canary.yml`) runs daily and on demand
 against the moving upstream image. It never gates a landing: a red canary is upstream drift
 to fix before the next deliberate ArcadeDB pin bump.
