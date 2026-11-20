@@ -26,7 +26,7 @@ jobs:
     name: toolchain
     runs-on: ubuntu-24.04
     # floor 5 min for runner start-up; slowest green 0.2 min, run 44157254512
-    timeout-minutes: 5
+    timeout-minutes: 5 # 13 s, run 44207854872
     outputs:
       builds: ${{ steps.builds.outputs.builds }}
     steps:
@@ -52,7 +52,7 @@ jobs:
     needs: toolchain
     runs-on: ubuntu-24.04
     # 2x 2.5 min, run 44157784640
-    timeout-minutes: 5
+    timeout-minutes: 5 # 149 s, run 44157784640
     strategy:
       fail-fast: false
       matrix:
@@ -130,7 +130,7 @@ jobs:
     name: notebooks
     runs-on: ubuntu-24.04
     # 2x 1.6 min, run 44163206937, raised to the 5 min floor
-    timeout-minutes: 5
+    timeout-minutes: 5 # 107 s, run 44702654362
     env:
       PW: probe-test-pw
       ARCADEDB_IMAGE: ${{ inputs.image }}

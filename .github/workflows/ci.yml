@@ -33,7 +33,7 @@ jobs:
     name: toolchain
     runs-on: ubuntu-24.04
     # floor 5 min for runner start-up; slowest green 0.2 min, run 44150018570
-    timeout-minutes: 5
+    timeout-minutes: 5 # 13 s, run 44189981688
     outputs:
       elixir: ${{ steps.versions.outputs.elixir }}
       otp: ${{ steps.versions.outputs.otp }}
@@ -55,7 +55,7 @@ jobs:
     needs: toolchain
     runs-on: ubuntu-24.04
     # 2x 8.3 min, run 44163206937
-    timeout-minutes: 17
+    timeout-minutes: 17 # 497 s, run 44163206937
     env:
       MIX_ENV: test
 
@@ -127,7 +127,7 @@ jobs:
     needs: toolchain
     runs-on: ubuntu-24.04
     # 2x 2.4 min, run 29974064879
-    timeout-minutes: 5
+    timeout-minutes: 5 # 117 s, run 44190994631
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -169,7 +169,7 @@ jobs:
   release-archives:
     needs: toolchain
     runs-on: ubuntu-24.04
-    timeout-minutes: 90 # no green run yet
+    timeout-minutes: 5 # 93 s, run 44703078791
     env:
       MIX_ENV: dev
     steps:
@@ -206,7 +206,7 @@ jobs:
     needs: [toolchain, static, integration, compile-without-cdc, release-archives]
     runs-on: ubuntu-24.04
     # floor 5 min for runner start-up; slowest green 0.1 min, run 44125925649
-    timeout-minutes: 5
+    timeout-minutes: 5 # 5 s, run 44704425448
     steps:
       - name: Require every qualification job to succeed
         env:

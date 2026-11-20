@@ -29,7 +29,7 @@ jobs:
   toolchain:
     name: toolchain
     runs-on: ubuntu-24.04
-    timeout-minutes: 90 # no green run yet
+    timeout-minutes: 5 # 16 s, run 44703667524
     outputs:
       elixir: ${{ steps.versions.outputs.elixir }}
       otp: ${{ steps.versions.outputs.otp }}
@@ -69,7 +69,7 @@ jobs:
     name: "deps and _build (Elixir ${{ matrix.elixir }} / OTP ${{ matrix.otp }})"
     needs: toolchain
     runs-on: ubuntu-24.04
-    timeout-minutes: 90 # no green run yet
+    timeout-minutes: 7 # 206 s, run 44703667524
     strategy:
       fail-fast: false
       matrix:
@@ -135,7 +135,7 @@ jobs:
     name: "PLT (Elixir ${{ needs.toolchain.outputs.elixir }} / OTP ${{ needs.toolchain.outputs.otp }})"
     needs: [toolchain, mix]
     runs-on: ubuntu-24.04
-    timeout-minutes: 90 # no green run yet
+    timeout-minutes: 9 # 268 s, run 44703667524
     env:
       MIX_ENV: test
     steps:
