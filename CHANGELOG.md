@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- The publish job's timeout is measured: 5 minutes, from its first green run (103 s with no
+  cache, run 44719239494, the 1.3.0 publication). It was 90 minutes while unmeasured.
+
 ## [1.3.0] - 2026-11-20
 
 ### Security
