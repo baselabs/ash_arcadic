@@ -173,9 +173,10 @@ release script or a secret. This file points at it and does not copy it.
 - **Integration** (`test/integration/**`, `@moduletag :integration`): require a
   live ArcadeDB; gate on `ARCADIC_TEST_URL`, skip when unset. ArcadeDB may not
   tolerate concurrent transactions on one connection — default integration tests
-  to `async: false` until proven otherwise. When a shared server already runs,
-  `ARCADIC_TEST_URL` and `ARCADIC_TEST_PASSWORD` sit in the gitignored `.env`;
-  load them with `set -a; . ./.env; set +a`, then `mix test --include integration`.
+  to `async: false` until proven otherwise. CI starts a disposable, digest-pinned
+  server for each run. To run them yourself, start your own server, set
+  `ARCADIC_TEST_URL` and `ARCADIC_TEST_PASSWORD` for it, then run
+  `mix test --include integration`.
 
 - **Notebooks** (`livebooks/**/*.livemd`): run each in its own VM with
   `elixir scripts/run_notebook.exs livebooks/tour.livemd`. The runner preserves cell bindings
