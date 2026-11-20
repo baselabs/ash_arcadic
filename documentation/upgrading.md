@@ -7,6 +7,27 @@ error structs, the telemetry event names + metadata allowlist, and the config
 knobs. Breaking changes, if ever needed, ship as a new major with an entry
 here.
 
+## 1.2.x → 1.3.0
+
+Only hosts that use the CDC sink are affected; the data layer itself is unchanged.
+
+- **`replicant` floor is now `~> 1.5.1`** (was `~> 1.2`), still `optional: true`.
+  replicant 1.5.0 makes snapshot reads respect publication column lists and row
+  filters; on older versions a snapshot could mirror unpublished columns and
+  filtered-out rows into ArcadeDB. A CDC host that pins `replicant` itself moves to
+  `~> 1.5.1` in lockstep.
+- **If your own code calls replicant directly**, review
+  [replicant's changelog](https://github.com/baselabs/replicant/blob/main/CHANGELOG.md)
+  from 1.3.0: `Replicant.lsn_from_string/1` returns `{:ok, lsn} | {:error, :invalid_lsn}`
+  instead of raising. The `AshArcadic.Replicant.*` sink surface is unchanged.
+- CI now runs the live suite against ArcadeDB 26.11.1 (was 26.8.1).
+
+After upgrading, run:
+
+```console
+mix deps.update ash_arcadic replicant && mix compile
+```
+
 ## 1.1.x → 1.2.0
 
 Adapts to the ArcadeDB 26.10 server line (all changes probed live against both

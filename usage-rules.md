@@ -268,7 +268,7 @@ dep, and the three modules that hard-reference `%Replicant.*{}` structs / `Repli
    with the surrounding changes and the watermark advance).
 
 7. **Optional-dep contract (honest optionality).** `replicant` (the CDC transport) is on hex — a host
-   that uses the CDC sink **adds `{:replicant, "~> 0.3"}` to its own deps**. It is declared
+   that uses the CDC sink **adds `{:replicant, "~> 1.5.1"}` to its own deps**. It is declared
    `optional: true` in ash_arcadic so a non-CDC host needn't pull it (nor its Postgrex replication
    deps). The three modules with compile-time `Replicant.*` dependencies
    (`AshArcadic.Replicant.Apply` / `Sink.Impl` / `Pipeline`) are **compile-gated** on

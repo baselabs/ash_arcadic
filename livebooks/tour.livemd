@@ -10,7 +10,7 @@ Mix.install(
     # `replicant` is the CDC transport (Postgres logical replication → decoded
     # transactions) for the CDC-mirror section near the end. ash_arcadic declares
     # it `optional: true`, so a tour without that section can drop this line.
-    {:replicant, "~> 1.2"}
+    {:replicant, "~> 1.5.1"}
   ],
   # Ash requires an explicit string-length rule; this is the one it recommends.
   config: [ash: [default_string_length_count: :codepoints]]
@@ -36,7 +36,7 @@ server plugins and no Postgres are needed:
 ```bash
 docker run --rm -d --name arcadedb-tour -p 2480:2480 \
   -e JAVA_OPTS="-Darcadedb.server.rootPassword=playwithdata" \
-  arcadedata/arcadedb:26.8.1@sha256:49036720b1678b9c7a6dbf22fc34a812c8d7bed15508c22cbb02c0dddc0ca16a
+  arcadedata/arcadedb:26.11.1@sha256:22a049898f34f01c256b56a1ba95fb01d32e5e14755d3c4367415c8e55ae5035
 ```
 
 Then set the two environment variables below (Livebook: use the Secrets panel or

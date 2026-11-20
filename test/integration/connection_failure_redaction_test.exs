@@ -1,15 +1,15 @@
 defmodule AshArcadic.Integration.ConnectionFailureRedactionTest do
   @moduledoc """
   The credential-failure and non-MVCC 5xx classes driven through real Ash actions
-  against the REAL pinned ArcadeDB (26.8.1) — live-substrate tier of the R6 driven
+  against the REAL pinned ArcadeDB (`ci.yml`) — live-substrate tier of the R6 driven
   redaction tests (`test/data_layer/connection_failure_redaction_test.exs` is the
   no-server refused-conn tier). Asserts the error an Ash caller receives is value-free
   (AGENTS.md Critical Rule 4): server `error`/`detail` text, the credential, and the
   database NAME (tenant-derived on :context resources — the primary `detail` leak
   vector) must never surface.
 
-  Response bodies are LIVE-PROBED on the pinned image (this slice, throwaway
-  container — not self-signed):
+  Response bodies were LIVE-PROBED on 26.8.1, the pin at the time (throwaway
+  container — not self-signed); the assertions hold the reason class on every line:
 
   - bad Basic credentials → 403 `{"error":"Security error","requestId":…,
     "exception":"com.arcadedb.server.security.ServerSecurityException",
@@ -17,10 +17,12 @@ defmodule AshArcadic.Integration.ConnectionFailureRedactionTest do
   - conn to a never-created database → 500 `{"error":"Internal error","requestId":…,
     "exception":"com.arcadedb.exception.DatabaseOperationException","detail":
     "Database '<name>' is not available"}` → `:database_not_found`; the detail
-    carries the database name.
+    carries the database name. Later lines answer 26.10 `DatabaseNotAvailableException`
+    and 26.11+ 404 `DatabaseNotFoundException` (probed in arcadic, which maps all three
+    to `:database_not_found`).
 
-  The 401 class IS drivable — via a BEARER conn (live-probed 2026-08-23 on the
-  pinned 26.8.1: a garbage bearer token gets HTTP 401, body
+  The 401 class IS drivable — via a BEARER conn (live-probed 2026-08-23 on
+  26.8.1, the pin at the time: a garbage bearer token gets HTTP 401, body
   `{"error":"Invalid or expired authentication token","requestId":…}`, no
   exception FQN). arcadic 1.1.0 maps it to `:unauthorized` (a 1.0.x client
   collapsed it to the generic `:server_error`); the bad-bearer fixture below
@@ -166,7 +168,7 @@ defmodule AshArcadic.Integration.ConnectionFailureRedactionTest do
 
   # The 401 class (invalid/expired bearer token) was long believed unreachable through
   # Arcadic ("Arcadic mandates auth — 403 is the drivable class"); live-probed 2026-08-23
-  # on the pinned 26.8.1, a garbage bearer gets HTTP 401 with a body of only
+  # on 26.8.1 (the pin at the time), a garbage bearer gets HTTP 401 with a body of only
   # {error, requestId} (no exception FQN) — drivable via the bearer conn shape.
   # Requires arcadic 1.1.0+ (the 401 → :unauthorized mapping).
   describe "an invalid bearer token (live 401) through a read" do
@@ -185,7 +187,7 @@ defmodule AshArcadic.Integration.ConnectionFailureRedactionTest do
     end
   end
 
-  describe "a never-created database (live 500 DatabaseOperationException) through a read" do
+  describe "a never-created database (live missing-database error) through a read" do
     test "surfaces the database_not_found reason class only — the detail's db name never rides" do
       assert {:error, error} = Ash.read(AbsentDbDoc)
 
@@ -194,8 +196,19 @@ defmodule AshArcadic.Integration.ConnectionFailureRedactionTest do
 
       assert Exception.message(error) =~ "ArcadeDB error (database_not_found)"
 
-      # The probed 500 detail embeds the database NAME — tenant-derived on :context.
-      for leak <- AbsentDbClient.sentinels() ++ ["not available", "Internal error"] do
+      # The probed detail embeds the database NAME — tenant-derived on :context.
+      leaks =
+        AbsentDbClient.sentinels() ++
+          [
+            "not available",
+            "Internal error",
+            "com.arcadedb",
+            "DatabaseOperationException",
+            "DatabaseNotAvailableException",
+            "DatabaseNotFoundException"
+          ]
+
+      for leak <- leaks do
         refute Exception.message(error) =~ leak
         refute inspect(error) =~ leak
       end

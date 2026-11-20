@@ -113,10 +113,10 @@ jobs:
   # watched by canary.yml, which runs the same suite against `latest`. Bump deliberately:
   # tag and digest together, here only, landed like any change.
   integration:
-    name: live suite (ArcadeDB 26.8.1)
+    name: live suite (ArcadeDB 26.11.1)
     uses: ./.github/workflows/integration.yml
     with:
-      image: arcadedata/arcadedb:26.8.1@sha256:49036720b1678b9c7a6dbf22fc34a812c8d7bed15508c22cbb02c0dddc0ca16a
+      image: arcadedata/arcadedb:26.11.1@sha256:22a049898f34f01c256b56a1ba95fb01d32e5e14755d3c4367415c8e55ae5035
 
   # Regression guard for the optional-dep contract: a non-CDC host must compile ash_arcadic
   # WITHOUT `replicant`. The AshArcadic.Replicant.{Apply,Sink.Impl,Pipeline} subtree is

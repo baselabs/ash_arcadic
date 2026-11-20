@@ -1,8 +1,8 @@
 # Performance & tuning
 
-Every server-behavior claim on this page was probed live on the pinned ArcadeDB
-image this library CI-runs against (**26.8.1**, digest
-`sha256:49036720…`) before documenting. `EXPLAIN` and the SQL commands below run
+Every server-behavior claim on this page was probed live on ArcadeDB **26.8.1**
+(digest `sha256:49036720…`), the image CI pinned when it was written, before
+documenting. CI now runs the suite against 26.11.1. `EXPLAIN` and the SQL commands below run
 host-side (your client conn or the ArcadeDB console) — the data layer treats
 schema and indexes as YOUR surface (the `arcade` DSL declares them; the host
 creates them, the same split ash_postgres uses for migrations).

@@ -50,7 +50,7 @@ defmodule AshArcadic.MixProject do
       # The CDC transport for the optional `AshArcadic.Replicant.*` sink. `optional: true`
       # so non-CDC hosts don't pull it (nor its Postgrex replication deps); a host that
       # uses the sink adds `replicant` to its own deps.
-      {:replicant, "~> 1.2", optional: true},
+      {:replicant, "~> 1.5.1", optional: true},
       {:jason, "~> 1.4"},
       {:telemetry, "~> 1.0"},
       # SAT solver required by Ash.Policy.Authorizer (Ash lists it as an optional dep;

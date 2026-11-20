@@ -15,7 +15,7 @@ enforced **Ash-natively**. It executes through the
 
 > **Status: released.** `v1.2.3` is on Hex — `{:ash_arcadic, "~> 1.2"}`. The full
 > capabilities roadmap has shipped, plus an optional Postgres→ArcadeDB CDC sink (883
-> tests incl. live integration against ArcadeDB 26.8.1, and daily against the latest
+> tests incl. live integration against ArcadeDB 26.11.1, and daily against the latest
 > ArcadeDB image; dialyzer clean). Working rules
 > for contributors are in
 > [`AGENTS.md`](https://github.com/baselabs/ash_arcadic/blob/main/AGENTS.md); consumer
@@ -94,7 +94,7 @@ Ash requires an explicit string-length rule in `config/config.exs`; the one it r
 config :ash, default_string_length_count: :codepoints
 ```
 
-The Postgres→ArcadeDB CDC sink is optional — add `{:replicant, "~> 1.2"}` only if you
+The Postgres→ArcadeDB CDC sink is optional — add `{:replicant, "~> 1.5.1"}` only if you
 use it (see `usage-rules.md`); a non-CDC host builds `ash_arcadic` without it.
 
 Pairs well with the rest of the ecosystem: AshArcadic emits a full telemetry event

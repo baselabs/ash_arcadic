@@ -7,7 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **The optional `replicant` floor rises to `~> 1.5.1`** (was `~> 1.2`). replicant 1.5.0
+  makes snapshot reads respect publication column lists and row filters. Below it, an
+  initial or incremental snapshot read columns outside the publication's column list and
+  rows outside its row filter, and the CDC sink mirrored them into ArcadeDB. The floor is
+  1.5.1 because 1.5.0 removed `Replicant.QueryBuilder.table_columns/0`. Only hosts that use
+  the CDC sink resolve `replicant`; see the upgrading guide.
+
 ### Changed
+
+- CI's live suite and the tour run against ArcadeDB **26.11.1**, digest-pinned: the current
+  release, and the image arcadic pins. It was 26.8.1. The daily canary still runs against
+  `latest`.
+- The lock moves to ash 3.37.7, spark 2.7.10, reactor 1.0.8, replicant 1.5.1, finch 0.25.0,
+  nimble_options 1.2.0, nimble_pool 1.2.0 and telemetry 1.4.3, so CI tests what a fresh
+  consumer resolves.
 
 - Qualification builds the package archive twice with Hex 2.7.0 and requires identical
   bytes, builds the docs archive once with a `release.json` naming the package, version and
@@ -34,6 +50,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Every landing run starts from compiled `deps` and `_build` and a built dialyzer PLT.
 - Add the dev/test dependency `mix_audit ~> 2.1` and run both Hex and dependency
   security audits, with the unused-lock check, through `mix audit` in qualification.
+
+### Fixed
+
+- `usage-rules.md` told CDC hosts to add `{:replicant, "~> 0.3"}`, stale since 1.0.0; it now
+  names the current floor, as the README, the sink docs and the tour do.
 
 ## [1.2.3] - 2026-11-17
 
