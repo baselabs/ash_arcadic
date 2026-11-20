@@ -13,7 +13,7 @@ enforced **Ash-natively**. It executes through the
 [`arcadic`](https://github.com/baselabs/arcadic) client (the transport — the
 "`postgrex` of ArcadeDB").
 
-> **Status: released.** `v1.3.0` is on Hex — `{:ash_arcadic, "~> 1.2"}`. The full
+> **Status: released.** `v1.4.0` is on Hex — `{:ash_arcadic, "~> 1.4"}`. The full
 > capabilities roadmap has shipped, plus an optional Postgres→ArcadeDB CDC sink (883
 > tests incl. live integration against ArcadeDB 26.11.1, and daily against the latest
 > ArcadeDB image; dialyzer clean). Working rules
@@ -82,7 +82,7 @@ Add `ash_arcadic` (and `ash`) to your deps:
 def deps do
   [
     {:ash, "~> 3.11"},
-    {:ash_arcadic, "~> 1.2"}
+    {:ash_arcadic, "~> 1.4"}
   ]
 end
 ```

@@ -7,6 +7,25 @@ error structs, the telemetry event names + metadata allowlist, and the config
 knobs. Breaking changes, if ever needed, ship as a new major with an entry
 here.
 
+## 1.3.x → 1.4.0
+
+ash_arcadic now depends on arcadic `~> 2.0`. arcadic 2's breaking changes are all in its
+optional Bolt transport, which ash_arcadic does not use, so the data layer, the CDC sink
+and every documented option behave as in 1.3.
+
+- **If your host also lists `arcadic`** in its own deps, move it to `~> 2.0`.
+- **If your own code uses arcadic's Bolt transport**, follow the Breaking section of
+  [arcadic's 2.0.0 changelog](https://github.com/baselabs/arcadic/blob/main/CHANGELOG.md):
+  replace `{:boltx, ...}` with `{:db_connection, "~> 2.10"}` and match arcadic's own Bolt
+  value types.
+- arcadic 2 requires Elixir 1.16 or later; ash_arcadic's own floor (1.18) is unchanged.
+
+After upgrading, run:
+
+```console
+mix deps.update ash_arcadic arcadic && mix compile
+```
+
 ## 1.2.x → 1.3.0
 
 Only hosts that use the CDC sink are affected; the data layer itself is unchanged.

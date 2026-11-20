@@ -6,7 +6,7 @@
 # Hex install (the published packages):
 Mix.install(
   [
-    {:ash_arcadic, "~> 1.2"},
+    {:ash_arcadic, "~> 1.4"},
     # `replicant` is the CDC transport (Postgres logical replication → decoded
     # transactions) for the CDC-mirror section near the end. ash_arcadic declares
     # it `optional: true`, so a tour without that section can drop this line.
