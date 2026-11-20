@@ -26,9 +26,9 @@ jobs:
   # its Erlang by OTP major, is a compatibility lane. The lowest lane is the supported floor:
   # the locked dep chain binds there (ash 3.32 → crux/reactor → ex_ast ~> 1.18 and
   # yaml_elixir ~> 1.17), so a fresh resolution will not build below 1.18. CDC hosts also
-  # need replicant's own floor (1.20.3+); replicant is optional, and the floor lane runs the
-  # full suite with it because the lock pins it (it compiles on 1.18 with a requirement
-  # warning only).
+  # need replicant's own floor; integration reads that dependency's Elixir requirement and
+  # tests an eligible CDC host or a replicant-free non-CDC host. The floor lane compiles
+  # and tests the non-CDC tree, without bypassing replicant's requirement.
   toolchain:
     name: toolchain
     runs-on: ubuntu-24.04
@@ -118,51 +118,6 @@ jobs:
     with:
       image: arcadedata/arcadedb:26.11.1@sha256:22a049898f34f01c256b56a1ba95fb01d32e5e14755d3c4367415c8e55ae5035
 
-  # Regression guard for the optional-dep contract: a non-CDC host must compile ash_arcadic
-  # WITHOUT `replicant`. The AshArcadic.Replicant.{Apply,Sink.Impl,Pipeline} subtree is
-  # compile-gated on Code.ensure_loaded?(Replicant.Sink); everything else is replicant-free.
-  # Compile-only (no ArcadeDB service needed).
-  compile-without-cdc:
-    name: Compile without optional replicant (non-CDC host)
-    needs: toolchain
-    runs-on: ubuntu-24.04
-    # 2x 2.4 min, run 29974064879
-    timeout-minutes: 5 # 117 s, run 44190994631
-
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      - name: Set up Elixir/OTP
-        uses: ./.github/actions/beam
-        with:
-          elixir-version: ${{ needs.toolchain.outputs.elixir }}
-          otp-version: ${{ needs.toolchain.outputs.otp }}
-
-      - name: Install dependencies
-        run: mix deps.get --check-locked
-
-      - name: Compile the replicant-free subtree (optional replicant dep dropped)
-        run: |
-          # This CI checkout is disposable, so dropping the dep in place is safe. Assert the
-          # dep line was actually removed (non-vacuity) so a mix.exs reformat can't turn this
-          # guard into a silent pass.
-          cp mix.exs "$RUNNER_TEMP/mix.exs.before"
-          sed -i '/{:replicant,/d' mix.exs
-          if cmp -s mix.exs "$RUNNER_TEMP/mix.exs.before"; then
-            echo "::error::guard vacuous — the {:replicant, ...} dep line was not found in mix.exs; update this guard" >&2
-            exit 1
-          fi
-          # The {:replicant, ...} dep is a single line today. If it were ever reformatted to a
-          # multi-line tuple, the line-delete above would strip only a fragment and break mix.exs
-          # syntax — which must NOT be confused with the gated-compile property failing. Fail with
-          # a distinct message so a future reformat is fixed at the guard, not misread as a real bug.
-          elixir -e 'Code.string_to_quoted!(File.read!("mix.exs"))' \
-            || { echo "::error::guard broke mix.exs syntax (multi-line {:replicant, ...} tuple?) — harden the dep removal" >&2; exit 1; }
-          mix deps.unlock replicant
-          mix compile --force --warnings-as-errors
-
   # The release builds these docs; a warning here would ship on hexdocs.
   # Qualification builds and inspects the same archives as publication: a reproducible
   # package and one docs build.
@@ -206,7 +161,7 @@ jobs:
   # passes only when each one's result is exactly `success` (skipped or cancelled refuses).
   qualified:
     if: always()
-    needs: [toolchain, static, integration, compile-without-cdc, release-archives]
+    needs: [toolchain, static, integration, release-archives]
     runs-on: ubuntu-24.04
     # floor 5 min for runner start-up; slowest green 0.1 min, run 44125925649
     timeout-minutes: 5 # 5 s, run 44704425448

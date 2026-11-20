@@ -79,7 +79,8 @@ DSL docs with `mix spark.cheat_sheets --extensions AshArcadic.DataLayer,AshArcad
 Make the change, run the tests that cover it, and commit with named paths. Nobody pushes
 `main`. A commit lands through one CI run on `kci/<full sha>`; that workflow's final
 `qualified` job is the verdict, and `main` moves to the commit only after `qualified` succeeds.
-If it goes red, fix forward in a new commit.
+If it goes red, fix forward in a new commit. Compatibility checks test the host dependency
+set supported by each lane's Elixir, including a replicant-free host on the floor.
 
 The `arcadedb:latest` canary (`.github/workflows/canary.yml`) runs daily and on demand
 against the moving upstream image. It never gates a landing: a red canary is upstream drift
@@ -105,17 +106,23 @@ mix test
 
 CI runs `mix format --check-formatted`, `mix compile --warnings-as-errors`, `mix credo --strict`,
 `mix audit` (unused locks, Hex retirements, and dependency advisories), `mix dialyzer` and
-`mix docs --warnings-as-errors` on the default toolchain, and `mix compile --warnings-as-errors`,
+`mix docs --warnings-as-errors` on the default toolchain, and `mix compile --force --warnings-as-errors`,
 `mix credo --strict` and `mix test --warnings-as-errors --include integration`
 against a live, digest-pinned ArcadeDB on every Elixir build (`mix quality` bundles format,
-credo and dialyzer). The pinned image is written once, in ci.yml's `integration` job; the
+credo and dialyzer). After fetching locked dependencies, `scripts/ci_host_mode.sh` reads
+`replicant`'s own Elixir requirement: compatible lanes run all CDC tests; other lanes remove
+and unlock the optional dependency in the disposable checkout. The floor therefore compiles
+and tests the replicant-free tree. CDC test files use the library's
+`Code.ensure_loaded?(Replicant.Sink)` gate, with exclusions reported by `test_helper.exs`.
+The pinned image is written once, in ci.yml's `integration` job; the
 reusable `integration.yml` also runs every notebook shipped in the Hex package, top to
 bottom against this checkout and a live server, on the default toolchain. Its notebook list
 comes from `mix hex.build --unpack`; a tracked notebook omitted from the package fails CI.
 The canary runs both the suite and notebooks against `latest`. The `qualified` job depends
 on the reusable workflow, so both must pass. Run the checks that cover your change.
 Every job fetches with `mix deps.get --check-locked`, so a `mix.lock` that does not match
-`mix.exs` fails CI: commit lock changes with the change that causes them.
+`mix.exs` fails CI: commit lock changes with the change that causes them. Only the non-CDC
+host check then removes and unlocks `replicant`; those edits never leave its disposable checkout.
 
 `.tool-versions` is the only home for Elixir and Erlang versions: the first of each is the
 default every workflow runs on, and each further Elixir build, paired with its Erlang by OTP
