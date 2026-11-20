@@ -209,7 +209,10 @@ on exit; it never touches existing data.
 
 Each [GitHub release](https://github.com/baselabs/ash_arcadic/releases) carries the
 package archive, docs archive, `SHA256SUMS` and release notes. Verify the downloaded
-archives with `sha256sum --check SHA256SUMS`.
+archives with `sha256sum --check SHA256SUMS`. The package archive is the one Hex serves for
+that version, so its SHA-256 also matches the checksum Hex reports. The docs archive is the
+one the release run built from the same package; its bytes can differ from the docs Hex
+serves, so compare packages, not docs.
 
 ## License
 
