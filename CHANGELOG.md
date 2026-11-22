@@ -10,6 +10,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Docs build with ex_doc 0.40.5 (a dev-only tool; nothing a consumer resolves changes).
+- rewrite 1.3.1 (via igniter, dev and test only), which compiles without the Elixir 1.20
+  xref deprecation warning; nothing a consumer resolves changes.
 
 ## [1.4.0] - 2026-11-20
 
