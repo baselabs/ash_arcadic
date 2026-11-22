@@ -45,7 +45,7 @@ jobs:
           persist-credentials: false
       - name: Read defaults and compatibility lanes
         id: versions
-        run: sh scripts/toolchain.sh >> "$GITHUB_OUTPUT"
+        run: scripts/toolchain.sh >> "$GITHUB_OUTPUT"
 
   # Static checks on the default toolchain. The suite itself runs in
   # the `integration` job below, on every build. New-compiler warnings surface on the default
