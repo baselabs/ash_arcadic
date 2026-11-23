@@ -12,6 +12,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Docs build with ex_doc 0.40.5 (a dev-only tool; nothing a consumer resolves changes).
 - rewrite 1.3.1 (via igniter, dev and test only), which compiles without the Elixir 1.20
   xref deprecation warning; nothing a consumer resolves changes.
+- **The optional `replicant` floor rises to `~> 1.6`** (was `~> 1.5.1`), still
+  `optional: true`. replicant 1.6.0 requires Postgrex `~> 0.23`, which clears password and
+  SSL options from the connection process after connect and fixes async messages during
+  replication startup; no replicant API that ash_arcadic uses changed. A CDC host moves its
+  own `{:replicant, ...}` to `~> 1.6`. The lock moves to replicant 1.6.0 and postgrex 0.23.0.
 
 ## [1.4.0] - 2026-11-20
 
