@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Install snippets describe the advertised release and CI checks their requirements against
+  Hex (or `mix.exs` before publication). Notebook checks use the checkout's dependency
+  requirements while the published notebooks keep the released set; no library behavior changes.
 - Docs build with ex_doc 0.40.5 (a dev-only tool; nothing a consumer resolves changes).
 - rewrite 1.3.1 (via igniter, dev and test only), which compiles without the Elixir 1.20
   xref deprecation warning; nothing a consumer resolves changes.

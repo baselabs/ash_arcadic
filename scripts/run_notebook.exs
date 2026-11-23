@@ -6,9 +6,10 @@
 # * Cells are the top-level ```elixir fences, in order. A fence that Livebook marks
 #   `force_markdown` is prose, not a cell. A notebook with no cells fails.
 # * The first cell must be the setup cell, holding the notebook's only `Mix.install/2`.
-#   Its `:ash_arcadic` dependency is rewritten to `path:` this checkout, so the notebook runs
-#   the code under test rather than the last Hex release. A setup cell without exactly one
-#   `:ash_arcadic` dependency fails.
+#   Its `:ash_arcadic` dependency is rewritten to `path:` this checkout; other declared
+#   dependencies use this checkout's mix.exs requirements. The notebook runs the code and
+#   dependency set under test while its source describes the advertised Hex release.
+#   A setup cell without exactly one `:ash_arcadic` dependency fails.
 # * Every other cell is evaluated with the bindings and the environment (aliases, imports,
 #   requires) the cells before it left, as Livebook carries them, in one process, so a
 #   `receive` sees messages sent to an earlier cell's caller.
@@ -19,6 +20,7 @@
 
 defmodule AshArcadic.NotebookRunner do
   @checkout Path.expand("..", __DIR__)
+  @app :ash_arcadic
 
   def main([path]) do
     cells = path |> File.read!() |> cells(path)
@@ -110,48 +112,72 @@ defmodule AshArcadic.NotebookRunner do
   defp fence_kind(text), do: text |> String.trim_leading("`") |> String.trim()
 
   defp install(path, line, code) do
+    quoted = rewrite_setup(path, line, code)
+    Code.eval_quoted(quoted, [], file: path, line: line)
+    IO.puts("#{path}:#{line} setup ok (#{@app} from #{@checkout})")
+  end
+
+  def rewrite_setup(path, line, code) do
+    Mix.start()
+
+    requirements =
+      Mix.Project.in_project(:notebook_project, @checkout, fn _ ->
+        Map.new(Mix.Project.config()[:deps], fn dep -> {elem(dep, 0), elem(dep, 1)} end)
+      end)
+
     {quoted, counts} =
       code
       |> Code.string_to_quoted!(file: path, line: line)
-      |> Macro.prewalk(%{install: 0, ash_arcadic: 0}, &rewrite_install/2)
+      |> Macro.prewalk(%{install: 0, checkout: 0, requirements: requirements}, &rewrite_install/2)
 
     cond do
       counts.install != 1 ->
         fail(path, "the first cell must hold the notebook's Mix.install/2")
 
-      counts.ash_arcadic != 1 ->
-        fail(path, "the setup cell must install :ash_arcadic exactly once")
+      counts.checkout != 1 ->
+        fail(path, "the setup cell must install :#{@app} exactly once")
 
       true ->
-        :ok
+        quoted
     end
-
-    Code.eval_quoted(quoted, [], file: path, line: line)
-    IO.puts("#{path}:#{line} setup ok (ash_arcadic from #{@checkout})")
   end
 
   defp rewrite_install({{:., _, [{:__aliases__, _, [:Mix]}, :install]}, _, _} = node, counts) do
     {call, meta, args} = node
-    {args, ash_arcadic} = rewrite_args(args)
-    {{call, meta, args}, %{counts | install: counts.install + 1, ash_arcadic: ash_arcadic}}
+    {args, checkout} = rewrite_args(args, counts.requirements)
+    {{call, meta, args}, %{counts | install: counts.install + 1, checkout: checkout}}
   end
 
   defp rewrite_install(node, counts), do: {node, counts}
 
-  defp rewrite_args([deps | opts]) when is_list(deps) do
-    {deps, ash_arcadic} = Enum.map_reduce(deps, 0, &rewrite_dep/2)
-    {[deps | opts], ash_arcadic}
+  defp rewrite_args([deps | opts], requirements) when is_list(deps) do
+    {deps, checkout} = Enum.map_reduce(deps, 0, &rewrite_dep(&1, &2, requirements))
+    {[deps | opts], checkout}
   end
 
-  defp rewrite_args(args), do: {args, 0}
+  defp rewrite_args(args, _requirements), do: {args, 0}
 
-  defp rewrite_dep({:ash_arcadic, _requirement}, n),
-    do: {{:ash_arcadic, [path: @checkout]}, n + 1}
+  defp rewrite_dep({@app, _requirement}, n, _requirements),
+    do: {{@app, [path: @checkout]}, n + 1}
 
-  defp rewrite_dep({:{}, _, [:ash_arcadic | _]}, n),
-    do: {{:ash_arcadic, [path: @checkout]}, n + 1}
+  defp rewrite_dep({:{}, _, [@app | _]}, n, _requirements),
+    do: {{@app, [path: @checkout]}, n + 1}
 
-  defp rewrite_dep(dep, n), do: {dep, n}
+  defp rewrite_dep({app, _requirement} = dep, n, requirements) do
+    case Map.fetch(requirements, app) do
+      {:ok, requirement} -> {{app, requirement}, n}
+      :error -> {dep, n}
+    end
+  end
+
+  defp rewrite_dep({:{}, meta, [app, _requirement, opts]} = dep, n, requirements) do
+    case Map.fetch(requirements, app) do
+      {:ok, requirement} -> {{:{}, meta, [app, requirement, opts]}, n}
+      :error -> {dep, n}
+    end
+  end
+
+  defp rewrite_dep(dep, n, _requirements), do: {dep, n}
 
   defp refuse_install(path, {line, code}) do
     if code =~ ~r/\bMix\.install\b/ do

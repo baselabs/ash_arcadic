@@ -205,11 +205,15 @@ secret. This file points at them and does not copy them.
 
 - **Notebooks** (`livebooks/**/*.livemd`): run each in its own VM with
   `elixir scripts/run_notebook.exs livebooks/tour.livemd`. The runner preserves cell bindings
-  and aliases, rewrites only `:ash_arcadic` to this checkout, and leaves other deps on Hex.
+  and aliases, rewrites `:ash_arcadic` to this checkout, and uses its `mix.exs` requirements
+  for other declared dependencies; unrelated dependencies stay as written.
   Set `ARCADEDB_URL` and `ARCADEDB_PASSWORD` for a live ArcadeDB; the tour creates and drops
   its own throwaway database and needs no Postgres or extra server plugins.
 
 ## Docs & lifecycle-artifact policy
+
+Install snippets describe the `@version` release in `mix.exs`; CI checks them against Hex
+metadata (or current requirements before publication).
 
 - **Tracked / published:** `AGENTS.md` (there is no `CLAUDE.md`),
   `README.md`, `CHANGELOG.md`, `CONTRIBUTING.md`, `SECURITY.md`, `usage-rules.md`,

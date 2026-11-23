@@ -10,7 +10,7 @@ Mix.install(
     # `replicant` is the CDC transport (Postgres logical replication → decoded
     # transactions) for the CDC-mirror section near the end. ash_arcadic declares
     # it `optional: true`, so a tour without that section can drop this line.
-    {:replicant, "~> 1.6"}
+    {:replicant, "~> 1.5.1"}
   ],
   # Ash requires an explicit string-length rule; this is the one it recommends.
   config: [ash: [default_string_length_count: :codepoints]]
