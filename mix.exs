@@ -43,7 +43,9 @@ defmodule AshArcadic.MixProject do
   defp deps do
     [
       # Runtime
-      {:ash, "~> 3.11"},
+      # ash >= 3.38.1 closes GHSA-m5v6-3qwf-6w9r (forged keyset cursors) and
+      # GHSA-rwmx-99mc-qr2x (Ash.Type.Keyword input validation).
+      {:ash, ">= 3.38.1 and < 4.0.0-0"},
       {:spark, ">= 2.3.3 and < 3.0.0-0"},
       {:splode, "~> 0.3"},
       {:arcadic, "~> 2.0"},

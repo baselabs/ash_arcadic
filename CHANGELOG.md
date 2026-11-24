@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **The `ash` floor rises to 3.38.1** (was `~> 3.11`), so no host resolves an ash affected by
+  GHSA-m5v6-3qwf-6w9r (code execution and SQL injection through a forged keyset pagination
+  cursor, ash 3.31.3 to before 3.38.0) or GHSA-rwmx-99mc-qr2x (`Ash.Type.Keyword` skipping its
+  field types' input validation, ash 3.24.0 to before 3.38.1). The lock moves to ash 3.38.1.
 - Install snippets describe the advertised release and CI checks their requirements against
   Hex (or `mix.exs` before publication). Notebook checks use the checkout's dependency
   requirements while the published notebooks keep the released set; no library behavior changes.
