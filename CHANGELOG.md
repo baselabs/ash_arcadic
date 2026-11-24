@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.5.0] - 2026-11-24
+
 ### Changed
 
 - **The `ash` floor rises to 3.38.1** (was `~> 3.11`), so no host resolves an ash affected by
@@ -935,7 +937,8 @@ the initial surface.
   tenant space). ArcadeDB `CONTAINS`/`STARTS WITH`/`ENDS WITH` are case-sensitive (a
   `:ci_string` attribute's case-insensitive semantics are not preserved).
 
-[Unreleased]: https://github.com/baselabs/ash_arcadic/compare/v1.4.0...HEAD
+[Unreleased]: https://github.com/baselabs/ash_arcadic/compare/v1.5.0...HEAD
+[1.5.0]: https://github.com/baselabs/ash_arcadic/compare/v1.4.0...v1.5.0
 [1.4.0]: https://github.com/baselabs/ash_arcadic/compare/v1.3.0...v1.4.0
 [1.3.0]: https://github.com/baselabs/ash_arcadic/compare/v1.2.3...v1.3.0
 [1.2.3]: https://github.com/baselabs/ash_arcadic/compare/v1.2.2...v1.2.3

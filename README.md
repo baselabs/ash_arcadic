@@ -13,8 +13,8 @@ enforced **Ash-natively**. It executes through the
 [`arcadic`](https://github.com/baselabs/arcadic) client (the transport — the
 "`postgrex` of ArcadeDB").
 
-> **Status: released.** `v1.4.0` is on Hex — `{:ash_arcadic, "~> 1.4"}`. The full
-> capabilities roadmap has shipped, plus an optional Postgres→ArcadeDB CDC sink (883
+> **Status: released.** `v1.5.0` is on Hex — `{:ash_arcadic, "~> 1.5"}`. The full
+> capabilities roadmap has shipped, plus an optional Postgres→ArcadeDB CDC sink (884
 > tests incl. live integration against ArcadeDB 26.11.1, and daily against the latest
 > ArcadeDB image; dialyzer clean). Working rules
 > for contributors are in
@@ -81,8 +81,8 @@ Add `ash_arcadic` (and `ash`) to your deps:
 # mix.exs
 def deps do
   [
-    {:ash, "~> 3.11"},
-    {:ash_arcadic, "~> 1.4"}
+    {:ash, ">= 3.38.1 and < 4.0.0-0"},
+    {:ash_arcadic, "~> 1.5"}
   ]
 end
 ```
@@ -94,7 +94,7 @@ Ash requires an explicit string-length rule in `config/config.exs`; the one it r
 config :ash, default_string_length_count: :codepoints
 ```
 
-The Postgres→ArcadeDB CDC sink is optional — add `{:replicant, "~> 1.5.1"}` only if you
+The Postgres→ArcadeDB CDC sink is optional — add `{:replicant, "~> 1.6"}` only if you
 use it (see `usage-rules.md`); a non-CDC host builds `ash_arcadic` without it.
 
 Pairs well with the rest of the ecosystem: AshArcadic emits a full telemetry event

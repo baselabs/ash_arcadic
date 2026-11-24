@@ -7,6 +7,24 @@ error structs, the telemetry event names + metadata allowlist, and the config
 knobs. Breaking changes, if ever needed, ship as a new major with an entry
 here.
 
+## 1.4.x → 1.5.0
+
+Two dependency floors rise; no ash_arcadic API changes.
+
+- **`ash` must be 3.38.1 or later** (was `~> 3.11`). 3.38.1 closes GHSA-m5v6-3qwf-6w9r
+  (code execution and SQL injection through a forged keyset pagination cursor) and
+  GHSA-rwmx-99mc-qr2x (`Ash.Type.Keyword` skipping its field types' input validation). If your
+  host pins `ash` below 3.38.1, raise it.
+- **CDC hosts:** `replicant` moves to `~> 1.6` (was `~> 1.5.1`), still optional. replicant 1.6
+  requires Postgrex `~> 0.23`, which clears password and SSL options from the connection
+  process after connect. Move your own `{:replicant, ...}` to `~> 1.6`.
+
+After upgrading, run:
+
+```console
+mix deps.update ash ash_arcadic && mix compile
+```
+
 ## 1.3.x → 1.4.0
 
 ash_arcadic now depends on arcadic `~> 2.0`. arcadic 2's breaking changes are all in its
