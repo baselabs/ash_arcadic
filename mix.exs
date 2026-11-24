@@ -53,6 +53,11 @@ defmodule AshArcadic.MixProject do
       # so non-CDC hosts don't pull it (nor its Postgrex replication deps); a host that
       # uses the sink adds `replicant` to its own deps.
       {:replicant, "~> 1.6", optional: true},
+      # CVE floor for a transitive dependency (a library's mix.lock does not govern consumers'
+      # resolution): db_connection, reached only through replicant's Postgrex, must be 2.10.3
+      # or later, which closes EEF-CVE-2026-133555 (code execution via the :log option of
+      # forged DBConnection.Stream structs). Optional, so it binds only where it is present.
+      {:db_connection, ">= 2.10.3 and < 3.0.0-0", optional: true},
       {:jason, "~> 1.4"},
       {:telemetry, "~> 1.0"},
       # SAT solver required by Ash.Policy.Authorizer (Ash lists it as an optional dep;

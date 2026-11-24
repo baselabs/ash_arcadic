@@ -9,7 +9,7 @@ here.
 
 ## 1.4.x → 1.5.0
 
-Two dependency floors rise; no ash_arcadic API changes.
+Three dependency floors rise; no ash_arcadic API changes.
 
 - **`ash` must be 3.38.1 or later** (was `~> 3.11`). 3.38.1 closes GHSA-m5v6-3qwf-6w9r
   (code execution and SQL injection through a forged keyset pagination cursor) and
@@ -18,11 +18,20 @@ Two dependency floors rise; no ash_arcadic API changes.
 - **CDC hosts:** `replicant` moves to `~> 1.6` (was `~> 1.5.1`), still optional. replicant 1.6
   requires Postgrex `~> 0.23`, which clears password and SSL options from the connection
   process after connect. Move your own `{:replicant, ...}` to `~> 1.6`.
+- **CDC hosts:** `db_connection` (which replicant's Postgrex brings in) must be 2.10.3 or
+  later, which closes EEF-CVE-2026-133555 (code execution via the `:log` option of forged
+  `DBConnection.Stream` structs). Hosts without replicant are unaffected.
 
 After upgrading, run:
 
 ```console
 mix deps.update ash ash_arcadic && mix compile
+```
+
+A CDC host also unlocks the replicant chain, whose floors moved:
+
+```console
+mix deps.update ash ash_arcadic replicant postgrex db_connection && mix compile
 ```
 
 ## 1.3.x → 1.4.0
@@ -34,8 +43,8 @@ and every documented option behave as in 1.3.
 - **If your host also lists `arcadic`** in its own deps, move it to `~> 2.0`.
 - **If your own code uses arcadic's Bolt transport**, follow the Breaking section of
   [arcadic's 2.0.0 changelog](https://github.com/baselabs/arcadic/blob/main/CHANGELOG.md):
-  replace `{:boltx, ...}` with `{:db_connection, "~> 2.10"}` and match arcadic's own Bolt
-  value types.
+  replace the `boltx` dependency with `db_connection` at the version arcadic requires, and
+  match arcadic's own Bolt value types.
 - arcadic 2 requires Elixir 1.16 or later; ash_arcadic's own floor (1.18) is unchanged.
 
 After upgrading, run:

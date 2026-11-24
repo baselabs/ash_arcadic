@@ -11,6 +11,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **`db_connection` gets a floor of 2.10.3**, declared as an optional dependency so it binds
+  only where replicant's Postgrex brings it in. 2.10.3 closes EEF-CVE-2026-133555 /
+  GHSA-gmmq-fw75-wq46 (code execution via the `:log` option of forged `DBConnection.Stream`
+  structs, db_connection 1.1.0 to before 2.10.3). The lock moves to db_connection 2.10.3.
+- The notebook runner reads dependency requirements from `mix.exs` source instead of loading
+  the project, so `Mix.install` defines the project module once.
 - **The `ash` floor rises to 3.38.1** (was `~> 3.11`), so no host resolves an ash affected by
   GHSA-m5v6-3qwf-6w9r (code execution and SQL injection through a forged keyset pagination
   cursor, ash 3.31.3 to before 3.38.0) or GHSA-rwmx-99mc-qr2x (`Ash.Type.Keyword` skipping its
