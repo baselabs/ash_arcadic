@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Qualify Hex archives in CI and publish them through the shared Hex action with workload identity.
+
 ## [1.5.0] - 2026-11-24
 
 ### Changed

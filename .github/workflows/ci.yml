@@ -173,13 +173,11 @@ jobs:
     with:
       image: arcadedata/arcadedb:26.11.1@sha256:22a049898f34f01c256b56a1ba95fb01d32e5e14755d3c4367415c8e55ae5035
 
-  # The release builds these docs; a warning here would ship on hexdocs.
-  # Qualification builds and inspects the same archives as publication: a reproducible
-  # package and one docs build.
+  # Publication uses the exact package and docs archives qualified here.
   release-archives:
     needs: toolchain
     runs-on: ubuntu-24.04
-    timeout-minutes: 5 # 93 s, run 44703078791
+    timeout-minutes: 90 # no green run yet with cold qualification and consumer compile
     env:
       MIX_ENV: dev
     steps:
@@ -192,25 +190,28 @@ jobs:
           elixir-version: ${{ needs.toolchain.outputs.elixir }}
           otp-version: ${{ needs.toolchain.outputs.otp }}
 
-      - name: Install the archive-building Hex client
-        run: mix local.hex "$(cat scripts/release/hex-version)" --force
+      - name: Install the shared action's Hex client
+        working-directory: ${{ runner.temp }}
+        run: |
+          test ! -e mix.exs
+          hex_version="$(curl --fail --silent --show-error --max-time 30 'https://raw.githubusercontent.com/baselabs/.github/3bfbb84692a65b4d2c03dc3b7932353026fe6943/.github/actions/hex-publish/hex-version')"
+          [[ "$hex_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          mix local.hex "$hex_version" --force
 
-      # The warmer writes deps and both test and dev _build for the default toolchain.
-      - name: Restore deps and _build
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      - name: Qualify the Hex package and docs
+        uses: baselabs/.github/.github/actions/hex-publish@3bfbb84692a65b4d2c03dc3b7932353026fe6943
         with:
-          path: |
-            deps
-            _build
-          key: ${{ runner.os }}-mix-${{ needs.toolchain.outputs.otp }}-${{ needs.toolchain.outputs.elixir }}-${{ hashFiles('mix.lock') }}
+          operation: qualify
+          package: ash_arcadic
+          package-directory: .
 
-      - run: mix deps.get --check-locked
-
-      - name: Test the release scripts
-        run: python3 -I -B -m unittest discover -s scripts/release -p '*_test.py' -v
-
-      - name: Build and inspect the release archives
-        run: scripts/release/build_archives.sh "$RUNNER_TEMP/release"
+      - name: Check package archive reproducibility
+        run: |
+          scratch="$(mktemp -d "$RUNNER_TEMP/package-reproducibility.XXXXXX")"
+          trap 'rm -rf -- "$scratch"' EXIT
+          mix hex.build --output "$scratch/first.tar"
+          mix hex.build --output "$scratch/second.tar"
+          cmp "$scratch/first.tar" "$scratch/second.tar"
 
   # The landing verdict: always runs, needs every other job in this workflow, and
   # passes only when each one's result is exactly `success` (skipped or cancelled refuses).

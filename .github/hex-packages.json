@@ -1,0 +1,133 @@
+{
+  "ash_arcadic": {
+    "directory": ".",
+    "app": "ash_arcadic",
+    "files": [
+      ".formatter.exs",
+      "CHANGELOG.md",
+      "CODE_OF_CONDUCT.md",
+      "CONTRIBUTING.md",
+      "LICENSE",
+      "README.md",
+      "SECURITY.md",
+      "documentation/dsls/DSL-AshArcadic.DataLayer.md",
+      "documentation/dsls/DSL-AshArcadic.Replicant.md",
+      "documentation/performance.md",
+      "documentation/telemetry.md",
+      "documentation/troubleshooting.md",
+      "documentation/upgrading.md",
+      "lib/ash_arcadic.ex",
+      "lib/ash_arcadic/aggregate.ex",
+      "lib/ash_arcadic/cast.ex",
+      "lib/ash_arcadic/changes/create_edge.ex",
+      "lib/ash_arcadic/changes/destroy_edge.ex",
+      "lib/ash_arcadic/changes/edge_cypher.ex",
+      "lib/ash_arcadic/client.ex",
+      "lib/ash_arcadic/data_layer.ex",
+      "lib/ash_arcadic/data_layer/info.ex",
+      "lib/ash_arcadic/data_layer/transformers/ensure_labelled.ex",
+      "lib/ash_arcadic/data_layer/verifiers/validate_database.ex",
+      "lib/ash_arcadic/data_layer/verifiers/validate_edge.ex",
+      "lib/ash_arcadic/data_layer/verifiers/validate_label_format.ex",
+      "lib/ash_arcadic/data_layer/verifiers/validate_multitenancy_attr.ex",
+      "lib/ash_arcadic/data_layer/verifiers/validate_relationship_fk.ex",
+      "lib/ash_arcadic/data_layer/verifiers/validate_sensitive.ex",
+      "lib/ash_arcadic/data_layer/verifiers/validate_skip.ex",
+      "lib/ash_arcadic/data_layer/verifiers/validate_sparse_vector_index.ex",
+      "lib/ash_arcadic/data_layer/verifiers/validate_vector_index.ex",
+      "lib/ash_arcadic/edge.ex",
+      "lib/ash_arcadic/errors/create_failed.ex",
+      "lib/ash_arcadic/errors/query_failed.ex",
+      "lib/ash_arcadic/errors/unsupported_filter.ex",
+      "lib/ash_arcadic/errors/update_failed.ex",
+      "lib/ash_arcadic/identifier.ex",
+      "lib/ash_arcadic/manual_relationships/traverse.ex",
+      "lib/ash_arcadic/multitenancy.ex",
+      "lib/ash_arcadic/preparations/vector_search.ex",
+      "lib/ash_arcadic/query.ex",
+      "lib/ash_arcadic/query/combination.ex",
+      "lib/ash_arcadic/query/expression.ex",
+      "lib/ash_arcadic/query/filter.ex",
+      "lib/ash_arcadic/query/write.ex",
+      "lib/ash_arcadic/replicant.ex",
+      "lib/ash_arcadic/replicant/apply.ex",
+      "lib/ash_arcadic/replicant/checkpoint.ex",
+      "lib/ash_arcadic/replicant/error.ex",
+      "lib/ash_arcadic/replicant/info.ex",
+      "lib/ash_arcadic/replicant/pipeline.ex",
+      "lib/ash_arcadic/replicant/resolver.ex",
+      "lib/ash_arcadic/replicant/sink.ex",
+      "lib/ash_arcadic/replicant/sink/impl.ex",
+      "lib/ash_arcadic/replicant/telemetry.ex",
+      "lib/ash_arcadic/replicant/verifiers/validate_arcade_data_layer.ex",
+      "lib/ash_arcadic/replicant/verifiers/validate_primary_key_not_sensitive.ex",
+      "lib/ash_arcadic/replicant/verifiers/validate_primary_key_not_skipped.ex",
+      "lib/ash_arcadic/replicant/verifiers/validate_single_db_tenancy.ex",
+      "lib/ash_arcadic/replicant/verifiers/validate_write_actions_authorized.ex",
+      "lib/ash_arcadic/sparse_vector_index.ex",
+      "lib/ash_arcadic/telemetry.ex",
+      "lib/ash_arcadic/transaction.ex",
+      "lib/ash_arcadic/traversal_aggregate.ex",
+      "lib/ash_arcadic/vector_index.ex",
+      "livebooks/tour.livemd",
+      "mix.exs",
+      "usage-rules.md"
+    ],
+    "requirements": {
+      "arcadic": {
+        "app": "arcadic",
+        "optional": false,
+        "requirement": "~> 2.0",
+        "repository": "hexpm"
+      },
+      "ash": {
+        "app": "ash",
+        "optional": false,
+        "requirement": ">= 3.38.1 and < 4.0.0-0",
+        "repository": "hexpm"
+      },
+      "db_connection": {
+        "app": "db_connection",
+        "optional": true,
+        "requirement": ">= 2.10.3 and < 3.0.0-0",
+        "repository": "hexpm"
+      },
+      "jason": {
+        "app": "jason",
+        "optional": false,
+        "requirement": "~> 1.4",
+        "repository": "hexpm"
+      },
+      "replicant": {
+        "app": "replicant",
+        "optional": true,
+        "requirement": "~> 1.6",
+        "repository": "hexpm"
+      },
+      "simple_sat": {
+        "app": "simple_sat",
+        "optional": false,
+        "requirement": "~> 0.1",
+        "repository": "hexpm"
+      },
+      "spark": {
+        "app": "spark",
+        "optional": false,
+        "requirement": ">= 2.3.3 and < 3.0.0-0",
+        "repository": "hexpm"
+      },
+      "splode": {
+        "app": "splode",
+        "optional": false,
+        "requirement": "~> 0.3",
+        "repository": "hexpm"
+      },
+      "telemetry": {
+        "app": "telemetry",
+        "optional": false,
+        "requirement": "~> 1.0",
+        "repository": "hexpm"
+      }
+    }
+  }
+}

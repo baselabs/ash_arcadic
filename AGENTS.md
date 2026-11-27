@@ -159,25 +159,17 @@ secret. This file points at them and does not copy them.
 - **Your part ends at `main`.** A change lands only through the landing run on `kci/<full sha>`
   (see Workflow). Never release, deploy, publish, tag a version, dispatch a workflow, push an
   image by hand, or handle a release, publish or CI key. When something should go out, send
-  infra one message: repository, full commit, what goes out, and anything it needs. A release
-  is the version commit with its CHANGELOG entry dated, landed; infra asks the owner,
-  dispatches `.github/workflows/publish.yml` and tags `v<version>` on the published commit.
-  Qualification and publication use `scripts/release/build_archives.sh` with the Hex version
-  in `scripts/release/hex-version` to build and inspect both archives before any key is
-  available: the package is built twice and must match byte for byte; docs are built once,
-  because a docs build is not byte-stable, and carry `release.json` naming the package,
-  version and the commit they were built from. Publication has no cache; its isolated
-  `mix run --no-mix-exs` step uploads only what Hex does not yet serve for an existing
-  package name, and holds the key only for that upload. It never replaces a package or
-  served docs. A second dispatch finishes the first: the package Hex serves must equal the
-  build, and docs Hex serves are kept and never compared. It refuses existing tags, retired
-  versions, missing changelog sections, and a built package whose CHANGELOG is not stamped for
-  its version (entries above it, before any upload; an empty `[Unreleased]` stays). Read-back
-  requires the served docs' `release.json` to name this release and the dispatched commit or
-  an ancestor on the default branch (the published commit, which infra tags), and exports
-  `release-assets`: the package, those inspected served docs, checksums, and release notes
-  read from the published commit's CHANGELOG (not the checkout, which is newer when a
-  dispatch resumes). Infra creates the GitHub release from them.
+  infra one message with the repository, full `release_commit`, version, and green
+  qualification run. CI uses the pinned shared Hex action to qualify the package declared
+  in `.github/hex-packages.json` and retain its package and docs archives for seven days.
+  Infra asks the owner and dispatches `.github/workflows/publish.yml` from the default
+  branch after the release commit lands with its dated CHANGELOG entry. Pass the original
+  `qualification_run` on the first dispatch and each retry to keep the archive bytes fixed.
+  The protected upload job checks the stamped changelog and registry state and uploads via
+  package-scoped workload identity. Read-back verifies both served archives against the
+  same qualification and exports `release-assets` with checksums and release notes from
+  the published commit. Infra tags `baselabs_ash_arcadic-v<version>` and creates the GitHub
+  release.
 - **You write your own workflow changes; infra reviews them.** Before landing any change to
   `.github/`, a Dockerfile, a release script or anything that touches a secret, send infra the
   branch and head commit and wait for its review. Any CI/CD, runner, build-machine or key
