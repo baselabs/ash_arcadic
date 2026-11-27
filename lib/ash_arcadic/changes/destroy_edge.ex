@@ -111,6 +111,9 @@ defmodule AshArcadic.Changes.DestroyEdge do
   # WHERE matched nothing → StaleRecord (fail-closed). Never row_to_attrs the echo.
   defp run_destroy(conn, cypher, params, resource, edge, src_key, dest_id) do
     case DataLayer.write_command(conn, cypher, params) do
+      {:ok, [_, _ | _]} when edge.identity != [] ->
+        edge_write_error(edge, "edge identity matched multiple relationships")
+
       {:ok, [_ | _]} ->
         {:ok, :destroyed}
 
@@ -147,10 +150,9 @@ defmodule AshArcadic.Changes.DestroyEdge do
         :incoming ->
           "(a:#{src_label})<-[r:#{edge_label}#{identity_pattern}]-(b:#{dest_label})"
 
-        # `:both` deletes EITHER orientation (spec §6.2): an undirected match removes an
-        # edge written from either endpoint. The endpoints stay PK- and tenant-pinned in
-        # the WHERE, so undirecting the relationship cannot widen the delete's scope.
-        :both when placement == :exact ->
+        # Unkeyed :both retains the undirected match. A keyed exact delete
+        # uses the outgoing orientation that CreateEdge writes for :both.
+        :both when placement == :exact and edge.identity == [] ->
           "(a:#{src_label})-[r:#{edge_label}#{identity_pattern}]-(b:#{dest_label})"
 
         _ ->
@@ -159,7 +161,15 @@ defmodule AshArcadic.Changes.DestroyEdge do
 
     endpoints = "#{src_where} AND b.#{dest_pk} = $dst"
     endpoints = if placement == :previous, do: "NOT (#{endpoints})", else: endpoints
-    cypher = "MATCH #{pattern} WHERE #{endpoints}#{tenant_where} DELETE r RETURN r"
+
+    delete =
+      if placement == :exact and edge.identity != [] do
+        "WITH collect(DISTINCT r) AS matches WHERE size(matches) = 1 UNWIND matches AS r DELETE r RETURN r"
+      else
+        "DELETE r RETURN r"
+      end
+
+    cypher = "MATCH #{pattern} WHERE #{endpoints}#{tenant_where} #{delete}"
 
     params =
       src_params
@@ -177,19 +187,19 @@ defmodule AshArcadic.Changes.DestroyEdge do
 
     case EdgeCypher.encode_gate(params) do
       :ok -> delete_previous(conn, cypher, params, edge)
-      {:error, key} -> relocation_error(edge, EdgeCypher.encode_reason(key))
+      {:error, key} -> edge_write_error(edge, EdgeCypher.encode_reason(key))
     end
   end
 
   defp delete_previous(conn, cypher, params, edge) do
     case DataLayer.write_command(conn, cypher, params) do
-      {:ok, [_, _ | _]} -> relocation_error(edge, "edge key has multiple previous placements")
+      {:ok, [_, _ | _]} -> edge_write_error(edge, "edge key has multiple previous placements")
       {:ok, _rows} -> :ok
-      {:error, error} -> relocation_error(edge, DataLayer.redact_db_error(error))
+      {:error, error} -> edge_write_error(edge, DataLayer.redact_db_error(error))
     end
   end
 
-  defp relocation_error(edge, message) do
+  defp edge_write_error(edge, message) do
     {:error, InvalidRelationship.exception(relationship: edge.name, message: message)}
   end
 

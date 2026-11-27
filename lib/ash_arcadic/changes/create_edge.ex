@@ -25,6 +25,7 @@ defmodule AshArcadic.Changes.CreateEdge do
   alias AshArcadic.DataLayer
   alias AshArcadic.Identifier
   alias AshArcadic.Telemetry
+  alias AshArcadic.Transaction
 
   @impl true
   def change(changeset, opts, _context) do
@@ -62,45 +63,51 @@ defmodule AshArcadic.Changes.CreateEdge do
          direction: edge.direction,
          properties?: properties?,
          tenant?: not is_nil(changeset.to_tenant),
-         in_transaction?: AshArcadic.Transaction.in_transaction?(),
+         in_transaction?: Transaction.in_transaction?(),
          result: Telemetry.result_tag(result)
        }}
     end)
   end
 
   defp write_edges(changeset, record, edge, dest_ids, props, replace?) do
-    resource = changeset.resource
-    # The documented empty-`to:` contract: nil or [] removes no edge and the action SUCCEEDS —
-    # short-circuit BEFORE tenant resolution (a destination-only-:attribute edge with no tenant
-    # and an empty list must not fail; delta-review catch 2026-10-16).
-    if dest_ids == [] do
-      {:ok, record}
+    with :ok <- validate_relocation(replace?, edge, dest_ids) do
+      write_destinations(changeset, record, edge, dest_ids, props, replace?)
     else
-      with {:ok, tenant} <- EdgeCypher.tenant_spec(resource, edge, changeset),
-           {:ok, identity} <- EdgeCypher.identity(changeset, edge, props, tenant),
-           :ok <- validate_relocation(replace?, edge, dest_ids),
-           {:ok, conn} <- DataLayer.write_conn(resource, changeset) do
-        src_key = EdgeCypher.source_key(resource, record)
-        dest_ids = EdgeCypher.serialize_destination_ids(edge.destination, dest_ids)
-
-        with :ok <- relocate(replace?, conn, resource, edge, src_key, dest_ids, tenant, identity) do
-          create_all(conn, record, dest_ids, resource, edge, src_key, props, tenant)
-        end
-      else
-        {:error, reason} ->
-          {:error,
-           InvalidRelationship.exception(
-             relationship: edge.name,
-             message: EdgeCypher.conn_reason(reason)
-           )}
-      end
+      {:error, reason} -> edge_write_error(edge, reason)
     end
+  end
+
+  # An ordinary write without a destination does not resolve a tenant or connection.
+  defp write_destinations(_changeset, record, _edge, [], _props, _replace?), do: {:ok, record}
+
+  defp write_destinations(changeset, record, edge, dest_ids, props, replace?) do
+    resource = changeset.resource
+    src_key = EdgeCypher.source_key(resource, record)
+
+    with {:ok, tenant} <- EdgeCypher.tenant_spec(resource, edge, changeset),
+         {:ok, identity} <- EdgeCypher.identity(changeset, edge, props, tenant),
+         {:ok, conn} <- DataLayer.write_conn(resource, changeset),
+         dest_ids = EdgeCypher.serialize_destination_ids(edge.destination, dest_ids),
+         :ok <- relocate(replace?, conn, resource, edge, src_key, dest_ids, tenant, identity) do
+      create_all(conn, record, dest_ids, resource, edge, src_key, props, tenant)
+    else
+      {:error, reason} when is_atom(reason) -> edge_write_error(edge, reason)
+      {:error, _} = error -> error
+    end
+  end
+
+  defp edge_write_error(edge, reason) do
+    {:error,
+     InvalidRelationship.exception(
+       relationship: edge.name,
+       message: EdgeCypher.conn_reason(reason)
+     )}
   end
 
   defp validate_relocation(replace?, _edge, _ids) when replace? in [false, nil], do: :ok
 
   defp validate_relocation(true, %{identity: [_ | _]}, [_]) do
-    if AshArcadic.Transaction.in_transaction?(),
+    if Transaction.in_transaction?(),
       do: :ok,
       else: {:error, :edge_relocation_requires_transaction}
   end
