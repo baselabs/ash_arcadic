@@ -217,6 +217,19 @@ defmodule AshArcadic.TransactionTest do
     end
   end
 
+  test "a lock read requires an enclosing Ash transaction" do
+    alias AshArcadic.DataLayer, as: DL
+
+    resource = AshArcadic.Test.Basic
+    query = DL.resource_to_query(resource, nil)
+    assert {:ok, locked} = DL.lock(query, :for_update, resource)
+
+    assert {:error, %AshArcadic.Errors.QueryFailed{reason: reason}} =
+             DL.run_query(locked, resource)
+
+    assert reason == "for_update requires an active Ash transaction"
+  end
+
   describe "transaction callbacks" do
     alias AshArcadic.DataLayer, as: DL
     alias AshArcadic.Test.CrudPerson
@@ -399,6 +412,26 @@ defmodule AshArcadic.TransactionTest do
 
     # If the commit-failure cleanup rollback ALSO fails, run/1 logs value-free (never the
     # db-bearing message) and still returns :transaction_commit_failed (the commit error wins).
+    test "a session statement conflict aborts the whole transaction without exposing the error",
+         %{
+           base: base
+         } do
+      result =
+        Transaction.run(fn ->
+          assert {:ok, session} = Transaction.resolve_conn(base, :write)
+
+          Transaction.reject_conflict(
+            {:error, %Arcadic.Error{reason: :concurrent_modification, message: "private value"}},
+            session
+          )
+        end)
+
+      assert {:error, %AshArcadic.Errors.TransactionConflict{} = error} = result
+      refute Exception.message(error) =~ "private value"
+      assert_received {:stub_transport, :rollback}
+      refute_received {:stub_transport, :commit}
+    end
+
     test "a failing commit whose cleanup rollback also fails logs value-free, still returns :transaction_commit_failed",
          %{base: base} do
       on_exit(fn ->

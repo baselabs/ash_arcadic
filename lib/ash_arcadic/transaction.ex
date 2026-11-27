@@ -9,6 +9,7 @@ defmodule AshArcadic.Transaction do
   # reads. Supersedes the main spec §12's `$callers`-aware framing (Plan-3 spec §3/§4).
 
   alias Arcadic.Conn
+  alias AshArcadic.Errors.TransactionConflict
 
   require Logger
 
@@ -17,7 +18,11 @@ defmodule AshArcadic.Transaction do
   @rollback_tag :ash_arcadic_rollback
 
   @type conn_error ::
-          :cross_database_transaction | :cross_route_transaction | :transaction_begin_failed
+          :cross_database_transaction
+          | :cross_route_transaction
+          | :transaction_begin_failed
+          | :transaction_required
+          | :unsupported_lock_transport
 
   @doc "True when the current process is inside an AshArcadic transaction (marker set)."
   @spec in_transaction?() :: boolean()
@@ -45,7 +50,7 @@ defmodule AshArcadic.Transaction do
   @doc "Stash the session conn for this process (set when the first write opens it)."
   @spec put_session(Conn.t()) :: :ok
   def put_session(%Conn{} = conn) do
-    Process.put(@session_key, %{conn | hosts: []})
+    Process.put(@session_key, conn)
     :ok
   end
 
@@ -62,11 +67,19 @@ defmodule AshArcadic.Transaction do
   end
 
   @doc """
-  Resolve a database-targeted connection. The first write in a transaction opens
+  Resolve a database-targeted connection. The first write or lock read opens
   a session. Calls targeting its route reuse it. Other reads use their own
   connection, and writes across routes fail closed.
   """
-  @spec resolve_conn(Conn.t(), :read | :write) :: {:ok, Conn.t()} | {:error, conn_error()}
+  @spec resolve_conn(Conn.t(), :read | :write | :lock) :: {:ok, Conn.t()} | {:error, conn_error()}
+  def resolve_conn(%Conn{} = conn, :lock) do
+    cond do
+      not in_transaction?() -> {:error, :transaction_required}
+      conn.transport != Arcadic.Transport.HTTP -> {:error, :unsupported_lock_transport}
+      true -> resolve_conn(conn, :write)
+    end
+  end
+
   def resolve_conn(%Conn{} = conn, mode) when mode in [:read, :write] do
     case session() do
       nil ->
@@ -90,8 +103,13 @@ defmodule AshArcadic.Transaction do
   # conn, so `Arcadic.Transaction.begin/2` never clears a live session (with_database nils
   # session_id). A begin failure surfaces as a value-free atom — the arcadic transport
   # already spans the detail; we never carry a database name or transport error text out.
+  # Sessions begin at repeatable read on HTTP so a later lock read can join a
+  # session opened by a write, without changing its isolation mid-transaction.
   defp open_session(conn) do
-    case Arcadic.Transaction.begin(%{conn | hosts: []}) do
+    opts =
+      if conn.transport == Arcadic.Transport.HTTP, do: [isolation: :repeatable_read], else: []
+
+    case Arcadic.Transaction.begin(%{conn | hosts: []}, opts) do
       {:ok, %Conn{} = session_conn} ->
         put_session(session_conn)
         {:ok, session_conn}
@@ -118,14 +136,9 @@ defmodule AshArcadic.Transaction do
         :ok ->
           {:ok, result}
 
-        {:error, _error} ->
-          # A failed ArcadeDB commit (e.g. an MVCC ConcurrentModificationException — probe-
-          # verified 2026-07-05: HTTP 503 "Please retry") leaves the session STILL OPEN
-          # server-side; roll it back to free it immediately (probe-verified: rollback → 204),
-          # else it leaks until the server's idle expiry. rollback_or_log/0 is value-free and
-          # never raises, so a rollback that also fails only logs — the commit error still wins.
+        {:error, error} ->
           rollback_or_log()
-          {:error, :transaction_commit_failed}
+          {:error, commit_error(error)}
       end
     rescue
       exception ->
@@ -144,6 +157,22 @@ defmodule AshArcadic.Transaction do
       clear()
     end
   end
+
+  defp commit_error(%Arcadic.Error{reason: :concurrent_modification}),
+    do: TransactionConflict.exception([])
+
+  defp commit_error(_error), do: :transaction_commit_failed
+
+  @doc false
+  def reject_conflict({:error, %Arcadic.Error{reason: :concurrent_modification}} = result, conn) do
+    if is_binary(conn.session_id) and in_transaction?() do
+      rollback_throw(TransactionConflict.exception([]))
+    else
+      result
+    end
+  end
+
+  def reject_conflict(result, _conn), do: result
 
   @doc "Commit the stashed session if one was opened; :ok when there is none."
   @spec commit_if_open() :: :ok | {:error, term()}

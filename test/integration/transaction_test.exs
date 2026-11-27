@@ -1,7 +1,10 @@
 defmodule AshArcadic.Integration.TransactionTest do
   use AshArcadic.Test.IntegrationCase
 
+  require Ash.Query
+
   alias AshArcadic.DataLayer, as: DL
+  alias AshArcadic.Errors.TransactionConflict
   alias AshArcadic.Test.CrudPerson
 
   setup %{admin: admin} do
@@ -95,13 +98,8 @@ defmodule AshArcadic.Integration.TransactionTest do
     refute DL.in_transaction?(CrudPerson)
   end
 
-  # F4 (probe-verified 2026-07-05, live ArcadeDB): a commit that fails with an MVCC
-  # ConcurrentModificationException (HTTP 503 "Please retry") surfaces through the real DL
-  # stack as {:error, :transaction_commit_failed}; run/1 rolls the still-open session back so
-  # it does not leak. Forced deterministically: stage an in-session update (captures the row
-  # version), then bump the SAME row via the admin conn (autocommit) before the fun returns —
-  # run/1's commit then conflicts on the stale version.
-  test "an MVCC conflict at commit surfaces :transaction_commit_failed; session write discarded",
+  # Stage the original page version, then commit an outside write to force an MVCC conflict.
+  test "an MVCC conflict at commit surfaces a typed error and discards the session write",
        %{admin: admin} do
     {:ok, _} = create_person("mvcc", "orig")
     {:ok, [record | _]} = Ash.read(CrudPerson)
@@ -116,7 +114,7 @@ defmodule AshArcadic.Integration.TransactionTest do
         :staged
       end)
 
-    assert result == {:error, :transaction_commit_failed}
+    assert {:error, %TransactionConflict{}} = result
 
     names =
       admin
@@ -125,6 +123,47 @@ defmodule AshArcadic.Integration.TransactionTest do
 
     # the concurrent (committed) write persisted; the session's staged write was discarded.
     assert names == ["concurrent"]
+  end
+
+  test "a lock read preserves the version used by a later merge", %{admin: admin} do
+    Arcadic.command!(admin, "CREATE (n:CrudPerson {id:'merge', name:'base'})")
+    owner = self()
+
+    second =
+      Task.async(fn ->
+        merge("B", fn record ->
+          send(owner, {:second_read, record.name})
+
+          receive do
+            :write -> :ok
+          after
+            5_000 -> flunk("first transaction did not commit")
+          end
+        end)
+      end)
+
+    assert {:ok, %{name: "baseA"}} =
+             merge("A", fn _ ->
+               assert_receive {:second_read, "base"}, 5_000
+               :ok
+             end)
+
+    send(second.pid, :write)
+    assert {:error, %TransactionConflict{}} = Task.await(second)
+
+    assert {:ok, %{name: "baseAB"}} = merge("B", fn _ -> :ok end)
+    assert %{name: "baseAB"} = Ash.get!(CrudPerson, "merge")
+  end
+
+  defp merge(suffix, after_read) do
+    Ash.transact(CrudPerson, fn ->
+      query = CrudPerson |> Ash.Query.filter(id == "merge") |> Ash.Query.lock(:for_update)
+
+      with {:ok, record} <- Ash.read_one(query),
+           :ok <- after_read.(record) do
+        Ash.update!(record, %{name: record.name <> suffix})
+      end
+    end)
   end
 
   describe "per-op spans carry in_transaction?" do

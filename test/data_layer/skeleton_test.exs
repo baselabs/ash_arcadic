@@ -39,6 +39,8 @@ defmodule AshArcadic.DataLayer.SkeletonTest do
     assert AshArcadic.DataLayer.can?(AshArcadic.Test.Basic, :multitenancy)
     assert AshArcadic.DataLayer.can?(AshArcadic.Test.Basic, :read)
     assert AshArcadic.DataLayer.can?(AshArcadic.Test.Basic, :transact)
+    assert AshArcadic.DataLayer.can?(AshArcadic.Test.Basic, {:lock, :for_update})
+    refute AshArcadic.DataLayer.can?(AshArcadic.Test.Basic, {:lock, :for_share})
     assert AshArcadic.DataLayer.can?(AshArcadic.Test.Basic, :traverse)
     assert AshArcadic.DataLayer.can?(AshArcadic.Test.Basic, :distinct)
     assert AshArcadic.DataLayer.can?(AshArcadic.Test.Basic, :distinct_sort)

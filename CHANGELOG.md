@@ -13,6 +13,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Support `Ash.Query.lock(:for_update)` for HTTP record reads in a repeatable-read
+  session, with a typed transaction conflict for retrying read-merge-write.
+
 - Route resource connections from Ash tenant and action context, and bind
   transaction sessions to their connection route and opening host.
 

@@ -52,13 +52,16 @@ defmodule AshArcadic.Integration.ClientRoutingTest do
                assert {:ok, [%{id: "first"}]} = Ash.read(Node)
                assert {:ok, [%{id: "second"}]} = Ash.read(Node, context: %{route: :secondary})
 
-               assert {:error, error} =
-                        Ash.create(Node, %{id: "escaped"}, context: %{route: :secondary})
-
-               assert Exception.message(error) =~ "transaction spans multiple databases"
-               {:ok, :done}
+               :done
              end)
 
+    assert {:error, error} =
+             Ash.transact(Node, fn ->
+               assert {:ok, _} = Ash.create(Node, %{id: "rolled_back"})
+               Ash.create(Node, %{id: "escaped"}, context: %{route: :secondary})
+             end)
+
+    assert Exception.message(error) =~ "transaction spans multiple databases"
     assert {:ok, [%{id: "first"}]} = Ash.read(Node)
     assert {:ok, [%{id: "second"}]} = Ash.read(Node, context: %{route: :secondary})
   end

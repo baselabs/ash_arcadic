@@ -839,17 +839,28 @@ records. A rejected stored value raises a value-free `AshArcadic.Errors.QueryFai
 ## Transactions (Plan 3)
 
 Implement `AshArcadic.Client.conn/1` for residency routing. The callback receives
-`%{tenant: tenant, context: context}` with the Ash private context and top-level actor
-removed. Fixed-route clients use `conn/0`. The resource's explicit database and
+`%{tenant: tenant, context: context}` with the normalized Ash tenant. The routing context
+excludes Ash's private context and the top-level actor. Fixed-route clients use `conn/0`. The resource's explicit database and
 `:context` tenant database rules still apply to the selected connection. A bulk
 statement requires a common tenant and connection route.
 
 - **Transactions use one connection route.** The first write opens a session on the
-  selected host. The session stays on that host and reads on the same route see its
+  selected host. A `:for_update` read can also open the session. It stays on that host and reads on the same route see its
   uncommitted writes. Reads on other routes use their own connections. A write to
   another database fails with `:cross_database_transaction`. A write to the same
   database name on a different endpoint or transport fails with
   `:cross_route_transaction`. Propagate either error to roll back earlier writes.
+- **Optimistic `:for_update` over HTTP.** Inside `Ash.transact/3`, a record
+  query with `Ash.Query.lock(query, :for_update)` opens or joins a
+  repeatable-read session before reading. A subsequent write of a record read
+  there conflicts if a concurrent transaction committed a change to its page
+  since the read. ArcadeDB uses page-version checks, so contention may include
+  other records on the same page. Reads do not take a blocking record lock.
+  Predicate and read-only dependencies have no serializable guarantee.
+  On `AshArcadic.Errors.TransactionConflict`, retry the entire Ash transaction,
+  including the read. This lock mode requires HTTP and a record query without
+  vector search or combinations. HTTP sessions always use repeatable read so
+  a lock read can join a session opened by an earlier write.
 - **Owner-process only.** The transaction session lives in the calling process; Ash
   disables async inside a transaction, so every action runs in that process. Do not
   hand a transaction's work to a spawned task or a separate process — it will not see
@@ -945,6 +956,8 @@ single destination. Within the declared labels and tenant scope, it removes at
 most one previous placement and merges the new placement in the same Ash
 transaction. Multiple previous placements cause a rollback. A replay at the
 new endpoints updates the existing edge. The relocation action must be transactional.
+ArcadeDB publishes a multi-page commit page by page. An independent reader scanning
+across the affected pages can observe a mixed state during publication.
 
 
 - **Declare an edge** in the `arcade do … end` block, then wire a change on a

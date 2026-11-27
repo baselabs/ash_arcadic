@@ -125,10 +125,14 @@ reliable order.
 
 ## Transactions
 
-**`:transaction_begin_failed` / `:transaction_commit_failed`** — the ArcadeDB
-session could not begin (connection/availability) or the commit failed (e.g.
-MVCC conflict at commit). A failed commit rolls the session back automatically;
-retry the action.
+**`AshArcadic.Errors.TransactionConflict`** means ArcadeDB rejected a
+transaction on an MVCC conflict. Retry the entire transaction, including any
+reads that fed the writes.
+
+**`:transaction_begin_failed` / `:transaction_commit_failed`** means that
+ArcadeDB could not open a session or confirm a commit. Check the connection and
+database before retrying. If the commit response was lost, check whether the
+changes took effect before repeating the operation.
 
 **A spawned task can't see the transaction** — transaction sessions are
 owner-process-only by design (Ash keeps actions in-process). Do not hand

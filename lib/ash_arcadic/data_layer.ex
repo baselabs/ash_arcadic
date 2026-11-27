@@ -22,7 +22,7 @@ defmodule AshArcadic.DataLayer do
   `destroy_query`), filter/sort/distinct/combinations push-down, offset +
   keyset pagination (`Ash.stream!`), query + relationship aggregates,
   expression calculations, standard relationships + `Traverse` manual
-  traversal + edge writes, dense/sparse/hybrid vector search, transactions,
+  traversal + edge writes, dense/sparse/hybrid vector search, HTTP transaction locks,
   `:async_engine`, telemetry. Multitenancy (`:attribute` + `:context`) is
   fail-closed on every path; errors are value-free (no value, tenant, or byte
   in a message). Stored values load through the declared Ash type. Per-feature fine print: `usage-rules.md`.
@@ -35,6 +35,7 @@ defmodule AshArcadic.DataLayer do
   alias AshArcadic.DataLayer.Info
   alias AshArcadic.Errors.CreateFailed
   alias AshArcadic.Errors.QueryFailed
+  alias AshArcadic.Errors.TransactionConflict
   alias AshArcadic.Errors.UnsupportedFilter
   alias AshArcadic.Errors.UpdateFailed
   alias AshArcadic.Query.Combination
@@ -342,6 +343,7 @@ defmodule AshArcadic.DataLayer do
 
   def can?(_, {:aggregate, _}), do: false
   def can?(_, :transact), do: true
+  def can?(_, {:lock, :for_update}), do: true
   def can?(_, :traverse), do: true
   # Slice 5: standard (attribute-FK) relationships. {:filter_relationship, rel} is Ash's gate for
   # filtering a SOURCE on a related field (filter.ex:3599). True for STANDARD rels — has_many/has_one
@@ -724,6 +726,10 @@ defmodule AshArcadic.DataLayer do
   def offset(query, offset, _resource), do: {:ok, %{query | offset: offset}}
 
   @impl true
+  def lock(%AshArcadic.Query{} = query, :for_update, _resource),
+    do: {:ok, %{query | lock: :for_update}}
+
+  @impl true
   def run_query(%AshArcadic.Query{} = query, resource) do
     Telemetry.span(:read, %{resource: resource, multitenancy: strategy(resource)}, fn ->
       result = do_run_query(query, resource)
@@ -747,6 +753,12 @@ defmodule AshArcadic.DataLayer do
          vector_kind: vector_kind(query.vector_search)
        }}
     end)
+  end
+
+  defp do_run_query(%AshArcadic.Query{lock: :for_update} = query, _resource)
+       when not is_nil(query.vector_search) or query.combination_of != [] do
+    {:error,
+     read_query_error("for_update requires a record query without vector search or combinations")}
   end
 
   # Vector search (dense kNN) — a SEPARATE ArcadeDB SQL path (Arcadic.Vector.neighbors), NOT the
@@ -833,16 +845,8 @@ defmodule AshArcadic.DataLayer do
              QueryFailed.exception(query: "ArcadeDB read query", reason: redact_db_error(error))}
         end
 
-      # read_conn only ever yields :tenant_required here: resolve_conn/2 in :read mode never
-      # returns a transaction error (a cross-database read runs on its own conn; reads never
-      # open a session). Keep the read-accurate message rather than the write-oriented
-      # conn_error_reason/1 (a :context read that mislabels itself "write" is a regression).
-      {:error, :tenant_required} ->
-        {:error,
-         QueryFailed.exception(
-           query: "ArcadeDB read query",
-           reason: "multitenancy tenant required for :context read"
-         )}
+      {:error, reason} ->
+        {:error, read_query_error(read_conn_error_reason(reason))}
     end
   end
 
@@ -1761,6 +1765,9 @@ defmodule AshArcadic.DataLayer do
   # yield :cross_database_transaction / :transaction_begin_failed (its @spec) when an
   # aggregate runs inside an Ash transaction; the catch-all maps those value-free via
   # conn_error_reason/1 — fail CLOSED, never a CaseClauseError on a multitenant read.
+  defp do_run_aggregate(%AshArcadic.Query{lock: :for_update}, _resource, _aggregates),
+    do: {:error, read_query_error("for_update requires a record query")}
+
   defp do_run_aggregate(query, resource, aggregates) do
     # Slice 4: a standalone relationship aggregate (Ash.aggregate over a non-empty rel path) fails
     # closed value-free BEFORE resolving a conn — the per-node subtree rollup is delivered by the
@@ -2692,6 +2699,8 @@ defmodule AshArcadic.DataLayer do
 
   @impl true
   def update_query(%AshArcadic.Query{} = query, changeset, resource, opts) do
+    query = with_write_context(query, changeset)
+
     Telemetry.span(:update_query, %{resource: resource, multitenancy: strategy(resource)}, fn ->
       result = do_update_query(query, changeset, resource, opts)
 
@@ -2846,12 +2855,9 @@ defmodule AshArcadic.DataLayer do
   @spec rollback(Ash.Resource.t(), term()) :: no_return()
   def rollback(_resource, reason), do: Transaction.rollback_throw(reason)
 
-  # The three span outcomes (spec §6). run/1 returns {:error, :transaction_commit_failed}
-  # ONLY on a commit failure; the rollback-throw catch is the only OTHER {:error, _} it
-  # returns — so any non-commit-failure error is a rollback. (A reraise does not return
-  # here; :telemetry.span emits an :exception event for it instead.)
   defp transaction_result_tag({:ok, _}), do: :commit
   defp transaction_result_tag({:error, :transaction_commit_failed}), do: :error
+  defp transaction_result_tag({:error, %TransactionConflict{}}), do: :error
   defp transaction_result_tag({:error, _}), do: :rollback
 
   defp do_destroy(resource, changeset) do
@@ -2923,7 +2929,9 @@ defmodule AshArcadic.DataLayer do
   end
 
   @impl true
-  def destroy_query(%AshArcadic.Query{} = query, _changeset, resource, opts) do
+  def destroy_query(%AshArcadic.Query{} = query, changeset, resource, opts) do
+    query = with_write_context(query, changeset)
+
     Telemetry.span(:destroy_query, %{resource: resource, multitenancy: strategy(resource)}, fn ->
       result = do_destroy_query(query, resource, opts)
 
@@ -3411,7 +3419,7 @@ defmodule AshArcadic.DataLayer do
   # passes the gate error through and redacts only the raw db error.
   def gated_query(conn, cypher, params) do
     with :ok <- read_encode_gate(params) do
-      Arcadic.query(conn, cypher, params)
+      conn |> Arcadic.query(cypher, params) |> Transaction.reject_conflict(conn)
     end
   end
 
@@ -3441,7 +3449,7 @@ defmodule AshArcadic.DataLayer do
   # module + the two edge changes).
   def write_command(conn, cypher, params) do
     if is_binary(conn.session_id) do
-      Arcadic.command(conn, cypher, params)
+      conn |> Arcadic.command(cypher, params) |> Transaction.reject_conflict(conn)
     else
       autocommit_write(conn, cypher, params, 1)
     end
@@ -3597,6 +3605,9 @@ defmodule AshArcadic.DataLayer do
   @doc false
   @spec read_conn(AshArcadic.Query.t(), Ash.Resource.t()) ::
           {:ok, Arcadic.Conn.t()} | {:error, conn_error()}
+  def read_conn(%AshArcadic.Query{lock: :for_update} = query, resource),
+    do: resolve_query_conn(query, resource, :lock)
+
   def read_conn(%AshArcadic.Query{} = query, resource),
     do: resolve_query_conn(query, resource, :read)
 
@@ -3605,6 +3616,11 @@ defmodule AshArcadic.DataLayer do
           {:ok, Arcadic.Conn.t()} | {:error, conn_error()}
   def query_write_conn(%AshArcadic.Query{} = query, resource),
     do: resolve_query_conn(query, resource, :write)
+
+  defp with_write_context(query, %Ash.Changeset{context: context}),
+    do: %{query | context: Map.merge(query.context, routing_context(context))}
+
+  defp with_write_context(query, _changeset), do: query
 
   defp resolve_query_conn(query, resource, mode) do
     if strategy(resource) == :context and query.database in [nil, ""] do
@@ -3629,7 +3645,10 @@ defmodule AshArcadic.DataLayer do
 
     conn =
       if Code.ensure_loaded?(client) and function_exported?(client, :conn, 1) do
-        client.conn(%{tenant: tenant, context: routing_context(context)})
+        client.conn(%{
+          tenant: Ash.ToTenant.to_tenant(tenant, resource),
+          context: routing_context(context)
+        })
       else
         client.conn()
       end
@@ -3668,6 +3687,29 @@ defmodule AshArcadic.DataLayer do
     do: %{conn | timeout: :infinity, request_timeout: :infinity}
 
   defp maybe_apply_timeout(%Arcadic.Conn{} = conn, _t), do: conn
+
+  defp read_query_error(reason),
+    do: QueryFailed.exception(query: "ArcadeDB read query", reason: reason)
+
+  defp read_conn_error_reason(:tenant_required),
+    do: "multitenancy tenant required for :context read"
+
+  defp read_conn_error_reason(:transaction_required),
+    do: "for_update requires an active Ash transaction"
+
+  defp read_conn_error_reason(:unsupported_lock_transport),
+    do: "for_update requires the ArcadeDB HTTP transport"
+
+  defp read_conn_error_reason(:cross_route_transaction),
+    do: "for_update spans multiple connection routes"
+
+  defp read_conn_error_reason(reason), do: conn_error_reason(reason)
+
+  defp conn_error_reason(:transaction_required),
+    do: "for_update requires an active Ash transaction"
+
+  defp conn_error_reason(:unsupported_lock_transport),
+    do: "for_update requires the ArcadeDB HTTP transport"
 
   # Maps a value-free conn-resolution error atom to a value-free reason string. The atom is
   # the ONLY thing interpolated — never a database name (tenant-derived), session id, or

@@ -25,7 +25,7 @@ upsert, heterogeneous `update_many`, query-scoped `update_query`/
 `destroy_query`), filter/sort/distinct/combinations push-down, offset +
 keyset pagination (`Ash.stream!`), query + relationship aggregates,
 expression calculations, standard relationships + `Traverse` manual
-traversal + edge writes, dense/sparse/hybrid vector search, transactions,
+traversal + edge writes, dense/sparse/hybrid vector search, HTTP transaction locks,
 `:async_engine`, telemetry. Multitenancy (`:attribute` + `:context`) is
 fail-closed on every path; errors are value-free (no value, tenant, or byte
 in a message). Stored values load through the declared Ash type. Per-feature fine print: `usage-rules.md`.
