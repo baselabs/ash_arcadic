@@ -293,6 +293,26 @@ defmodule AshArcadic.Cast do
   defp canonical_key(key) when is_float(key), do: encode_json_scalar(Float.to_string(key))
   defp canonical_key(_other), do: :error
 
+  defp encode_canonical_list(list) do
+    list
+    |> Enum.reduce_while({:ok, []}, fn
+      # A nil ELEMENT stays JSON null in the outer array (legal there), not the
+      # string "null".
+      nil, {:ok, acc} ->
+        {:cont, {:ok, [nil | acc]}}
+
+      element, {:ok, acc} ->
+        case canonical_value(element) do
+          {:ok, encoded} -> {:cont, {:ok, [encoded | acc]}}
+          :error -> {:halt, :error}
+        end
+    end)
+    |> case do
+      {:ok, encoded} -> {:ok, Enum.reverse(encoded)}
+      :error -> :error
+    end
+  end
+
   defp inspect_json(s), do: Jason.encode!(s)
 
   # Normalizes Jason's {:error, %Jason.EncodeError{}} (whose message carries the offending
