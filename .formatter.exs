@@ -12,6 +12,7 @@ spark_locals_without_parens = [
   direction: 1,
   edge: 1,
   edge: 2,
+  identity: 1,
   label: 1,
   multiple?: 1,
   on_truncate: 1,

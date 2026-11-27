@@ -161,6 +161,79 @@ defmodule AshArcadic.Changes.EdgeCypher do
   end
 
   @doc false
+  # Pure fn of (changeset, edge) — each edge property's value from the same-named
+  # action argument, rejecting nil (sparse), serialized by the DECLARED argument
+  # type. Returns `{:error, key}` (fail closed, value-free) when a `sensitive` key
+  # has no binary-storage-typed declared argument backing it — the R4 runtime half.
+  def properties(changeset, edge) do
+    arg_types = argument_types(changeset)
+    sensitive = Info.sensitive(changeset.resource)
+
+    edge.properties
+    |> Enum.map(fn key -> {key, Ash.Changeset.get_argument(changeset, key)} end)
+    |> Enum.reject(fn {_key, value} -> is_nil(value) end)
+    |> Enum.reduce_while({:ok, %{}}, fn {key, value}, {:ok, acc} ->
+      {type, constraints} = Map.get(arg_types, key, {nil, []})
+      # An undeclared/injected arg has no type. Serialize it through a BARE `nil`
+      # spec (Cast.normalize_spec(nil) → :untyped pass-through), NOT the `{nil, []}`
+      # tuple — a binary value with the tuple spec routes into
+      # Ash.Type.storage_type(nil, _), raising UndefinedFunctionError (nil.storage_type).
+      # The R4 sensitive guard below still fails closed on the nil type.
+      spec = if is_nil(type), do: nil, else: {type, constraints}
+
+      if key in sensitive and (is_nil(type) or not Cast.binary_storage?(type, constraints)) do
+        {:halt, {:error, key}}
+      else
+        {:cont, {:ok, Map.put(acc, Atom.to_string(key), Cast.serialize_value(value, spec))}}
+      end
+    end)
+  end
+
+  defp argument_types(%{action: %{arguments: arguments}}) when is_list(arguments) do
+    Map.new(arguments, fn %{name: name, type: type} = arg ->
+      {name, {type, Map.get(arg, :constraints) || []}}
+    end)
+  end
+
+  defp argument_types(_changeset), do: %{}
+
+  def identity_pattern(%{identity: []}, _props, _tenant), do: {"", %{}}
+
+  def identity_pattern(edge, props, tenant) do
+    entries =
+      Enum.map(edge.identity, fn key ->
+        field = Identifier.validate!(Atom.to_string(key))
+        param = "edge_#{field}"
+        {"#{field}: $#{param}", {param, Map.fetch!(props, field)}}
+      end)
+
+    {fields, params} = Enum.unzip(entries)
+
+    fields =
+      case tenant do
+        %{src: {attr, _}} -> fields ++ ["#{Identifier.validate!(to_string(attr))}: $tenant"]
+        _ -> fields
+      end
+
+    {" {" <> Enum.join(fields, ", ") <> "}", Map.new(params)}
+  end
+
+  def identity(_changeset, %{identity: []}, _props, _tenant), do: {:ok, %{}}
+
+  def identity(changeset, edge, props, tenant) do
+    keys = Enum.map(edge.identity, &Atom.to_string/1)
+    declared = MapSet.new(changeset.action.arguments, & &1.name)
+    tenant_key = if tenant[:src], do: to_string(elem(tenant.src, 0))
+
+    if tenant_key in keys or not Enum.all?(edge.identity, &MapSet.member?(declared, &1)) or
+         not Enum.all?(keys, &Map.has_key?(props, &1)) do
+      {:error, :edge_identity_required}
+    else
+      {:ok, Map.take(props, keys)}
+    end
+  end
+
+  @doc false
   # Rule-4 fail-closed pre-gate over the FULL edge param map: `Jason.encode/1` every
   # value; return `{:error, key}` (naming only the attribute/param KEY, never the
   # value) for the first non-encodable one, else `:ok`. A raw non-UTF8 binary nested
@@ -189,7 +262,18 @@ defmodule AshArcadic.Changes.EdgeCypher do
   # Value-free message for a `write_conn` error reason. Shared home (anti-divergence):
   # a per-module fork of these clauses would let the two change modules' tenant/txn
   # error text drift.
+  def conn_reason(:edge_identity_required),
+    do:
+      "edge identity requires a non-nil declared argument for each key and excludes the tenant discriminator"
+
+  def conn_reason(:edge_relocation_requires_transaction),
+    do: "edge relocation requires an Ash transaction, a declared identity and one destination"
+
   def conn_reason(:tenant_required), do: "tenant required"
   def conn_reason(:cross_database_transaction), do: "transaction spans multiple databases"
   def conn_reason(:transaction_begin_failed), do: "could not begin ArcadeDB transaction"
+
+  def conn_reason(key) when is_atom(key),
+    do:
+      "sensitive property #{inspect(key)} requires a binary-storage-typed declared action argument"
 end

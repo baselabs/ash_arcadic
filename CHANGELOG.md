@@ -11,6 +11,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Qualify Hex archives in CI and publish them through the shared Hex action with workload identity.
 
+### Added
+
+- Declare keyed native edges for idempotent parallel relationships, deletion by key,
+  and transactional relocation between endpoints.
+
 ### Fixed
 
 - Load stored graph properties through their declared Ash types, including atoms, enums,

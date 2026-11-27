@@ -1,6 +1,7 @@
 defmodule AshArcadic.Changes.CreateEdgeTest do
   use ExUnit.Case, async: true
   alias AshArcadic.Changes.CreateEdge
+  alias AshArcadic.Changes.EdgeCypher
   alias AshArcadic.Test.EdgeAttrPerson
 
   defp edge(overrides \\ []) do
@@ -44,6 +45,25 @@ defmodule AshArcadic.Changes.CreateEdgeTest do
       assert params["tenant"] == "org1"
       assert params["tenant_dest"] == "org1"
       assert params["props"] == %{"since" => "2020"}
+    end
+
+    test "composite edge identity and tenant join the bound endpoints in MERGE" do
+      {cypher, params} =
+        CreateEdge.build_create(
+          EdgeAttrPerson,
+          edge(properties: [:kind, :key], identity: [:kind, :key]),
+          %{"id" => "p1"},
+          "p2",
+          %{"key" => "caller-key", "kind" => "caller-kind", "tenant" => "foreign"},
+          %{src: {:tenant, "org1"}, dest: {:tenant, "org1"}}
+        )
+
+      assert cypher =~
+               "MERGE (a)-[e:KNOWS {kind: $edge_kind, key: $edge_key, tenant: $tenant}]->(b)"
+
+      assert params["edge_key"] == "caller-key"
+      assert params["edge_kind"] == "caller-kind"
+      refute Map.has_key?(params["props"], "tenant")
     end
 
     test "incoming direction flips the arrow" do
@@ -97,7 +117,7 @@ defmodule AshArcadic.Changes.CreateEdgeTest do
         ])
 
       assert {:ok, %{"since" => "2020"}} =
-               CreateEdge.edge_properties(cs, %AshArcadic.Edge{properties: [:since, :weight]})
+               EdgeCypher.properties(cs, %AshArcadic.Edge{properties: [:since, :weight]})
     end
 
     test "R4 runtime: a sensitive prop with a non-binary arg fails closed value-free (names key only)" do
@@ -108,7 +128,7 @@ defmodule AshArcadic.Changes.CreateEdgeTest do
       }
 
       assert {:error, :secret} =
-               CreateEdge.edge_properties(cs, %AshArcadic.Edge{properties: [:secret]})
+               EdgeCypher.properties(cs, %AshArcadic.Edge{properties: [:secret]})
     end
 
     test "R4 runtime: a sensitive prop with an UNDECLARED arg fails closed value-free (no crash)" do
@@ -122,7 +142,7 @@ defmodule AshArcadic.Changes.CreateEdgeTest do
       }
 
       assert {:error, :secret} =
-               CreateEdge.edge_properties(cs, %AshArcadic.Edge{properties: [:secret]})
+               EdgeCypher.properties(cs, %AshArcadic.Edge{properties: [:secret]})
     end
 
     test "run/3: R4 guard fires BEFORE the empty-`to:` no-op (spec S2-12)" do
@@ -149,7 +169,7 @@ defmodule AshArcadic.Changes.CreateEdgeTest do
       cs = changeset(%{extra: "hello"}, [])
 
       assert {:ok, %{"extra" => "hello"}} =
-               CreateEdge.edge_properties(cs, %AshArcadic.Edge{properties: [:extra]})
+               EdgeCypher.properties(cs, %AshArcadic.Edge{properties: [:extra]})
     end
   end
 end

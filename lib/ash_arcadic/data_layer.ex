@@ -75,11 +75,16 @@ defmodule AshArcadic.DataLayer do
         default: [],
         doc: "Edge property keys, set from same-named declared action arguments."
       ],
+      identity: [
+        type: {:list, :atom},
+        default: [],
+        doc: "Edge property keys that join the endpoints and label in the MERGE identity."
+      ],
       multiple?: [
         type: :boolean,
         default: false,
         doc:
-          "false → idempotent MERGE (one edge per endpoint-pair+label); true → CREATE (parallel edges)."
+          "false → idempotent MERGE (one edge per endpoint pair, label and identity); true → CREATE (parallel edges)."
       ]
     ]
   }

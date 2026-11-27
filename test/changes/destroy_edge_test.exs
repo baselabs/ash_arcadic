@@ -15,14 +15,16 @@ defmodule AshArcadic.Changes.DestroyEdgeTest do
     )
   end
 
-  test "build_destroy/5 matches the directed edge, scopes both endpoints, DELETEs r" do
+  test "build_destroy/7 matches the directed edge, scopes both endpoints, DELETEs r" do
     {cypher, params} =
       DestroyEdge.build_destroy(
         EdgeAttrPerson,
         edge(),
         %{"id" => "p1"},
         "p2",
-        %{src: {:tenant, "org1"}, dest: {:tenant, "org1"}}
+        %{src: {:tenant, "org1"}, dest: {:tenant, "org1"}},
+        %{},
+        :exact
       )
 
     assert cypher =~ "MATCH (a:EAPerson)-[r:KNOWS]->(b:EAPerson)"
@@ -44,7 +46,9 @@ defmodule AshArcadic.Changes.DestroyEdgeTest do
         edge(direction: :incoming),
         %{"id" => "p1"},
         "p2",
-        nil
+        nil,
+        %{},
+        :exact
       )
 
     assert cypher =~ "MATCH (a:EAPerson)<-[r:KNOWS]-(b:EAPerson)"
@@ -57,7 +61,9 @@ defmodule AshArcadic.Changes.DestroyEdgeTest do
         edge(direction: :both),
         %{"id" => "p1"},
         "p2",
-        nil
+        nil,
+        %{},
+        :exact
       )
 
     # Undirected `-[r]-` matches an edge in either orientation between the two

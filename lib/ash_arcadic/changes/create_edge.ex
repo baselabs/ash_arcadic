@@ -12,14 +12,17 @@ defmodule AshArcadic.Changes.CreateEdge do
   (default) MERGEs (idempotent); `multiple? true` CREATEs (parallel edges). A failed
   or 0-row write returns `{:error, _}` so Ash rolls the vertex back; DB errors are
   redacted (Rule 4). The R4 sensitive-property guard fires even on an empty `to:`.
+
+  A keyed edge requires non-nil arguments for its identity properties. Set
+  `replace?: true` to relocate a keyed edge to one destination within the active
+  Ash transaction.
   """
   use Ash.Resource.Change
 
   alias Ash.Error.Changes.InvalidRelationship
-  alias AshArcadic.Cast
+  alias AshArcadic.Changes.DestroyEdge
   alias AshArcadic.Changes.EdgeCypher
   alias AshArcadic.DataLayer
-  alias AshArcadic.DataLayer.Info
   alias AshArcadic.Identifier
   alias AshArcadic.Telemetry
 
@@ -44,9 +47,10 @@ defmodule AshArcadic.Changes.CreateEdge do
       # not an edge would be written (matches the compile half's declaration-level
       # semantics). Never `if dest_ids == [] first`.
       {result, properties?} =
-        case edge_properties(changeset, edge) do
+        case EdgeCypher.properties(changeset, edge) do
           {:ok, props} ->
-            {write_edges(changeset, record, resource, edge, dest_ids, props), map_size(props) > 0}
+            {write_edges(changeset, record, edge, dest_ids, props, opts[:replace?]),
+             map_size(props) > 0}
 
           {:error, key} ->
             {sensitive_property_error(edge, key), false}
@@ -64,18 +68,24 @@ defmodule AshArcadic.Changes.CreateEdge do
     end)
   end
 
-  defp write_edges(changeset, record, resource, edge, dest_ids, props) do
+  defp write_edges(changeset, record, edge, dest_ids, props, replace?) do
+    resource = changeset.resource
     # The documented empty-`to:` contract: nil or [] removes no edge and the action SUCCEEDS —
     # short-circuit BEFORE tenant resolution (a destination-only-:attribute edge with no tenant
     # and an empty list must not fail; delta-review catch 2026-10-16).
     if dest_ids == [] do
       {:ok, record}
     else
-      with {:ok, conn} <- DataLayer.write_conn(resource, changeset),
-           {:ok, tenant} <- EdgeCypher.tenant_spec(resource, edge, changeset) do
+      with {:ok, tenant} <- EdgeCypher.tenant_spec(resource, edge, changeset),
+           {:ok, identity} <- EdgeCypher.identity(changeset, edge, props, tenant),
+           :ok <- validate_relocation(replace?, edge, dest_ids),
+           {:ok, conn} <- DataLayer.write_conn(resource, changeset) do
         src_key = EdgeCypher.source_key(resource, record)
         dest_ids = EdgeCypher.serialize_destination_ids(edge.destination, dest_ids)
-        create_all(conn, record, dest_ids, resource, edge, src_key, props, tenant)
+
+        with :ok <- relocate(replace?, conn, resource, edge, src_key, dest_ids, tenant, identity) do
+          create_all(conn, record, dest_ids, resource, edge, src_key, props, tenant)
+        end
       else
         {:error, reason} ->
           {:error,
@@ -86,6 +96,23 @@ defmodule AshArcadic.Changes.CreateEdge do
       end
     end
   end
+
+  defp validate_relocation(replace?, _edge, _ids) when replace? in [false, nil], do: :ok
+
+  defp validate_relocation(true, %{identity: [_ | _]}, [_]) do
+    if AshArcadic.Transaction.in_transaction?(),
+      do: :ok,
+      else: {:error, :edge_relocation_requires_transaction}
+  end
+
+  defp validate_relocation(_replace?, _edge, _ids),
+    do: {:error, :edge_relocation_requires_transaction}
+
+  defp relocate(true, conn, resource, edge, src_key, [dst], tenant, identity) do
+    DestroyEdge.remove_previous(conn, resource, edge, src_key, dst, tenant, identity)
+  end
+
+  defp relocate(_replace?, _conn, _resource, _edge, _src_key, _ids, _tenant, _identity), do: :ok
 
   # Value-free by construction: names the KEY only, never the value.
   defp sensitive_property_error(edge, key) do
@@ -170,10 +197,15 @@ defmodule AshArcadic.Changes.CreateEdge do
         do: ", e.#{tenant_attr(tenant)} = $tenant",
         else: ""
 
+    {identity, identity_params} = EdgeCypher.identity_pattern(edge, props, tenant)
+
+    props =
+      if identity != "" and tenant[:src], do: Map.delete(props, tenant_attr(tenant)), else: props
+
     arrow =
       case edge.direction do
-        :incoming -> "(b)-[e:#{edge_label}]->(a)"
-        _ -> "(a)-[e:#{edge_label}]->(b)"
+        :incoming -> "(b)-[e:#{edge_label}#{identity}]->(a)"
+        _ -> "(a)-[e:#{edge_label}#{identity}]->(b)"
       end
 
     write =
@@ -193,6 +225,7 @@ defmodule AshArcadic.Changes.CreateEdge do
       |> Map.put("dst", dest_id)
       |> Map.put("props", props)
       |> Map.merge(tenant_params)
+      |> Map.merge(identity_params)
 
     {cypher, params}
   end
@@ -203,43 +236,6 @@ defmodule AshArcadic.Changes.CreateEdge do
   def destination_ids(changeset, opts) do
     List.wrap(Ash.Changeset.get_argument(changeset, Keyword.fetch!(opts, :to)))
   end
-
-  @doc false
-  # Pure fn of (changeset, edge) — each edge property's value from the same-named
-  # action argument, rejecting nil (sparse), serialized by the DECLARED argument
-  # type. Returns `{:error, key}` (fail closed, value-free) when a `sensitive` key
-  # has no binary-storage-typed declared argument backing it — the R4 runtime half.
-  def edge_properties(changeset, edge) do
-    arg_types = argument_types(changeset)
-    sensitive = Info.sensitive(changeset.resource)
-
-    edge.properties
-    |> Enum.map(fn key -> {key, Ash.Changeset.get_argument(changeset, key)} end)
-    |> Enum.reject(fn {_key, value} -> is_nil(value) end)
-    |> Enum.reduce_while({:ok, %{}}, fn {key, value}, {:ok, acc} ->
-      {type, constraints} = Map.get(arg_types, key, {nil, []})
-      # An undeclared/injected arg has no type. Serialize it through a BARE `nil`
-      # spec (Cast.normalize_spec(nil) → :untyped pass-through), NOT the `{nil, []}`
-      # tuple — a binary value with the tuple spec routes into
-      # Ash.Type.storage_type(nil, _), raising UndefinedFunctionError (nil.storage_type).
-      # The R4 sensitive guard below still fails closed on the nil type.
-      spec = if is_nil(type), do: nil, else: {type, constraints}
-
-      if key in sensitive and (is_nil(type) or not Cast.binary_storage?(type, constraints)) do
-        {:halt, {:error, key}}
-      else
-        {:cont, {:ok, Map.put(acc, Atom.to_string(key), Cast.serialize_value(value, spec))}}
-      end
-    end)
-  end
-
-  defp argument_types(%{action: %{arguments: arguments}}) when is_list(arguments) do
-    Map.new(arguments, fn %{name: name, type: type} = arg ->
-      {name, {type, Map.get(arg, :constraints) || []}}
-    end)
-  end
-
-  defp argument_types(_changeset), do: %{}
 
   defp tenant_attr(%{src: {src_attr, _bound}}), do: Identifier.validate!(to_string(src_attr))
 end

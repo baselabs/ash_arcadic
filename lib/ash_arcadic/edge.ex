@@ -5,7 +5,8 @@ defmodule AshArcadic.Edge do
   `AshArcadic.Changes.{CreateEdge,DestroyEdge}` read it by `name`.
 
   `multiple?` selects the write primitive: `false` (default) → idempotent `MERGE`
-  (one edge per endpoint-pair + label); `true` → `CREATE` (parallel edges).
+  (one edge per endpoint pair, label and declared identity values); `true` →
+  `CREATE` (parallel edges without an identity).
   """
 
   defstruct [
@@ -14,6 +15,7 @@ defmodule AshArcadic.Edge do
     :destination,
     direction: :outgoing,
     properties: [],
+    identity: [],
     multiple?: false,
     __spark_metadata__: nil
   ]
@@ -24,6 +26,7 @@ defmodule AshArcadic.Edge do
           direction: :outgoing | :incoming | :both,
           destination: module(),
           properties: [atom()],
+          identity: [atom()],
           multiple?: boolean()
         }
 end

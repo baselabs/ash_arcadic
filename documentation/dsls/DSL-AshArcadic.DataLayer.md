@@ -82,7 +82,8 @@ Defines an edge mapping from this vertex to a destination resource.
 | [`destination`](#arcade-edge-destination){: #arcade-edge-destination .spark-required} | `atom` |  | Destination resource module (single-attribute PK). |
 | [`direction`](#arcade-edge-direction){: #arcade-edge-direction } | `:outgoing \| :incoming \| :both` | `:outgoing` | Edge direction. |
 | [`properties`](#arcade-edge-properties){: #arcade-edge-properties } | `list(atom)` | `[]` | Edge property keys, set from same-named declared action arguments. |
-| [`multiple?`](#arcade-edge-multiple?){: #arcade-edge-multiple? } | `boolean` | `false` | false → idempotent MERGE (one edge per endpoint-pair+label); true → CREATE (parallel edges). |
+| [`identity`](#arcade-edge-identity){: #arcade-edge-identity } | `list(atom)` | `[]` | Edge property keys that join the endpoints and label in the MERGE identity. |
+| [`multiple?`](#arcade-edge-multiple?){: #arcade-edge-multiple? } | `boolean` | `false` | false → idempotent MERGE (one edge per endpoint pair, label and identity); true → CREATE (parallel edges). |
 
 
 

@@ -938,6 +938,18 @@ records. A rejected stored value raises a value-free `AshArcadic.Errors.QueryFai
 
 ## Edge writes (Slice 2, Plan 1)
 
+Declare `identity [:edge_key]` inside an edge to match on a property key alongside
+the endpoints and label. Compound keys use multiple declared properties. Keyed
+edges use `MERGE` and require non-nil, same-named declared arguments on both
+`CreateEdge` and `DestroyEdge`. Each endpoint pair can hold distinct keys.
+
+Add `replace?: true` to `CreateEdge` to move a key to the action's record and a
+single destination. Within the declared labels and tenant scope, it removes at
+most one previous placement and merges the new placement in the same Ash
+transaction. Multiple previous placements cause a rollback. A replay at the
+new endpoints updates the existing edge. The relocation action must be transactional.
+
+
 - **Declare an edge** in the `arcade do … end` block, then wire a change on a
   create/update action:
 

@@ -57,11 +57,13 @@ defmodule AshArcadic.Changes.DestroyEdge do
   end
 
   defp destroy_edges(changeset, record, resource, edge, dest_ids) do
-    with {:ok, conn} <- DataLayer.write_conn(resource, changeset),
-         {:ok, tenant} <- EdgeCypher.tenant_spec(resource, edge, changeset) do
+    with {:ok, tenant} <- EdgeCypher.tenant_spec(resource, edge, changeset),
+         {:ok, props} <- EdgeCypher.properties(changeset, %{edge | properties: edge.identity}),
+         {:ok, identity} <- EdgeCypher.identity(changeset, edge, props, tenant),
+         {:ok, conn} <- DataLayer.write_conn(resource, changeset) do
       src_key = EdgeCypher.source_key(resource, record)
       serialized = EdgeCypher.serialize_destination_ids(edge.destination, dest_ids)
-      destroy_all(conn, record, serialized, resource, edge, src_key, tenant)
+      destroy_all(conn, record, serialized, resource, edge, src_key, tenant, identity)
     else
       {:error, reason} ->
         {:error,
@@ -75,17 +77,17 @@ defmodule AshArcadic.Changes.DestroyEdge do
   # One edge removed per destination id, halting (and returning the error so Ash
   # rolls the vertex back) on the first failed or 0-row delete. The loop runs inside
   # the action transaction, so a mid-list halt rolls all prior removals back.
-  defp destroy_all(conn, record, dest_ids, resource, edge, src_key, tenant) do
+  defp destroy_all(conn, record, dest_ids, resource, edge, src_key, tenant, identity) do
     Enum.reduce_while(dest_ids, {:ok, record}, fn dest_id, {:ok, rec} ->
-      case destroy_one(conn, resource, edge, src_key, dest_id, tenant) do
+      case destroy_one(conn, resource, edge, src_key, dest_id, tenant, identity) do
         {:ok, _} -> {:cont, {:ok, rec}}
         {:error, _} = err -> {:halt, err}
       end
     end)
   end
 
-  defp destroy_one(conn, resource, edge, src_key, dest_id, tenant) do
-    {cypher, params} = build_destroy(resource, edge, src_key, dest_id, tenant)
+  defp destroy_one(conn, resource, edge, src_key, dest_id, tenant, identity) do
+    {cypher, params} = build_destroy(resource, edge, src_key, dest_id, tenant, identity, :exact)
 
     # Rule-4 full-param encode-gate BEFORE the command (spec §6.3 — the gate runs before
     # EVERY edge command, create AND destroy): an unencodable param (e.g. a raw non-UTF8
@@ -129,7 +131,7 @@ defmodule AshArcadic.Changes.DestroyEdge do
   # Scopes BOTH endpoints in the WHERE (via the SAME EdgeCypher source_where/tenant_where
   # as CreateEdge) so the delete's tenant/identifier clauses cannot diverge from the
   # create's.
-  def build_destroy(resource, edge, src_key, dest_id, tenant) do
+  def build_destroy(resource, edge, src_key, dest_id, tenant, identity, placement) do
     src_label = EdgeCypher.validated_label(resource)
     dest_label = EdgeCypher.validated_label(edge.destination)
     edge_label = Identifier.validate!(edge.label)
@@ -138,20 +140,52 @@ defmodule AshArcadic.Changes.DestroyEdge do
     {src_where, src_params} = EdgeCypher.source_where(src_key)
     {tenant_where, tenant_params} = EdgeCypher.tenant_where(tenant)
 
+    {identity_pattern, identity_params} = EdgeCypher.identity_pattern(edge, identity, tenant)
+
     pattern =
       case edge.direction do
-        :incoming -> "(a:#{src_label})<-[r:#{edge_label}]-(b:#{dest_label})"
+        :incoming -> "(a:#{src_label})<-[r:#{edge_label}#{identity_pattern}]-(b:#{dest_label})"
         # `:both` deletes EITHER orientation (spec §6.2): an undirected match removes an
         # edge written from either endpoint. The endpoints stay PK- and tenant-pinned in
         # the WHERE, so undirecting the relationship cannot widen the delete's scope.
-        :both -> "(a:#{src_label})-[r:#{edge_label}]-(b:#{dest_label})"
-        _ -> "(a:#{src_label})-[r:#{edge_label}]->(b:#{dest_label})"
+        :both -> "(a:#{src_label})-[r:#{edge_label}#{identity_pattern}]-(b:#{dest_label})"
+        _ -> "(a:#{src_label})-[r:#{edge_label}#{identity_pattern}]->(b:#{dest_label})"
       end
 
-    cypher =
-      "MATCH #{pattern} WHERE #{src_where} AND b.#{dest_pk} = $dst#{tenant_where} DELETE r RETURN r"
+    endpoints = "#{src_where} AND b.#{dest_pk} = $dst"
+    endpoints = if placement == :previous, do: "NOT (#{endpoints})", else: endpoints
+    cypher = "MATCH #{pattern} WHERE #{endpoints}#{tenant_where} DELETE r RETURN r"
 
-    {cypher, src_params |> Map.put("dst", dest_id) |> Map.merge(tenant_params)}
+    params =
+      src_params
+      |> Map.put("dst", dest_id)
+      |> Map.merge(tenant_params)
+      |> Map.merge(identity_params)
+
+    {cypher, params}
+  end
+
+  @doc false
+  def remove_previous(conn, resource, edge, src_key, dest_id, tenant, identity) do
+    {cypher, params} =
+      build_destroy(resource, edge, src_key, dest_id, tenant, identity, :previous)
+
+    case EdgeCypher.encode_gate(params) do
+      :ok -> delete_previous(conn, cypher, params, edge)
+      {:error, key} -> relocation_error(edge, EdgeCypher.encode_reason(key))
+    end
+  end
+
+  defp delete_previous(conn, cypher, params, edge) do
+    case DataLayer.write_command(conn, cypher, params) do
+      {:ok, [_, _ | _]} -> relocation_error(edge, "edge key has multiple previous placements")
+      {:ok, _rows} -> :ok
+      {:error, error} -> relocation_error(edge, DataLayer.redact_db_error(error))
+    end
+  end
+
+  defp relocation_error(edge, message) do
+    {:error, InvalidRelationship.exception(relationship: edge.name, message: message)}
   end
 
   # Rule-4: carry PK field NAMES only (values may be PII/ciphertext).
