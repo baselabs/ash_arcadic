@@ -205,13 +205,18 @@ jobs:
           package: ash_arcadic
           package-directory: .
 
-      - name: Check package archive reproducibility
+      - name: Retrieve the qualified package for the reproducibility check
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: hex-hexpm-ash_arcadic
+          path: ${{ runner.temp }}/qualified-hex
+
+      - name: Require a byte-for-byte package rebuild
         run: |
-          scratch="$(mktemp -d "$RUNNER_TEMP/package-reproducibility.XXXXXX")"
-          trap 'rm -rf -- "$scratch"' EXIT
-          mix hex.build --output "$scratch/first.tar"
-          mix hex.build --output "$scratch/second.tar"
-          cmp "$scratch/first.tar" "$scratch/second.tar"
+          archives="$RUNNER_TEMP/qualified-hex"
+          trap 'rm -rf -- "$archives"' EXIT
+          mix hex.build --output "$archives/rebuilt.tar"
+          cmp "$archives/package.tar" "$archives/rebuilt.tar"
 
   # The landing verdict: always runs, needs every other job in this workflow, and
   # passes only when each one's result is exactly `success` (skipped or cancelled refuses).
