@@ -167,8 +167,8 @@ secret. This file points at them and does not copy them.
   `qualification_run` on the first dispatch and each retry to keep the archive bytes fixed.
   The protected upload job checks the stamped changelog and registry state and uploads via
   package-scoped workload identity. Read-back verifies both served archives against the
-  same qualification and exports `release-assets` with checksums and release notes from
-  the published commit. Infra tags `baselabs_ash_arcadic-v<version>` and creates the GitHub
+  same qualification and exports `release-assets` (the served package and docs with
+  checksums). Infra tags `baselabs_ash_arcadic-v<version>` and creates the GitHub
   release.
 - **You write your own workflow changes; infra reviews them.** Before landing any change to
   `.github/`, a Dockerfile, a release script or anything that touches a secret, send infra the

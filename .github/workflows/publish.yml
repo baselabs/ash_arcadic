@@ -37,7 +37,6 @@ jobs:
     outputs:
       qualification-run: ${{ steps.hex.outputs.qualification-run }}
       qualification-sha256: ${{ steps.hex.outputs.qualification-sha256 }}
-      version: ${{ steps.hex.outputs.version }}
     steps:
       - name: Require the default branch and a full release commit
         env:
@@ -153,30 +152,6 @@ jobs:
           qualification-run: ${{ needs.upload.outputs.qualification-run }}
           qualification-sha256: ${{ needs.upload.outputs.qualification-sha256 }}
           release-assets-directory: ${{ runner.temp }}/release-assets
-
-      - name: Read release notes from the published commit
-        env:
-          PUBLISHED_COMMIT: ${{ steps.hex.outputs.commit }}
-          VERSION: ${{ needs.upload.outputs.version }}
-        run: |
-          [[ "$PUBLISHED_COMMIT" =~ ^[0-9a-f]{40}$ ]]
-          git show "$PUBLISHED_COMMIT:CHANGELOG.md" |
-            python3 -I -c '
-          import re, sys
-          from pathlib import Path
-
-          version, destination = sys.argv[1:]
-          changelog = sys.stdin.buffer.read().decode("utf-8")
-          headings = list(re.finditer(r"^##[ \t]+(.+)$", changelog, re.MULTILINE))
-          for index, heading in enumerate(headings):
-              title = heading[1].split()
-              if title and title[0] in (f"[{version}]", version):
-                  end = headings[index + 1].start() if index + 1 < len(headings) else len(changelog)
-                  Path(destination).write_text(changelog[heading.start():end].rstrip() + "\n", encoding="utf-8")
-                  break
-          else:
-              raise SystemExit(f"Published CHANGELOG.md has no section for {version}")
-          ' "$VERSION" "$RUNNER_TEMP/release-assets/RELEASE_NOTES.md"
 
       - name: Retain the verified release assets
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
