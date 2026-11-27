@@ -71,9 +71,23 @@ defmodule AshArcadic.CastTest do
     assert Cast.load_value("12.340", {Ash.Type.Decimal, []}) == d
   end
 
-  test "load_value passes an undecodable :time/:decimal string through unchanged" do
-    assert Cast.load_value("not-a-time", {Ash.Type.Time, []}) == "not-a-time"
-    assert Cast.load_value("not-a-decimal", {Ash.Type.Decimal, []}) == "not-a-decimal"
+  test "load_value applies stored casts using the declared type and constraints" do
+    assert Cast.load_value("document", :atom) == :document
+    assert Cast.load_value("public", {:atom, [one_of: [:public, :internal]]}) == :public
+    assert Cast.load_value("internal", AshArcadic.Test.Visibility) == :internal
+    assert Cast.load_value("stored:vip", AshArcadic.Test.StoredType) == "VIP"
+  end
+
+  test "stored cast failures suppress bad values and errors returned by custom types" do
+    for type <- [:time, :decimal, AshArcadic.Test.StoredType] do
+      error =
+        assert_raise AshArcadic.Errors.QueryFailed, fn ->
+          Cast.load_value("invalid private value", type)
+        end
+
+      assert error.reason == "stored attribute cast failed"
+      refute Exception.message(error) =~ "invalid private value"
+    end
   end
 
   test "range_comparable? is false for binary and decimal storage, true otherwise" do

@@ -518,6 +518,12 @@ dep, and the three modules that hard-reference `%Replicant.*{}` structs / `Repli
   row, not one UNWIND). Tenancy holds: another tenant's same-PK row is never evaluated or mutated
   (mutation-proven). The condition's literals are encode-gated value-free like every write param.
 
+## Stored properties
+
+Graph rows, mutation results, traversal IDs, and stored-field aggregate results load through
+the declared type's `Ash.Type.cast_stored/3` callback. Calculations evaluate over the loaded
+records. A rejected stored value raises a value-free `AshArcadic.Errors.QueryFailed`.
+
 ## Query & filter push-down (Plan 2)
 
 - **Supported filter operators:** `==` / `!=` / `>` / `<` / `>=` / `<=` / `in` /

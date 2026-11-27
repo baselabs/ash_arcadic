@@ -28,7 +28,7 @@ expression calculations, standard relationships + `Traverse` manual
 traversal + edge writes, dense/sparse/hybrid vector search, transactions,
 `:async_engine`, telemetry. Multitenancy (`:attribute` + `:context`) is
 fail-closed on every path; errors are value-free (no value, tenant, or byte
-in a message). Per-feature fine print: `usage-rules.md`.
+in a message). Stored values load through the declared Ash type. Per-feature fine print: `usage-rules.md`.
 
 
 ## arcade

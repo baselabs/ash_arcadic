@@ -4,9 +4,8 @@ defmodule AshArcadic.Cast do
 
   ArcadeDB rows are flat JSON maps (`%{"@rid" => .., "@cat" => "v", <props>}`), not
   AGE agtype text — so there is NO tag: values are typed-decoded from the resource's
-  attribute map. `serialize_value/2` and `load_value/2` dispatch by the attribute's
-  STORAGE class (`Ash.Type.storage_type/2`) so a `NewType` wrapper round-trips like
-  the builtin it stores as. Binary-storage values (app-side-encrypted bytes, D3) are
+  attribute map. Wire encoding follows the storage type. After wire decoding,
+  `load_value/2` calls the declared type's `Ash.Type.cast_stored/3` callback. Binary-storage values (app-side-encrypted bytes, D3) are
   `Base.encode64`/`decode64` — plaintext in JSON is impossible, and equality matches
   because both the stored form and a filter param serialize identically.
   """
@@ -66,41 +65,59 @@ defmodule AshArcadic.Cast do
 
   @doc "Decodes a JSON scalar back to its Ash attribute value, typed by `{type, constraints}`."
   @spec load_value(term(), {Ash.Type.t(), keyword()} | Ash.Type.t() | nil) :: term()
-  def load_value(value, spec) when is_binary(value) do
-    case storage_class(spec) do
-      :date -> decode_date(value)
-      :utc_datetime -> decode_utc_datetime(value)
-      :naive_datetime -> decode_naive_datetime(value)
-      :time -> decode_time(value)
-      :decimal -> decode_decimal(value)
-      :binary -> decode_binary(value)
-      :map_json -> decode_map_json(value)
-      :other -> value
+  def load_value(value, nil), do: value
+
+  def load_value(value, spec) do
+    {type, constraints} = normalize_spec(spec)
+
+    case cast_stored(type, constraints, value) do
+      {:ok, loaded} ->
+        loaded
+
+      :error ->
+        raise AshArcadic.Errors.QueryFailed,
+          query: "ArcadeDB decode",
+          reason: "stored attribute cast failed"
     end
   end
 
-  # New-format rows decode the canonical JSON string; rows stored as embedded documents by
-  # ash_arcadic <= 1.1 on a <=26.9 server come back as maps and pass through unchanged.
-  def load_value(value, _spec) when is_map(value), do: value
+  defp cast_stored(type, constraints, value) do
+    with {:ok, native} <- decode_storage(value, Ash.Type.storage_type(type, constraints)),
+         {:ok, _} = loaded <- Ash.Type.cast_stored(type, native, constraints) do
+      loaded
+    else
+      _ -> :error
+    end
+  rescue
+    _ -> :error
+  end
 
-  # `{:array, :map}` rows: a list of canonical JSON strings decodes element-wise (nil kept);
-  # a list of maps (legacy embedded rows) passes through unchanged.
-  def load_value(value, spec) when is_list(value) do
-    case storage_class(spec) do
-      :array_of_map_json ->
-        Enum.map(value, fn
-          %{} = element -> element
-          nil -> nil
-          element when is_binary(element) -> decode_map_json(element)
-          element -> element
-        end)
+  defp decode_storage(value, :binary) when is_binary(value), do: Base.decode64(value)
 
-      _ ->
-        value
+  defp decode_storage(value, :map) when is_binary(value) do
+    case Jason.decode(value) do
+      {:ok, %{} = decoded} -> {:ok, decoded}
+      _ -> :error
     end
   end
 
-  def load_value(value, _spec), do: value
+  defp decode_storage(values, {:array, :map}) when is_list(values) do
+    values
+    |> Enum.reduce_while({:ok, []}, fn value, {:ok, acc} ->
+      case decode_storage(value, :map) do
+        {:ok, native} -> {:cont, {:ok, [native | acc]}}
+        :error -> {:halt, :error}
+      end
+    end)
+    |> case do
+      {:ok, reversed} -> {:ok, Enum.reverse(reversed)}
+      :error -> :error
+    end
+  end
+
+  # Embedded documents from older servers already have their native map shape.
+  # Ash's temporal and decimal types accept the ISO/exact strings directly.
+  defp decode_storage(value, _storage), do: {:ok, value}
 
   @doc "Whether the attribute's storage type is `:binary` (drives sensitive verifier + sort/range rejection)."
   @spec binary_storage?(Ash.Type.t(), keyword()) :: boolean()
@@ -202,60 +219,6 @@ defmodule AshArcadic.Cast do
   end
 
   # --- private ---
-
-  defp decode_date(value) do
-    case Date.from_iso8601(value) do
-      {:ok, date} -> date
-      _ -> value
-    end
-  end
-
-  defp decode_utc_datetime(value) do
-    case DateTime.from_iso8601(value) do
-      {:ok, dt, _offset} -> dt
-      _ -> value
-    end
-  end
-
-  defp decode_naive_datetime(value) do
-    case NaiveDateTime.from_iso8601(value) do
-      {:ok, ndt} -> ndt
-      _ -> value
-    end
-  end
-
-  defp decode_time(value) do
-    case Time.from_iso8601(value) do
-      {:ok, time} -> time
-      _ -> value
-    end
-  end
-
-  # Decimal.parse/1 returns {Decimal.t(), remainder} | :error — decode only a
-  # fully-consumed decimal string; anything else passes through unchanged (a
-  # non-decimal string must never raise from Decimal.new/1).
-  defp decode_decimal(value) do
-    case Decimal.parse(value) do
-      {decimal, ""} -> decimal
-      _ -> value
-    end
-  end
-
-  defp decode_binary(value) do
-    case Base.decode64(value) do
-      {:ok, decoded} -> decoded
-      :error -> value
-    end
-  end
-
-  # Lenient like every other decode arm: a non-JSON string (a legacy plain-string value, or a
-  # corrupted row) passes through raw rather than erroring mid-load.
-  defp decode_map_json(value) do
-    case Jason.decode(value) do
-      {:ok, decoded} -> decoded
-      {:error, _} -> value
-    end
-  end
 
   # Canonical JSON: identical output for identical maps regardless of key insertion/hash order —
   # maps render as sorted `"key":value` fragment lists, so the encoding is a pure function of the

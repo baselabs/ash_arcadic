@@ -166,7 +166,7 @@ defmodule AshArcadic.Aggregate do
   `count → 0`, `list → []`), returns the aggregate struct's `.default_value` (which Ash
   pre-populates as `caller_default || default_value(kind)`) — NOT ArcadeDB's `sum → 0`
   (probe G7). `exists` coerces to a boolean; value-returning kinds (`min`/`max`/`first`
-  and `list` elements) coerce through `Cast.load_value/2` by the field's storage type.
+  and `list` elements) coerce through `Cast.load_value/2` using the field's declared Ash type.
   """
   @spec decode([map()], Ash.Query.Aggregate.t(), %{atom() => {Ash.Type.t(), keyword()}}) :: term()
   def decode([], agg, _types), do: agg.default_value

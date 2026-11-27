@@ -11,6 +11,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Qualify Hex archives in CI and publish them through the shared Hex action with workload identity.
 
+### Fixed
+
+- Load stored graph properties through their declared Ash types, including atoms, enums,
+  and custom stored casts. Decode failures omit property values and type error details.
+
 ## [1.5.0] - 2026-11-24
 
 ### Changed
