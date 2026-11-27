@@ -77,7 +77,7 @@ defmodule QuickTests do
   end
 
   # The full name, or its last segment inside a multi-alias of its parent
-  # (`alias AshArcadic.{Edge, Query}`).
+  # (`alias Parent.{Child, Other}`).
   defp names?(source, module) do
     String.contains?(source, module) or
       case String.split(module, ".") do
