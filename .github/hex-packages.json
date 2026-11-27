@@ -38,6 +38,7 @@
       "lib/ash_arcadic/edge.ex",
       "lib/ash_arcadic/errors/create_failed.ex",
       "lib/ash_arcadic/errors/query_failed.ex",
+      "lib/ash_arcadic/errors/transaction_conflict.ex",
       "lib/ash_arcadic/errors/unsupported_filter.ex",
       "lib/ash_arcadic/errors/update_failed.ex",
       "lib/ash_arcadic/identifier.ex",
