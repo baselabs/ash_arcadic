@@ -177,7 +177,7 @@ jobs:
   release-archives:
     needs: toolchain
     runs-on: ubuntu-24.04
-    timeout-minutes: 90 # no green run yet with cold qualification and consumer compile
+    timeout-minutes: 90 # 2 min 22 s warm, run 46073930711; cold qualification and consumer compile not yet measured
     env:
       MIX_ENV: dev
     steps:
@@ -210,7 +210,7 @@ jobs:
   package-rebuild:
     needs: [toolchain, release-archives]
     runs-on: ubuntu-24.04
-    timeout-minutes: 15 # no green run yet
+    timeout-minutes: 15 # 16 s, run 46073930711
     env:
       MIX_ENV: dev
     steps:
