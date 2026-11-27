@@ -4,64 +4,69 @@ defmodule AshArcadic.Cast do
 
   ArcadeDB rows are flat JSON maps (`%{"@rid" => .., "@cat" => "v", <props>}`), not
   AGE agtype text — so there is NO tag: values are typed-decoded from the resource's
-  attribute map. Wire encoding follows the storage type. After wire decoding,
-  `load_value/2` calls the declared type's `Ash.Type.cast_stored/3` callback. Binary-storage values (app-side-encrypted bytes, D3) are
-  `Base.encode64`/`decode64` — plaintext in JSON is impossible, and equality matches
-  because both the stored form and a filter param serialize identically.
+  attribute map. Values pass through `Ash.Type.dump_to_native/3` before wire
+  encoding and `Ash.Type.cast_stored/3` after wire decoding. Binary-storage
+  values use base64 on the wire. Writes and filter parameters share the same
+  representation.
   """
 
-  @doc "Serializes an attribute value to a JSON-safe param, typed by `{type, constraints}`."
+  alias AshArcadic.Errors.QueryFailed
+
+  @doc "Dumps an Ash value to its native representation and encodes it for ArcadeDB."
   @spec serialize_value(term(), {Ash.Type.t(), keyword()} | Ash.Type.t() | nil) :: term()
-  def serialize_value(%DateTime{} = dt, _spec), do: DateTime.to_iso8601(dt)
-  def serialize_value(%NaiveDateTime{} = ndt, _spec), do: NaiveDateTime.to_iso8601(ndt)
-  def serialize_value(%Date{} = d, _spec), do: Date.to_iso8601(d)
-  def serialize_value(%Time{} = t, _spec), do: Time.to_iso8601(t)
-  def serialize_value(%Decimal{} = d, _spec), do: Decimal.to_string(d, :normal)
+  def serialize_value(value, nil), do: encode_storage(value, nil)
+  def serialize_value(value, {nil, _constraints}), do: serialize_value(value, nil)
 
-  def serialize_value(value, spec) when is_binary(value) do
-    if binary_storage_spec?(spec), do: Base.encode64(value), else: value
-  end
+  def serialize_value(value, spec) do
+    {type, constraints} = normalize_spec(spec)
 
-  # `:map`-storage values ride the wire as a CANONICAL JSON STRING (keys recursively sorted, so
-  # equal maps always encode to the SAME string — equality/in filters on new-format rows are
-  # consistent). Why: ArcadeDB's 26.10 line enforces the openCypher property-value rule — property
-  # values must be primitives or arrays of primitives — so a map-valued property write that ≤26.9
-  # servers stored as an embedded document is now rejected 400 (`InvalidPropertyTypeException`;
-  # SQL keeps MAP first-class but this data layer writes openCypher). A JSON string is a legal
-  # property value on EVERY supported server version, and it also lifts the old 32-level server
-  # nesting cap. On UNENCODABLE content (a non-UTF8 binary nested inside) the encoder returns
-  # :error and the value passes through UNCHANGED — the pre-wire encode gates then reject it
-  # value-free naming the attribute (Rule 4), exactly as they did when maps rode the wire raw.
-  def serialize_value(value, spec) when is_map(value) do
-    case storage_class(spec) do
-      :map_json ->
-        case encode_canonical_json(value) do
-          {:ok, json} -> json
-          :error -> value
-        end
+    case dump_stored(type, constraints, value) do
+      {:ok, wire} ->
+        wire
 
-      _ ->
-        value
+      :error ->
+        raise QueryFailed, query: "ArcadeDB encode", reason: "native attribute dump failed"
     end
   end
 
-  # `{:array, :map}` storage: element-wise — the array stays a server-visible LIST (arrays of
-  # primitives are legal property values), each map element becoming its canonical JSON string.
-  # Same soft-fail contract: one unencodable element returns the ORIGINAL list for the gates.
-  def serialize_value(value, spec) when is_list(value) do
-    case storage_class(spec) do
-      :array_of_map_json ->
-        case encode_canonical_list(value) do
-          {:ok, encoded} -> encoded
-          :error -> value
-        end
+  defp dump_stored(type, constraints, value) do
+    case Ash.Type.dump_to_native(type, value, constraints) do
+      {:ok, native} -> {:ok, encode_storage(native, Ash.Type.storage_type(type, constraints))}
+      _ -> :error
+    end
+  rescue
+    _ -> :error
+  end
 
-      _ ->
-        value
+  defp encode_storage(nil, _storage), do: nil
+  defp encode_storage(value, :binary) when is_binary(value), do: Base.encode64(value)
+
+  # Ash's UUID dump is 16 bytes. ArcadeDB's existing UUID representation is text.
+  defp encode_storage(<<_::128>> = value, :uuid) do
+    {:ok, uuid} = Ash.Type.cast_stored(Ash.Type.UUID, value, [])
+    uuid
+  end
+
+  defp encode_storage(%DateTime{} = dt, _storage), do: DateTime.to_iso8601(dt)
+  defp encode_storage(%NaiveDateTime{} = ndt, _storage), do: NaiveDateTime.to_iso8601(ndt)
+  defp encode_storage(%Date{} = date, _storage), do: Date.to_iso8601(date)
+  defp encode_storage(%Time{} = time, _storage), do: Time.to_iso8601(time)
+  defp encode_storage(%Decimal{} = decimal, _storage), do: Decimal.to_string(decimal, :normal)
+  defp encode_storage(%Ash.Vector{} = vector, :vector), do: Ash.Vector.to_list(vector)
+
+  # Canonical strings keep map properties legal in openCypher and allow equality
+  # comparisons. On an unencodable leaf the original value reaches the encode gate.
+  defp encode_storage(value, :map) do
+    case canonical_value(value) do
+      {:ok, json} -> json
+      :error -> value
     end
   end
 
-  def serialize_value(value, _spec), do: value
+  defp encode_storage(values, {:array, storage}) when is_list(values),
+    do: Enum.map(values, &encode_storage(&1, storage))
+
+  defp encode_storage(value, _storage), do: value
 
   @doc "Decodes a JSON scalar back to its Ash attribute value, typed by `{type, constraints}`."
   @spec load_value(term(), {Ash.Type.t(), keyword()} | Ash.Type.t() | nil) :: term()
@@ -75,7 +80,7 @@ defmodule AshArcadic.Cast do
         loaded
 
       :error ->
-        raise AshArcadic.Errors.QueryFailed,
+        raise QueryFailed,
           query: "ArcadeDB decode",
           reason: "stored attribute cast failed"
     end
@@ -101,10 +106,10 @@ defmodule AshArcadic.Cast do
     end
   end
 
-  defp decode_storage(values, {:array, :map}) when is_list(values) do
+  defp decode_storage(values, {:array, storage}) when is_list(values) do
     values
     |> Enum.reduce_while({:ok, []}, fn value, {:ok, acc} ->
-      case decode_storage(value, :map) do
+      case decode_storage(value, storage) do
         {:ok, native} -> {:cont, {:ok, [native | acc]}}
         :error -> {:halt, :error}
       end
@@ -121,7 +126,7 @@ defmodule AshArcadic.Cast do
 
   @doc "Whether the attribute's storage type is `:binary` (drives sensitive verifier + sort/range rejection)."
   @spec binary_storage?(Ash.Type.t(), keyword()) :: boolean()
-  def binary_storage?(type, constraints), do: Ash.Type.storage_type(type, constraints) == :binary
+  def binary_storage?(type, constraints), do: storage_type(type, constraints) == :binary
 
   # The ALLOWLIST of storage types with a total order ArcadeDB compares correctly (a range/keyset op
   # over anything else is silently wrong): the ordered scalars + `:date` (stored an ISO string —
@@ -163,7 +168,7 @@ defmodule AshArcadic.Cast do
   """
   @spec range_comparable?(Ash.Type.t(), keyword()) :: boolean()
   def range_comparable?(type, constraints) do
-    orderable_storage?(Ash.Type.storage_type(type, constraints))
+    orderable_storage?(storage_type(type, constraints))
   end
 
   @doc """
@@ -173,14 +178,14 @@ defmodule AshArcadic.Cast do
   string param never equals a coerced temporal value — probe-verified). Wrapping the param —
   `datetime($p)` for datetime storage, `localtime($p)` for time storage — makes ArcadeDB compare
   temporal-to-temporal (probe-verified for fractional-second/usec values too). The `_usec` storage
-  classes are covered SYMMETRICALLY with the decode side (`classify/1`) — omitting them reintroduces
+  classes use the same wrappers — omitting them reintroduces
   the silent-`[]` mis-page for a `:datetime`/`:time` attr declared `precision: :microsecond` (storage
   `:utc_datetime_usec`/`:time_usec`). `:date` is the exception: ArcadeDB does NOT coerce date-only
   strings, so it stays a string and compares correctly UNWRAPPED (`nil`).
   """
   @spec temporal_cypher_fn(Ash.Type.t(), keyword()) :: String.t() | nil
   def temporal_cypher_fn(type, constraints) do
-    case Ash.Type.storage_type(type, constraints) do
+    case storage_type(type, constraints) do
       :utc_datetime -> "datetime"
       :utc_datetime_usec -> "datetime"
       :naive_datetime -> "datetime"
@@ -200,7 +205,7 @@ defmodule AshArcadic.Cast do
   """
   @spec numeric_storage?(Ash.Type.t(), keyword()) :: boolean()
   def numeric_storage?(type, constraints) do
-    Ash.Type.storage_type(type, constraints) in [:integer, :float]
+    storage_type(type, constraints) in [:integer, :float]
   end
 
   @doc """
@@ -225,28 +230,6 @@ defmodule AshArcadic.Cast do
   # key-value SET (the equality law `serialize_value(m) == serialize_value(m') when m == m'`).
   # Uses Jason's tuple form per fragment so a non-UTF8 binary/atom-key failure is a SOFT :error
   # (the caller passes the original value through for the pre-wire encode gates), never a raise.
-  defp encode_canonical_json(value), do: canonical_value(value)
-
-  defp encode_canonical_list(list) do
-    list
-    |> Enum.reduce_while({:ok, []}, fn
-      # A nil ELEMENT stays JSON null in the outer array (legal there), not the
-      # string "null".
-      nil, {:ok, acc} ->
-        {:cont, {:ok, [nil | acc]}}
-
-      element, {:ok, acc} ->
-        case canonical_value(element) do
-          {:ok, encoded} -> {:cont, {:ok, [encoded | acc]}}
-          :error -> {:halt, :error}
-        end
-    end)
-    |> case do
-      {:ok, encoded} -> {:ok, Enum.reverse(encoded)}
-      :error -> :error
-    end
-  end
-
   # Temporal/decimal leaves serialize exactly as Jason encodes them (ISO8601 / plain string), so
   # a map written on <=26.9 servers (raw-map wire form) and the same map written as canonical
   # JSON agree element-for-element. (Struct clauses precede the is_map clause — structs ARE maps.)
@@ -322,47 +305,13 @@ defmodule AshArcadic.Cast do
     end
   end
 
-  defp binary_storage_spec?(spec) do
-    case normalize_spec(spec) do
-      {type, constraints} -> binary_storage?(type, constraints)
-      :untyped -> false
-    end
-  end
+  defp storage_type(type, constraints),
+    do: Ash.Type.storage_type(Ash.Type.get_type(type), constraints)
 
-  defp storage_class(spec) do
-    case normalize_spec(spec) do
-      {type, constraints} -> classify(Ash.Type.storage_type(type, constraints))
-      :untyped -> :other
-    end
-  end
+  defp normalize_spec({type, constraints}) when is_list(constraints),
+    do: {Ash.Type.get_type(type), constraints}
 
-  defp classify(:date), do: :date
-  defp classify(:utc_datetime), do: :utc_datetime
-  defp classify(:utc_datetime_usec), do: :utc_datetime
-  defp classify(:naive_datetime), do: :naive_datetime
-  defp classify(:naive_datetime_usec), do: :naive_datetime
-  defp classify(:time), do: :time
-
-  # :time_usec decodes like :time (Time.from_iso8601 parses fractional seconds) — symmetric with the
-  # temporal_cypher_fn wrapper, so a usec time round-trips AND compares correctly.
-  defp classify(:time_usec), do: :time
-  defp classify(:decimal), do: :decimal
-  defp classify(:binary), do: :binary
-
-  # The map-family storage classes (see serialize_value's :map comment): `:map` (also the
-  # storage of :struct/:keyword/:tuple/:union — the same openCypher property-value rule hits
-  # them all) and `{:array, :map}`.
-  defp classify(:map), do: :map_json
-  defp classify({:array, :map}), do: :array_of_map_json
-  defp classify(_other), do: :other
-
-  # `nil` means "no type info" (a defensive direct call, not a resource attribute):
-  # pass the raw JSON scalar through unchanged rather than routing to `Ash.Type.Term`
-  # whose storage_type is `:binary` — that would `Base.decode64` any 4-char-valid
-  # string and silently corrupt it. Pass-through keeps serialize/load symmetric.
-  defp normalize_spec(nil), do: :untyped
-  defp normalize_spec({type, constraints}) when is_list(constraints), do: {type, constraints}
-  defp normalize_spec(type), do: {type, []}
+  defp normalize_spec(type), do: {Ash.Type.get_type(type), []}
 
   defp render_list_element(nil), do: "null"
   defp render_list_element(fragment) when is_binary(fragment), do: fragment

@@ -16,6 +16,7 @@ defmodule AshArcadic.Query.Write do
   rejected value-free. Every value rides a bound `$param` — the RHS via `Expression`/`add_param`,
   the static map as `$static` (Rule 1).
   """
+  alias Ash.Query.Function.Type
   alias AshArcadic.Cast
   alias AshArcadic.DataLayer.Info
   alias AshArcadic.Errors.UnsupportedFilter
@@ -80,9 +81,8 @@ defmodule AshArcadic.Query.Write do
 
   # One atomic → `{:ok, "n.<field> = <cypher>", q}` | value-free `{:error, _}`. Two LHS-TARGET guards
   # fire before any RHS work (spec §7.1): a discriminator target is rejected value-free (a tenant-hop),
-  # and a `sensitive`/non-stored target is rejected value-free — an atomic SET binds the RHS RAW (no
-  # `Cast.serialize_value`/app-side encryption), so `n.<sensitive> = <expr>` would store PLAINTEXT into
-  # an encrypted-binary field, and a non-stored target has no column to set. `Expression.translate`
+  # and a `sensitive`/non-stored target is rejected value-free. A non-stored target
+  # has no property to set, and a computed Cypher value cannot be encrypted on the client. `Expression.translate`
   # guards RHS *refs* only, never the LHS target — so the target itself is guarded HERE via the Slice-7
   # `Info.value_translatable_field?/2` predicate (`stored AND not sensitive`; the discriminator IS
   # translatable, hence its own separate clause above). Then HYDRATE the expr (idempotent — resolves an
@@ -103,12 +103,38 @@ defmodule AshArcadic.Query.Write do
   defp translate_atomic_rhs(field, expr, q) do
     with {:ok, hydrated} <-
            Ash.Filter.hydrate_refs(expr, %{resource: q.resource, public?: false}),
-         {:ok, q, rhs} <- Expression.translate(hydrated, q) do
+         {:ok, q, rhs} <- translate_typed_rhs(hydrated, field, q) do
       name = field |> to_string() |> Identifier.validate!()
       {:ok, "n.#{name} = #{rhs}", q}
     else
       {:error, %UnsupportedFilter{}} = err -> err
       {:error, _other} -> {:error, UnsupportedFilter.exception(operator: :atomic, field: field)}
+    end
+  end
+
+  defp translate_typed_rhs(%Type{arguments: [value | _]} = expression, field, q) do
+    if Ash.Expr.expr?(value),
+      do: translate_computed_rhs(expression, field, q),
+      else: translate_typed_rhs(value, field, q)
+  end
+
+  defp translate_typed_rhs(value, field, q) do
+    if Ash.Expr.expr?(value) do
+      translate_computed_rhs(value, field, q)
+    else
+      spec = Map.fetch!(Info.attribute_types(q.resource), field)
+      {q, ref} = Query.add_param(q, Cast.serialize_value(value, spec))
+      {:ok, q, ref}
+    end
+  end
+
+  defp translate_computed_rhs(expression, field, q) do
+    {type, constraints} = Map.fetch!(Info.attribute_types(q.resource), field)
+
+    if Cast.binary_storage?(type, constraints) do
+      {:error, UnsupportedFilter.exception(operator: :atomic, field: field)}
+    else
+      Expression.translate(expression, q)
     end
   end
 

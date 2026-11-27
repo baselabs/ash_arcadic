@@ -78,7 +78,24 @@ defmodule AshArcadic.CastTest do
     assert Cast.load_value("stored:vip", AshArcadic.Test.StoredType) == "VIP"
   end
 
+  test "native term, UUID and binary-array dumps use the appropriate wire representations" do
+    uuid = "2818af0c-16d6-477f-ba13-7da86d183281"
+    assert Cast.serialize_value(uuid, :uuid) == uuid
+
+    term = {:wrapped, "hello"}
+    wire = Cast.serialize_value(term, :term)
+    assert Base.decode64!(wire) == :erlang.term_to_binary(term)
+    assert Cast.load_value(wire, :term) == term
+
+    spec = {:array, :binary}
+    assert Cast.serialize_value([<<255, 0>>, nil], spec) == ["/wA=", nil]
+    assert Cast.load_value(["/wA=", nil], spec) == [<<255, 0>>, nil]
+  end
+
   test "stored cast failures suppress bad values and errors returned by custom types" do
+    assert Cast.load_value("12:30:00", :time) == ~T[12:30:00]
+    assert Cast.load_value("12.34", :decimal) == Decimal.new("12.34")
+
     for type <- [:time, :decimal, AshArcadic.Test.StoredType] do
       error =
         assert_raise AshArcadic.Errors.QueryFailed, fn ->

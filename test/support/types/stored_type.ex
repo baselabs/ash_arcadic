@@ -7,6 +7,10 @@ defmodule AshArcadic.Test.StoredType do
   def cast_stored(nil, _constraints), do: {:ok, nil}
   def cast_stored("stored:" <> value, _constraints), do: {:ok, String.upcase(value)}
   def cast_stored(value, _constraints), do: {:error, message: value}
+
+  @impl true
+  def dump_to_native(nil, _constraints), do: {:ok, nil}
+  def dump_to_native(value, _constraints), do: {:ok, "stored:" <> String.downcase(value)}
 end
 
 defmodule AshArcadic.Test.Visibility do
