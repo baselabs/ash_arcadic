@@ -205,6 +205,34 @@ jobs:
           package: ash_arcadic
           package-directory: .
 
+  # The qualify step removes its scratch directory when it ends, so the rebuild
+  # comparison runs in its own job against the uploaded artifact.
+  package-rebuild:
+    needs: [toolchain, release-archives]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15 # no green run yet
+    env:
+      MIX_ENV: dev
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: ./.github/actions/beam
+        with:
+          elixir-version: ${{ needs.toolchain.outputs.elixir }}
+          otp-version: ${{ needs.toolchain.outputs.otp }}
+
+      - name: Install the shared action's Hex client
+        working-directory: ${{ runner.temp }}
+        run: |
+          test ! -e mix.exs
+          hex_version="$(curl --fail --silent --show-error --max-time 30 'https://raw.githubusercontent.com/baselabs/.github/654fcd0ef63daf8e3f79dfeb4ca900adffd0d4e2/.github/actions/hex-publish/hex-version')"
+          [[ "$hex_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          mix local.hex "$hex_version" --force
+
+      - run: mix deps.get --check-locked
+
       - name: Retrieve the qualified package for the reproducibility check
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
@@ -222,7 +250,7 @@ jobs:
   # passes only when each one's result is exactly `success` (skipped or cancelled refuses).
   qualified:
     if: always()
-    needs: [toolchain, static, without-optional, integration, release-archives]
+    needs: [toolchain, static, without-optional, integration, release-archives, package-rebuild]
     runs-on: ubuntu-24.04
     # floor 5 min for runner start-up; slowest green 0.1 min, run 44125925649
     timeout-minutes: 5 # 5 s, run 44704425448
