@@ -42,6 +42,7 @@ defmodule AshArcadic.DataLayer do
   alias AshArcadic.Query.Filter
   alias AshArcadic.Query.Write
   alias AshArcadic.Telemetry
+  alias AshArcadic.Transaction
   alias Ecto.Schema.Metadata
 
   @edge_entity %Spark.Dsl.Entity{
@@ -146,7 +147,8 @@ defmodule AshArcadic.DataLayer do
       client: [
         type: :atom,
         required: true,
-        doc: "Module implementing `AshArcadic.Client` (supplies the `Arcadic.Conn`)."
+        doc:
+          "Module implementing `AshArcadic.Client` with `conn/1` for routing or `conn/0` for a fixed connection."
       ],
       database: [
         type: :string,
@@ -395,7 +397,7 @@ defmodule AshArcadic.DataLayer do
 
   # R10: accepting `Ash.Query.timeout/2` (the ash_postgres posture — its `:timeout` is the ONLY
   # capability-gated timeout knob; `Ash.Changeset.timeout/2` and the task wall-clock were never
-  # gated). The per-wire-call honoring lives in the conn derivation (resource_conn/1 +
+  # gated). The per-wire-call honoring lives in the conn derivation (target_conn/4 +
   # resolve_query_conn + write_conn); the whole-action wall-clock is Ash's own task wrapper
   # (task_with_timeout, already active via :async_engine above). Reads: the action-DSL `timeout`
   # and the `context data_layer: %{timeout: …}` convention reach the wire via set_context/3
@@ -479,7 +481,8 @@ defmodule AshArcadic.DataLayer do
     {:ok,
      %{
        query
-       | tenant: get_in(context, [:private, :tenant]),
+       | tenant: get_in(context, [:private, :tenant]) || query.tenant,
+         context: routing_context(context),
          internal?: get_in(context, [:private, :internal?]) == true,
          vector_search: get_in(context, [:vector_search]),
          timeout:
@@ -731,7 +734,7 @@ defmodule AshArcadic.DataLayer do
          result: Telemetry.result_tag(result),
          tenant?: not is_nil(query.tenant),
          internal?: query.internal?,
-         in_transaction?: AshArcadic.Transaction.in_transaction?(),
+         in_transaction?: Transaction.in_transaction?(),
          traversal_aggregate?: query.aggregates != [],
          aggregate_kinds: Enum.map(query.aggregates, & &1.kind),
          aggregate_count: length(query.aggregates),
@@ -1611,7 +1614,7 @@ defmodule AshArcadic.DataLayer do
         kinds: Enum.map(aggregates, & &1.kind),
         aggregate_count: length(aggregates),
         tenant?: not is_nil(query.tenant),
-        in_transaction?: AshArcadic.Transaction.in_transaction?()
+        in_transaction?: Transaction.in_transaction?()
       },
       fn ->
         result = do_run_aggregate(query, resource, aggregates)
@@ -1941,7 +1944,7 @@ defmodule AshArcadic.DataLayer do
        %{
          tenant?: tenant?(changeset),
          result: Telemetry.result_tag(result),
-         in_transaction?: AshArcadic.Transaction.in_transaction?()
+         in_transaction?: Transaction.in_transaction?()
        }}
     end)
   end
@@ -2038,7 +2041,7 @@ defmodule AshArcadic.DataLayer do
          tenant?: bulk_tenant?(entries),
          bulk_upsert?: Map.get(options, :upsert?, false) == true,
          result: Telemetry.result_tag(result),
-         in_transaction?: AshArcadic.Transaction.in_transaction?()
+         in_transaction?: Transaction.in_transaction?()
        }}
     end)
   end
@@ -2273,7 +2276,9 @@ defmodule AshArcadic.DataLayer do
     {:error, CreateFailed.exception(resource: resource, reason: redact_db_error(error))}
   end
 
-  defp bulk_conn(resource, [{changeset, _props} | _]), do: write_conn(resource, changeset)
+  defp bulk_conn(resource, entries) do
+    write_batch_conn(resource, Enum.map(entries, &elem(&1, 0)))
+  end
 
   defp bulk_tenant?([]), do: false
   defp bulk_tenant?([{changeset, _props} | _]), do: tenant?(changeset)
@@ -2305,7 +2310,7 @@ defmodule AshArcadic.DataLayer do
        %{
          tenant?: tenant?(changeset),
          result: Telemetry.result_tag(result),
-         in_transaction?: AshArcadic.Transaction.in_transaction?()
+         in_transaction?: Transaction.in_transaction?()
        }}
     end)
   end
@@ -2624,7 +2629,7 @@ defmodule AshArcadic.DataLayer do
          tenant?: tenant?(changeset),
          stale?: stale?(result),
          result: Telemetry.result_tag(result),
-         in_transaction?: AshArcadic.Transaction.in_transaction?()
+         in_transaction?: Transaction.in_transaction?()
        }}
     end)
   end
@@ -2695,7 +2700,7 @@ defmodule AshArcadic.DataLayer do
          tenant?: not is_nil(query.tenant),
          matched: matched_count(result),
          result: Telemetry.result_tag(result),
-         in_transaction?: AshArcadic.Transaction.in_transaction?()
+         in_transaction?: Transaction.in_transaction?()
        }}
     end)
   end
@@ -2801,7 +2806,7 @@ defmodule AshArcadic.DataLayer do
          tenant?: tenant?(changeset),
          stale?: stale?(result),
          result: Telemetry.result_tag(result),
-         in_transaction?: AshArcadic.Transaction.in_transaction?()
+         in_transaction?: Transaction.in_transaction?()
        }}
     end)
   end
@@ -2820,7 +2825,7 @@ defmodule AshArcadic.DataLayer do
   # Ash action in `Task.timeout` at their own boundary.
   @impl true
   def transaction(resource, fun, _timeout \\ nil, _reason \\ nil) do
-    if AshArcadic.Transaction.in_transaction?() do
+    if Transaction.in_transaction?() do
       # Ash short-circuits nested transactions on in_transaction?/1, so this is only
       # reached if a caller nests directly. JOIN the outer boundary — ArcadeDB has no
       # savepoint contract, so an independent inner rollback is impossible; the outer
@@ -2828,18 +2833,18 @@ defmodule AshArcadic.DataLayer do
       {:ok, fun.()}
     else
       Telemetry.span(:transaction, %{resource: resource}, fn ->
-        result = AshArcadic.Transaction.run(fun)
+        result = Transaction.run(fun)
         {result, %{result: transaction_result_tag(result), in_transaction?: true}}
       end)
     end
   end
 
   @impl true
-  def in_transaction?(_resource), do: AshArcadic.Transaction.in_transaction?()
+  def in_transaction?(_resource), do: Transaction.in_transaction?()
 
   @impl true
   @spec rollback(Ash.Resource.t(), term()) :: no_return()
-  def rollback(_resource, reason), do: AshArcadic.Transaction.rollback_throw(reason)
+  def rollback(_resource, reason), do: Transaction.rollback_throw(reason)
 
   # The three span outcomes (spec §6). run/1 returns {:error, :transaction_commit_failed}
   # ONLY on a commit failure; the rollback-throw catch is the only OTHER {:error, _} it
@@ -2927,7 +2932,7 @@ defmodule AshArcadic.DataLayer do
          tenant?: not is_nil(query.tenant),
          matched: matched_count(result),
          result: Telemetry.result_tag(result),
-         in_transaction?: AshArcadic.Transaction.in_transaction?()
+         in_transaction?: Transaction.in_transaction?()
        }}
     end)
   end
@@ -3153,7 +3158,7 @@ defmodule AshArcadic.DataLayer do
          tenant?: tenant_present?(opts),
          matched: matched_count(result),
          result: Telemetry.result_tag(result),
-         in_transaction?: AshArcadic.Transaction.in_transaction?()
+         in_transaction?: Transaction.in_transaction?()
        }}
     end)
   end
@@ -3161,7 +3166,7 @@ defmodule AshArcadic.DataLayer do
   # An empty group writes nothing.
   defp do_update_many(_resource, [], _opts), do: {:ok, []}
 
-  defp do_update_many(resource, [rep | _] = entries, _opts) do
+  defp do_update_many(resource, entries, _opts) do
     pk = Ash.Resource.Info.primary_key(resource)
     types = Info.attribute_types(resource)
 
@@ -3191,11 +3196,11 @@ defmodule AshArcadic.DataLayer do
          reason: "cannot set the multitenancy discriminator"
        )}
     else
-      run_update_many(resource, rep, rows, pk)
+      run_update_many(resource, entries, rows, pk)
     end
   end
 
-  defp run_update_many(resource, rep, rows, pk) do
+  defp run_update_many(resource, [rep | _] = entries, rows, pk) do
     # The ToTenant-NORMALIZED tenant, NOT the raw `opts.tenant` (data_layer_opts carries opts[:tenant]
     # verbatim — deps/ash update_many.ex). Ash stores the `:attribute` discriminator as
     # parse_attribute(changeset.to_tenant) (create.ex) and resolves the `:context` write database from
@@ -3205,17 +3210,9 @@ defmodule AshArcadic.DataLayer do
     # opts.tenant for a plain String/Integer/Atom tenant (their default ToTenant is identity).
     tenant = rep.to_tenant
 
-    # write_conn_for_tenant/2 is the CANONICAL resource+tenant → write-conn resolver (the single-row
-    # write_conn/2 is a thin changeset adapter over it, also keyed on changeset.to_tenant). update_many
-    # reuses it — no third parallel resolver — with the same :context blank→:tenant_required /
-    # present→tenant-db / non-:context→base behavior.
     with {:ok, atomic_frags, atomic_params} <-
            Write.atomic_fragments(resource, rep.atomics, %{}),
-         {:ok, conn} <- write_conn_for_tenant(resource, tenant) do
-      # Per-call timeout parity with write_conn/2 (the changeset adapter): a caller's
-      # Ash.Changeset.timeout on update_many rows would otherwise be silently dropped
-      # (only the resource default from write_conn_for_tenant applied).
-      conn = maybe_apply_timeout(conn, rep.timeout)
+         {:ok, conn} <- write_batch_conn(resource, entries) do
       {match_pattern, tenant_clause, tenant_params} = update_many_scope(resource, pk, tenant)
       seed = Map.merge(atomic_params, Map.merge(tenant_params, %{"rows" => rows}))
       label = validated_label(resource)
@@ -3546,106 +3543,77 @@ defmodule AshArcadic.DataLayer do
     end
   end
 
+  @type conn_error :: :tenant_required | Transaction.conn_error()
+
   @doc false
-  # The write connection for a changeset — a thin adapter over write_conn_for_tenant/2 keyed on
-  # `changeset.to_tenant`, PLUS the R10 per-call timeout: `changeset.timeout` (set by a call-site
-  # `timeout:` opt or `Ash.Changeset.timeout/2`) beats the resource default and the conn floor
-  # for this call. Edge changes and bulk (first changeset of the batch) ride this same adapter.
   @spec write_conn(Ash.Resource.t(), Ash.Changeset.t()) ::
-          {:ok, Arcadic.Conn.t()}
-          | {:error, :tenant_required | :cross_database_transaction | :transaction_begin_failed}
+          {:ok, Arcadic.Conn.t()} | {:error, conn_error()}
   def write_conn(resource, changeset) do
-    case write_conn_for_tenant(resource, Map.get(changeset, :to_tenant)) do
-      {:ok, conn} -> {:ok, maybe_apply_timeout(conn, Map.get(changeset, :timeout))}
-      {:error, _} = err -> err
+    with {:ok, base} <- changeset_conn(resource, changeset),
+         {:ok, conn} <- Transaction.resolve_conn(base, :write) do
+      {:ok, maybe_apply_timeout(conn, changeset.timeout)}
+    end
+  end
+
+  defp write_batch_conn(resource, [first | rest]) do
+    with {:ok, base} <- changeset_conn(resource, first),
+         :ok <- check_batch_route(resource, first, base, rest),
+         {:ok, conn} <- Transaction.resolve_conn(base, :write) do
+      {:ok, maybe_apply_timeout(conn, first.timeout)}
+    end
+  end
+
+  defp check_batch_route(resource, first, base, rest) do
+    Enum.reduce_while(rest, :ok, fn changeset, :ok ->
+      with true <- first.to_tenant == changeset.to_tenant,
+           {:ok, other} <- changeset_conn(resource, changeset),
+           true <- Transaction.same_route?(base, other) do
+        {:cont, :ok}
+      else
+        false -> {:halt, {:error, :cross_route_transaction}}
+        {:error, _} = error -> {:halt, error}
+      end
+    end)
+  end
+
+  defp changeset_conn(resource, changeset) do
+    write_base_conn(resource, changeset.to_tenant, changeset.context)
+  end
+
+  @doc false
+  @spec base_write_conn(Ash.Resource.t()) :: {:ok, Arcadic.Conn.t()} | {:error, conn_error()}
+  def base_write_conn(resource) do
+    with {:ok, conn} <- write_base_conn(resource, nil, %{}) do
+      Transaction.resolve_conn(conn, :write)
+    end
+  end
+
+  defp write_base_conn(resource, tenant, context) do
+    with {:ok, database} <- write_database_for_tenant(resource, tenant) do
+      {:ok, target_conn(resource, database, tenant, context)}
     end
   end
 
   @doc false
-  # In-session base-database write conn for a TENANT-BLIND raw command — the replicant
-  # `AshArcadic.Replicant.Apply` TRUNCATE `:mirror` path. Delegates to the canonical
-  # write-conn resolver with a nil tenant: a non-:context resource resolves its base
-  # database (all `:attribute`-tenant rows share it, so a whole-label DELETE is correctly
-  # tenant-blind); a :context resource fails closed `:tenant_required` (physical
-  # multitenancy has no single database to truncate — and a replicant resource is verified
-  # never :context). Routes through resolve_conn/2, so inside an Ash.transaction the raw
-  # command reuses / opens the session and commits atomically with the sibling writes.
-  @spec base_write_conn(Ash.Resource.t()) ::
-          {:ok, Arcadic.Conn.t()}
-          | {:error, :tenant_required | :cross_database_transaction | :transaction_begin_failed}
-  def base_write_conn(resource), do: write_conn_for_tenant(resource, nil)
-
-  # The write connection keyed on the raw tenant, fail-closed on a blank :context tenant. The
-  # CANONICAL resource+tenant → write-conn resolver, shared by write_conn/2 (single-row) and
-  # update_many/3. Routes the database-targeted base conn through resolve_conn/2, an EXACT passthrough
-  # outside a transaction that folds in the cross-database session guard inside one.
-  @spec write_conn_for_tenant(Ash.Resource.t(), term()) ::
-          {:ok, Arcadic.Conn.t()}
-          | {:error, :tenant_required | :cross_database_transaction | :transaction_begin_failed}
-  defp write_conn_for_tenant(resource, tenant) do
-    case write_database_for_tenant(resource, tenant) do
-      {:ok, nil} ->
-        AshArcadic.Transaction.resolve_conn(conn_for(resource), :write)
-
-      {:ok, database} ->
-        AshArcadic.Transaction.resolve_conn(
-          Arcadic.with_database(conn_for(resource), database),
-          :write
-        )
-
-      {:error, :tenant_required} ->
-        {:error, :tenant_required}
-    end
-  end
-
-  @doc false
-  # The read connection for a query — resolve_query_conn/3 in :read mode. :context REQUIRES a
-  # database resolved by set_tenant/3; a nil/blank database means set_tenant never fired (blank
-  # tenant) → fail closed rather than reading the base database (a silent cross-tenant read).
   @spec read_conn(AshArcadic.Query.t(), Ash.Resource.t()) ::
-          {:ok, Arcadic.Conn.t()}
-          | {:error, :tenant_required | :cross_database_transaction | :transaction_begin_failed}
+          {:ok, Arcadic.Conn.t()} | {:error, conn_error()}
   def read_conn(%AshArcadic.Query{} = query, resource),
     do: resolve_query_conn(query, resource, :read)
 
   @doc false
-  # Write connection for a query-scoped bulk write (update_query/destroy_query), resolved from the
-  # DATA-LAYER QUERY (not a changeset) — resolve_query_conn/3 in :write mode (session write-first /
-  # cross-database guard inside a transaction). Same fail-closed :context posture as read_conn/2;
-  # :attribute uses the base database (its tenant scoping is the discriminator predicate already
-  # ANDed into query.filters).
   @spec query_write_conn(AshArcadic.Query.t(), Ash.Resource.t()) ::
-          {:ok, Arcadic.Conn.t()}
-          | {:error, :tenant_required | :cross_database_transaction | :transaction_begin_failed}
+          {:ok, Arcadic.Conn.t()} | {:error, conn_error()}
   def query_write_conn(%AshArcadic.Query{} = query, resource),
     do: resolve_query_conn(query, resource, :write)
 
-  # Shared query-conn resolver — read and write differ ONLY in the resolve_conn/2 mode atom. :context
-  # fails closed on a blank tenant (nil/"" database) — never the base DB (a silent cross-tenant op);
-  # a resolved :context database re-targets the conn; :attribute/non-multitenant use the base DB (nil
-  # database) or the query's database, scoped by the WHERE predicate. resolve_conn/2 is exact
-  # passthrough outside a transaction, session-reuse / cross-database-guarded inside one.
-  # R10: the set_context-stashed Ash timeout (read action DSL / data_layer context convention)
-  # applies ON TOP of the resolved conn — including a session-conn copy inside a transaction
-  # (the stash bounds THAT call; the stashed session itself keeps what it opened with).
-  @spec resolve_query_conn(AshArcadic.Query.t(), Ash.Resource.t(), :read | :write) ::
-          {:ok, Arcadic.Conn.t()}
-          | {:error, :tenant_required | :cross_database_transaction | :transaction_begin_failed}
-  defp resolve_query_conn(%AshArcadic.Query{} = query, resource, mode) do
-    case {strategy(resource), query.database} do
-      {:context, blank} when blank in [nil, ""] ->
-        {:error, :tenant_required}
-
-      {_strategy, nil} ->
-        resource_conn(resource)
-        |> AshArcadic.Transaction.resolve_conn(mode)
-        |> apply_query_timeout(query)
-
-      {_strategy, database} ->
-        resource_conn(resource)
-        |> Arcadic.with_database(database)
-        |> AshArcadic.Transaction.resolve_conn(mode)
-        |> apply_query_timeout(query)
+  defp resolve_query_conn(query, resource, mode) do
+    if strategy(resource) == :context and query.database in [nil, ""] do
+      {:error, :tenant_required}
+    else
+      resource
+      |> target_conn(query.database, query.tenant, query.context)
+      |> Transaction.resolve_conn(mode)
+      |> apply_query_timeout(query)
     end
   end
 
@@ -3655,24 +3623,31 @@ defmodule AshArcadic.DataLayer do
   defp apply_query_timeout({:error, _} = err, _query), do: err
 
   @doc false
-  # The client conn with the resource's `arcade do timeout end` default derived on (R10) — the
-  # SINGLE base resolution every wire path shares: reads and query-scoped writes through
-  # resolve_query_conn, changeset writes through write_conn_for_tenant, and traversal's own
-  # base_conn (manual_relationships/traverse.ex). Vector search consumes the conn the read path
-  # resolves, so it inherits the derivation without its own wiring. A pure-data copy — the
-  # host's conn struct is never mutated. A NON-conn term from the client seam passes through
-  # UNTOUCHED: the seam's invalid-conn rejection lives at the downstream struct guards
-  # (Transaction.resolve_conn / Arcadic.with_database, pinned by ClientSeamFailureTest) — the
-  # derivation must not move where that failure surfaces.
-  @spec resource_conn(Ash.Resource.t()) :: Arcadic.Conn.t()
-  def resource_conn(resource) do
-    case Info.client(resource).conn() do
-      %Arcadic.Conn{} = conn -> maybe_apply_timeout(conn, Info.timeout(resource))
-      other -> other
+  @spec target_conn(Ash.Resource.t(), String.t() | nil, term(), map()) :: Arcadic.Conn.t()
+  def target_conn(resource, database, tenant, context) do
+    client = Info.client(resource)
+
+    conn =
+      if Code.ensure_loaded?(client) and function_exported?(client, :conn, 1) do
+        client.conn(%{tenant: tenant, context: routing_context(context)})
+      else
+        client.conn()
+      end
+
+    case conn do
+      %Arcadic.Conn{} = conn ->
+        conn = maybe_apply_timeout(conn, Info.timeout(resource))
+        if is_nil(database), do: conn, else: Arcadic.with_database(conn, database)
+
+      other when is_nil(database) ->
+        other
+
+      other ->
+        Arcadic.with_database(other, database)
     end
   end
 
-  defp conn_for(resource), do: resource_conn(resource)
+  defp routing_context(context), do: Map.drop(context, [:private, :actor])
 
   # R10: derive a per-op conn copy carrying `t` as its timeout — an Ash-resolved
   # per-call timeout (read action DSL / changeset / data_layer context convention) or the
@@ -3701,6 +3676,9 @@ defmodule AshArcadic.DataLayer do
 
   defp conn_error_reason(:cross_database_transaction),
     do: "transaction spans multiple databases (single-database sessions)"
+
+  defp conn_error_reason(:cross_route_transaction),
+    do: "write spans multiple connection routes"
 
   defp conn_error_reason(:transaction_begin_failed), do: "could not begin ArcadeDB transaction"
 

@@ -10,9 +10,20 @@ defmodule AshArcadic.Client do
         def conn, do: Arcadic.connect(url, "my_db", auth: {"root", pass})
       end
 
+  Implement `conn/1` for context-dependent routing. It receives the operation's
+  tenant and Ash context with the private context and top-level actor removed.
+  A context-independent client can implement `conn/0`; when both exist, `conn/1`
+  is used, including for operations with no tenant or context.
+
   Reference it from a resource: `arcade do client MyApp.ArcadicClient end`.
   """
 
+  @type routing_context :: %{tenant: term(), context: map()}
+
   @doc "Return a base `Arcadic.Conn`. Called per operation; `Conn` is pure data (cheap)."
   @callback conn() :: Arcadic.Conn.t()
+  @doc "Return the base connection for an operation's tenant and action context."
+  @callback conn(routing_context()) :: Arcadic.Conn.t()
+
+  @optional_callbacks conn: 0, conn: 1
 end

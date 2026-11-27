@@ -376,7 +376,7 @@ defmodule AshArcadic.ManualRelationships.Traverse do
     with {:ok, database} <- resolve_database(source, context.tenant),
          {:ok, tenant_attr, tenant} <- resolve_tenant(source, dest, context.tenant),
          {:ok, dest_pk} <- resolve_dest_pk(dest),
-         {:ok, conn} <- resolve_conn(source, database),
+         {:ok, conn} <- resolve_conn(source, database, context),
          src_pkey = Ash.Resource.Info.primary_key(source),
          src_types = Info.attribute_types(source),
          ids = records |> Enum.map(&encode_id(&1, src_pkey, src_types)) |> Enum.uniq(),
@@ -479,6 +479,7 @@ defmodule AshArcadic.ManualRelationships.Traverse do
   # → denied (fail-closed). Same :attribute tenant filter / :context tenant DB as any read.
   defp authorize_nodes(context, dest, dest_pk, node_union) do
     dest
+    |> Ash.Query.set_context(Map.drop(context.query.context, [:private, :actor]))
     |> Ash.Query.for_read(context.query.action.name)
     |> Ash.Query.filter(^Ash.Expr.ref(dest_pk) in ^node_union)
     |> Ash.read(
@@ -561,16 +562,11 @@ defmodule AshArcadic.ManualRelationships.Traverse do
   # Route the database-targeted base conn through the transaction resolver: a plain
   # conn outside a tx; the session (read-own-writes) inside one. :read never errors on
   # the session guard, but the spec's error variants are handled by do_load's else.
-  # base_conn rides DataLayer.resource_conn/1 so the traversal's wire calls inherit the
-  # SOURCE resource's `arcade do timeout end` default (R10) like every other path.
-  defp resolve_conn(source, database) do
-    Transaction.resolve_conn(base_conn(source, database), :read)
+  defp resolve_conn(source, database, context) do
+    source
+    |> DataLayer.target_conn(database, context.tenant, context.source_context)
+    |> Transaction.resolve_conn(:read)
   end
-
-  defp base_conn(source, nil), do: DataLayer.resource_conn(source)
-
-  defp base_conn(source, database),
-    do: Arcadic.with_database(DataLayer.resource_conn(source), database)
 
   # One $ids entry: source-PK fields stringified and serialized by attribute type so
   # the param matches the STORED form (binary→base64, date/decimal→string). Scalar PKs
@@ -651,6 +647,13 @@ defmodule AshArcadic.ManualRelationships.Traverse do
       QueryFailed.exception(
         query: "ArcadeDB traversal",
         reason: "transaction spans multiple databases (single-database sessions)"
+      )
+
+  defp traverse_error(:cross_route_transaction),
+    do:
+      QueryFailed.exception(
+        query: "ArcadeDB traversal",
+        reason: "read spans multiple connection routes"
       )
 
   defp traverse_error(:transaction_begin_failed),

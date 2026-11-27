@@ -184,8 +184,11 @@ defmodule AshArcadic.DataLayer.TimeoutTest do
     end
 
     test "the base resource conn (traverse/vector resolution) carries the resource timeout" do
-      assert %Arcadic.Conn{timeout: 7_000} = AshArcadic.DataLayer.resource_conn(ResDoc)
-      assert %Arcadic.Conn{timeout: 3_000} = AshArcadic.DataLayer.resource_conn(PlainDoc)
+      assert %Arcadic.Conn{timeout: 7_000} =
+               AshArcadic.DataLayer.target_conn(ResDoc, nil, nil, %{})
+
+      assert %Arcadic.Conn{timeout: 3_000} =
+               AshArcadic.DataLayer.target_conn(PlainDoc, nil, nil, %{})
     end
   end
 

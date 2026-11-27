@@ -87,6 +87,35 @@ defmodule AshArcadic.TransactionTest do
                AshArcadic.Transaction.resolve_conn(base.("t_b"), :write)
     end
 
+    test "same database on another host, port, scheme or transport is a different route", %{
+      base: base
+    } do
+      Transaction.begin_marker()
+      conn = base.("t_a")
+      assert {:ok, _session} = Transaction.resolve_conn(conn, :write)
+
+      for other <- [
+            %{conn | base_url: "http://localhost:41478"},
+            %{conn | base_url: "http://127.0.0.1:41479"},
+            %{conn | base_url: "https://127.0.0.1:41478"},
+            %{conn | transport: Arcadic.Transport.HTTP}
+          ] do
+        assert {:error, :cross_route_transaction} = Transaction.resolve_conn(other, :write)
+        assert {:ok, ^other} = Transaction.resolve_conn(other, :read)
+      end
+    end
+
+    test "a session is pinned to the host that opened it", %{base: base} do
+      Transaction.begin_marker()
+      conn = %{base.("t_a") | hosts: ["http://localhost:2481"]}
+
+      assert {:ok, %Arcadic.Conn{hosts: [], session_id: "stub-session-1"} = session} =
+               Transaction.resolve_conn(conn, :write)
+
+      assert session.base_url == conn.base_url
+      assert {:ok, ^session} = Transaction.resolve_conn(conn, :read)
+    end
+
     test "marker + read on the SAME database reuses the session (read-own-writes)", %{base: base} do
       AshArcadic.Transaction.begin_marker()
       {:ok, session} = AshArcadic.Transaction.resolve_conn(base.("t_a"), :write)

@@ -16,6 +16,9 @@ defmodule AshArcadic.Transaction do
   @session_key :ash_arcadic_tx_session
   @rollback_tag :ash_arcadic_rollback
 
+  @type conn_error ::
+          :cross_database_transaction | :cross_route_transaction | :transaction_begin_failed
+
   @doc "True when the current process is inside an AshArcadic transaction (marker set)."
   @spec in_transaction?() :: boolean()
   def in_transaction?, do: Process.get(@marker_key) == true
@@ -42,7 +45,7 @@ defmodule AshArcadic.Transaction do
   @doc "Stash the session conn for this process (set when the first write opens it)."
   @spec put_session(Conn.t()) :: :ok
   def put_session(%Conn{} = conn) do
-    Process.put(@session_key, conn)
+    Process.put(@session_key, %{conn | hosts: []})
     :ok
   end
 
@@ -50,15 +53,20 @@ defmodule AshArcadic.Transaction do
   @spec rollback_throw(term()) :: no_return()
   def rollback_throw(reason), do: throw({@rollback_tag, reason})
 
+  @doc "Identity of the connection target, including transport and credentials."
+  @spec same_route?(Conn.t(), Conn.t()) :: boolean()
+  def same_route?(%Conn{} = a, %Conn{} = b) do
+    a.base_url == b.base_url and a.database == b.database and
+      a.transport == b.transport and a.transport_options == b.transport_options and
+      a.auth == b.auth
+  end
+
   @doc """
-  Resolve the connection an op should use, given a base conn already targeted at its
-  database. Outside a transaction: the base conn, unchanged. Inside: the first WRITE opens
-  the session; a write/read on the same database reuses it; a cross-database WRITE fails
-  closed (single-database sessions); a cross-database or pre-write READ runs on its own
-  conn (a read is not an atomicity hazard).
+  Resolve a database-targeted connection. The first write in a transaction opens
+  a session. Calls targeting its route reuse it. Other reads use their own
+  connection, and writes across routes fail closed.
   """
-  @spec resolve_conn(Conn.t(), :read | :write) ::
-          {:ok, Conn.t()} | {:error, :cross_database_transaction | :transaction_begin_failed}
+  @spec resolve_conn(Conn.t(), :read | :write) :: {:ok, Conn.t()} | {:error, conn_error()}
   def resolve_conn(%Conn{} = conn, mode) when mode in [:read, :write] do
     case session() do
       nil ->
@@ -68,11 +76,12 @@ defmodule AshArcadic.Transaction do
           {:ok, conn}
         end
 
-      %Conn{database: open_db} = session_conn ->
+      %Conn{} = session_conn ->
         cond do
-          open_db == conn.database -> {:ok, session_conn}
+          same_route?(conn, session_conn) -> {:ok, session_conn}
           mode == :read -> {:ok, conn}
-          true -> {:error, :cross_database_transaction}
+          conn.database != session_conn.database -> {:error, :cross_database_transaction}
+          true -> {:error, :cross_route_transaction}
         end
     end
   end
@@ -82,7 +91,7 @@ defmodule AshArcadic.Transaction do
   # session_id). A begin failure surfaces as a value-free atom — the arcadic transport
   # already spans the detail; we never carry a database name or transport error text out.
   defp open_session(conn) do
-    case Arcadic.Transaction.begin(conn) do
+    case Arcadic.Transaction.begin(%{conn | hosts: []}) do
       {:ok, %Conn{} = session_conn} ->
         put_session(session_conn)
         {:ok, session_conn}

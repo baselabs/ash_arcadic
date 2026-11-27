@@ -271,6 +271,7 @@ defmodule AshArcadic.Changes.EdgeCypher do
 
   def conn_reason(:tenant_required), do: "tenant required"
   def conn_reason(:cross_database_transaction), do: "transaction spans multiple databases"
+  def conn_reason(:cross_route_transaction), do: "transaction spans multiple connection routes"
   def conn_reason(:transaction_begin_failed), do: "could not begin ArcadeDB transaction"
 
   def conn_reason(key) when is_atom(key),

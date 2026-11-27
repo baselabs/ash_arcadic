@@ -13,6 +13,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Route resource connections from Ash tenant and action context, and bind
+  transaction sessions to their connection route and opening host.
+
 - Declare keyed native edges for idempotent parallel relationships, deletion by key,
   and transactional relocation between endpoints.
 

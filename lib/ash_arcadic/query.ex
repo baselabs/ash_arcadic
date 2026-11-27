@@ -7,6 +7,7 @@ defmodule AshArcadic.Query do
   """
   alias AshArcadic.Query.Combination
 
+  @derive {Inspect, except: [:context]}
   defstruct [
     :resource,
     :client,
@@ -25,6 +26,7 @@ defmodule AshArcadic.Query do
     aggregates: [],
     calculations: [],
     params: %{},
+    context: %{},
     internal?: false,
     vector_search: nil
   ]
@@ -47,6 +49,7 @@ defmodule AshArcadic.Query do
           aggregates: [Ash.Query.Aggregate.t()],
           calculations: [{Ash.Query.Calculation.t(), Ash.Expr.t()}],
           params: map(),
+          context: map(),
           internal?: boolean(),
           vector_search: nil | vector_search()
         }

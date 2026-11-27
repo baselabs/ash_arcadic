@@ -838,21 +838,18 @@ records. A rejected stored value raises a value-free `AshArcadic.Errors.QueryFai
 
 ## Transactions (Plan 3)
 
-- **Transactions are single-database.** A transaction opens one ArcadeDB session,
-  bound to one database. A **cross-database write inside a transaction fails closed**
-  (`:cross_database_transaction`) — an atomic write spanning two tenants' databases
-  (`:context` multitenancy) is impossible by construction, never a silent split-brain
-  write on a fresh connection. A cross-database *read* inside a transaction is allowed
-  and runs on its own connection (a read is not an atomicity hazard). The guard blocks
-  the **offending write** (returns the `:cross_database_transaction` error); rolling back
-  the transaction's **prior** in-session writes then depends on that error being
-  propagated. Ash does this for you — a data-layer error aborts the action and triggers
-  rollback — so a normal Ash action stays atomic. If you drive `transaction/4` directly
-  and *swallow* the error, the prior writes commit; propagate it (or call `rollback/2`).
-- **Read-own-writes on the same database.** The session opens lazily on the **first
-  write**; a read issued after that write (on the transaction's database) reuses the
-  session and therefore **sees the transaction's own uncommitted writes**. A read
-  *before* any write runs on a plain connection (no session yet).
+Implement `AshArcadic.Client.conn/1` for residency routing. The callback receives
+`%{tenant: tenant, context: context}` with the Ash private context and top-level actor
+removed. Fixed-route clients use `conn/0`. The resource's explicit database and
+`:context` tenant database rules still apply to the selected connection. A bulk
+statement requires a common tenant and connection route.
+
+- **Transactions use one connection route.** The first write opens a session on the
+  selected host. The session stays on that host and reads on the same route see its
+  uncommitted writes. Reads on other routes use their own connections. A write to
+  another database fails with `:cross_database_transaction`. A write to the same
+  database name on a different endpoint or transport fails with
+  `:cross_route_transaction`. Propagate either error to roll back earlier writes.
 - **Owner-process only.** The transaction session lives in the calling process; Ash
   disables async inside a transaction, so every action runs in that process. Do not
   hand a transaction's work to a spawned task or a separate process — it will not see
