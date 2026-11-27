@@ -73,6 +73,7 @@ defmodule AshArcadic.DataLayer.CanTest do
     assert DL.can?(AshArcadic.Test.Basic, :transact)
     assert DL.can?(AshArcadic.Test.Basic, {:lock, :for_update})
     refute DL.can?(AshArcadic.Test.Basic, {:lock, :for_share})
+    refute DL.can?(AshArcadic.Test.BoltNode, {:lock, :for_update})
   end
 
   test "traverse is true (Plan 4)" do

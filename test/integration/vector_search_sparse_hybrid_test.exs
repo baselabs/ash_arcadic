@@ -20,6 +20,8 @@ defmodule AshArcadic.Integration.VectorSearchSparseHybridTest do
     sql.("CREATE PROPERTY VectorDoc.org STRING")
     sql.("CREATE PROPERTY VectorDoc.name STRING")
     sql.("CREATE PROPERTY VectorDoc.status STRING")
+    sql.("CREATE PROPERTY VectorDoc.score INTEGER")
+    sql.("CREATE PROPERTY VectorDoc.distance STRING")
     sql.("CREATE PROPERTY VectorDoc.embedding ARRAY_OF_FLOATS")
     sql.("CREATE PROPERTY VectorDoc.tokens ARRAY_OF_INTEGERS")
     sql.("CREATE PROPERTY VectorDoc.weights ARRAY_OF_FLOATS")
@@ -45,7 +47,7 @@ defmodule AshArcadic.Integration.VectorSearchSparseHybridTest do
       Arcadic.command!(
         admin,
         "INSERT INTO VectorDoc SET id='#{id}', org='#{org}', name='#{id}', status='#{status}', " <>
-          "embedding=#{emb}, tokens=#{tk}, weights=#{w}, body=:body",
+          "embedding=#{emb}, tokens=#{tk}, weights=#{w}, body=:body, score=42, distance='near'",
         %{"body" => body},
         language: "sql"
       )
@@ -62,6 +64,20 @@ defmodule AshArcadic.Integration.VectorSearchSparseHybridTest do
   end
 
   defp orgs(rows), do: rows |> Enum.map(& &1.org) |> Enum.uniq() |> Enum.sort()
+
+  test "rank metadata leaves the stored score and distance intact" do
+    for {action, args} <- [
+          {:sparse_search, %{query_tokens: @qt, query_weights: @qw, k: 2}},
+          {:hybrid_search, %{query_vector: @qv, query_tokens: @qt, query_weights: @qw, k: 2}}
+        ] do
+      assert {:ok, [_, _] = rows} = search(action, args, tenant: "a")
+
+      assert Enum.all?(rows, fn row ->
+               row.score == 42 and row.distance == "near" and
+                 is_number(row.__metadata__[:vector_score])
+             end)
+    end
+  end
 
   # === Non-vacuity: the GLOBAL top-k is the attacker tenant, so scoping is a real proof ===
 

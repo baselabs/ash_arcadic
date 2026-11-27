@@ -14,6 +14,8 @@ defmodule AshArcadic.Test.VectorDoc do
     attribute :org, :string, public?: true
     attribute :name, :string, public?: true
     attribute :status, :string, public?: true
+    attribute :score, :integer, public?: true
+    attribute :distance, :string, public?: true
     attribute :embedding, {:array, :float}, public?: true
     attribute :tokens, {:array, :integer}, public?: true
     attribute :weights, {:array, :float}, public?: true

@@ -41,6 +41,7 @@ defmodule AshArcadic.DataLayer.SkeletonTest do
     assert AshArcadic.DataLayer.can?(AshArcadic.Test.Basic, :transact)
     assert AshArcadic.DataLayer.can?(AshArcadic.Test.Basic, {:lock, :for_update})
     refute AshArcadic.DataLayer.can?(AshArcadic.Test.Basic, {:lock, :for_share})
+    refute AshArcadic.DataLayer.can?(AshArcadic.Test.BoltNode, {:lock, :for_update})
     assert AshArcadic.DataLayer.can?(AshArcadic.Test.Basic, :traverse)
     assert AshArcadic.DataLayer.can?(AshArcadic.Test.Basic, :distinct)
     assert AshArcadic.DataLayer.can?(AshArcadic.Test.Basic, :distinct_sort)

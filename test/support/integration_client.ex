@@ -5,6 +5,9 @@ defmodule AshArcadic.Test.IntegrationClient do
   alias AshArcadic.Test.TestURL
 
   @impl true
+  def transport, do: Arcadic.Transport.HTTP
+
+  @impl true
   def conn do
     url = TestURL.base()
     pass = System.get_env("ARCADIC_TEST_PASSWORD", "arcadedb_dev_password")

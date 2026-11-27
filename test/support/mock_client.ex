@@ -3,6 +3,9 @@ defmodule AshArcadic.Test.MockClient do
   @behaviour AshArcadic.Client
 
   @impl true
+  def transport, do: Arcadic.Transport.HTTP
+
+  @impl true
   def conn do
     Arcadic.connect("http://127.0.0.1:41478", "ash_arcadic_test", auth: {"root", "pw"})
   end

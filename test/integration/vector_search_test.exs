@@ -17,6 +17,7 @@ defmodule AshArcadic.Integration.VectorSearchTest do
     sql.("CREATE PROPERTY VectorDoc.org STRING")
     sql.("CREATE PROPERTY VectorDoc.name STRING")
     sql.("CREATE PROPERTY VectorDoc.status STRING")
+    sql.("CREATE PROPERTY VectorDoc.distance STRING")
     sql.("CREATE PROPERTY VectorDoc.embedding ARRAY_OF_FLOATS")
 
     # Attacker tenant "b" FIRST, clustered on the query vector (crowds the global top-k); tenant "a"
@@ -31,7 +32,7 @@ defmodule AshArcadic.Integration.VectorSearchTest do
 
     for {id, org, status, emb} <- rows do
       sql.(
-        "INSERT INTO VectorDoc SET id='#{id}', org='#{org}', name='#{id}', status='#{status}', embedding=#{emb}"
+        "INSERT INTO VectorDoc SET id='#{id}', org='#{org}', name='#{id}', status='#{status}', embedding=#{emb}, distance='stored'"
       )
     end
 
@@ -73,6 +74,7 @@ defmodule AshArcadic.Integration.VectorSearchTest do
            "cross-tenant leak: #{inspect(Enum.map(rows, & &1.org))}"
 
     assert rows |> Enum.map(& &1.name) |> Enum.sort() == ["a1", "a2", "a3"]
+    assert Enum.all?(rows, &(&1.distance == "stored"))
     assert Enum.all?(rows, &is_number(&1.__metadata__[:vector_distance]))
     # closest-first: a1 (nearest to [1,0,0]) leads
     assert hd(rows).name == "a1"

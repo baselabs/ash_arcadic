@@ -838,7 +838,7 @@ records. A rejected stored value raises a value-free `AshArcadic.Errors.QueryFai
 
 ## Transactions (Plan 3)
 
-Implement `AshArcadic.Client.conn/1` for residency routing. The callback receives
+Implement `c:AshArcadic.Client.conn/1` for residency routing. The callback receives
 `%{tenant: tenant, context: context}` with the normalized Ash tenant. The routing context
 excludes Ash's private context and the top-level actor. Fixed-route clients use `conn/0`. The resource's explicit database and
 `:context` tenant database rules still apply to the selected connection. A bulk
@@ -859,7 +859,10 @@ statement requires a common tenant and connection route.
   Predicate and read-only dependencies have no serializable guarantee.
   On `AshArcadic.Errors.TransactionConflict`, retry the entire Ash transaction,
   including the read. This lock mode requires HTTP and a record query without
-  vector search or combinations. HTTP sessions always use repeatable read so
+  vector search or combinations. Declare `transport/0` on the client and
+  return `Arcadic.Transport.HTTP` to advertise this lock. Clients without
+  a declaration and clients declaring another transport do not advertise it.
+  HTTP sessions always use repeatable read so
   a lock read can join a session opened by an earlier write.
 - **Owner-process only.** The transaction session lives in the calling process; Ash
   disables async inside a transaction, so every action runs in that process. Do not
@@ -950,6 +953,8 @@ Declare `identity [:edge_key]` inside an edge to match on a property key alongsi
 the endpoints and label. Compound keys use multiple declared properties. Keyed
 edges use `MERGE` and require non-nil, same-named declared arguments on both
 `CreateEdge` and `DestroyEdge`. Each endpoint pair can hold distinct keys.
+For a keyed `:both` declaration, writes and exact deletes address the outgoing
+placement. An ambiguous exact match deletes no edges.
 
 Add `replace?: true` to `CreateEdge` to move a key to the action's record and a
 single destination. Within the declared labels and tenant scope, it removes at

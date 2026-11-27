@@ -34,6 +34,10 @@ defmodule AshArcadic.DataLayer.ClientRoutingTest do
     end
   end
 
+  test "a dynamically routed client without a transport declaration does not advertise locks" do
+    refute DataLayer.can?(Node, {:lock, :for_update})
+  end
+
   test "writes and reads resolve using tenant and actor-free action context" do
     context = %{region: "eu", actor: %{id: "public actor"}, private: %{actor: %{id: "actor"}}}
     changeset = %Ash.Changeset{resource: Node, to_tenant: "tenant", context: context}

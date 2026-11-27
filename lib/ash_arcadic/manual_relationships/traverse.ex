@@ -449,6 +449,11 @@ defmodule AshArcadic.ManualRelationships.Traverse do
   defp finish_load(_reach_map, [], _dest, _dest_pk, _card, _context, _psl, _pso), do: {:ok, %{}}
 
   defp finish_load(reach_map, node_union, dest, dest_pk, card, context, psl, pso) do
+    query =
+      Ash.Query.set_context(context.query, DataLayer.nested_read_context(context.source_context))
+
+    context = %{context | query: query}
+
     with {:ok, authorized_nodes} <- authorize_nodes(context, dest, dest_pk, node_union) do
       authorized_set = MapSet.new(authorized_nodes, &Map.get(&1, dest_pk))
       surviving = surviving_dests(reach_map, authorized_set)
@@ -479,7 +484,7 @@ defmodule AshArcadic.ManualRelationships.Traverse do
   # → denied (fail-closed). Same :attribute tenant filter / :context tenant DB as any read.
   defp authorize_nodes(context, dest, dest_pk, node_union) do
     dest
-    |> Ash.Query.set_context(Map.drop(context.query.context, [:private, :actor]))
+    |> Ash.Query.set_context(DataLayer.nested_read_context(context.query.context))
     |> Ash.Query.for_read(context.query.action.name)
     |> Ash.Query.filter(^Ash.Expr.ref(dest_pk) in ^node_union)
     |> Ash.read(

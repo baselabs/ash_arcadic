@@ -22,7 +22,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Declare keyed native edges for idempotent parallel relationships, deletion by key,
   and transactional relocation between endpoints.
 
+### Breaking
+
+- Native Ash storage is now used for writes and filters. Backfill non-nil `:term`
+  properties and their NewType or array equivalents written by 1.5.0. Older
+  values lack the native Erlang term representation.
+- Backfill 1.5.0 properties of type `{:array, :binary}` or
+  `{:array, :url_encoded_binary}`, including nested arrays and NewType equivalents.
+  Older array elements were written as raw text, while the new format decodes
+  them as base64. Typed map fields, `:struct`, `:keyword`, `:tuple`, `:union`,
+  and custom types need a backfill where the previous stored form differs from
+  their declared native or embedded representation.
+
 ### Fixed
+
+- Preserve stored properties named `score` or `distance` in vector results, and
+  keep traversal and inline aggregate reads on the source connection route.
+- Limit keyed edge deletion to one matching placement and reject relocation
+  requests with a missing destination.
+- Advertise `:for_update` for clients declaring the HTTP transport.
 
 - Load stored graph properties through their declared Ash types, including atoms, enums,
   and custom stored casts. Decode failures omit property values and type error details.

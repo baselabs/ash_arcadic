@@ -149,7 +149,7 @@ defmodule AshArcadic.DataLayer do
         type: :atom,
         required: true,
         doc:
-          "Module implementing `AshArcadic.Client` with `conn/1` for routing or `conn/0` for a fixed connection."
+          "Module implementing `AshArcadic.Client` with `conn/1` for routing or `conn/0` for a fixed connection. Declare `transport/0` to enable transport-specific capabilities."
       ],
       database: [
         type: :string,
@@ -343,7 +343,14 @@ defmodule AshArcadic.DataLayer do
 
   def can?(_, {:aggregate, _}), do: false
   def can?(_, :transact), do: true
-  def can?(_, {:lock, :for_update}), do: true
+
+  def can?(resource, {:lock, :for_update}) do
+    client = Info.client(resource)
+
+    Code.ensure_loaded?(client) and function_exported?(client, :transport, 0) and
+      client.transport() == Arcadic.Transport.HTTP
+  end
+
   def can?(_, :traverse), do: true
   # Slice 5: standard (attribute-FK) relationships. {:filter_relationship, rel} is Ash's gate for
   # filtering a SOURCE on a related field (filter.ex:3599). True for STANDARD rels — has_many/has_one
@@ -776,8 +783,9 @@ defmodule AshArcadic.DataLayer do
          :ok <- vector_reject_paging(query),
          {:ok, mode} <- vector_scope_mode(query, resource, vs),
          {:ok, conn} <- read_conn(query, resource),
-         {:ok, rows} <- run_vector_search(conn, query, resource, vs, mode) do
-      {:ok, decode_neighbor_rows(resource, rows)}
+         tenant_pred = vector_scope_predicate(query, resource, mode),
+         {:ok, rows} <- run_vector_search(conn, query, resource, vs, tenant_pred) do
+      decode_neighbor_rows(conn, query, resource, vs.kind, tenant_pred, rows)
     else
       {:error, atom} when is_atom(atom) -> {:error, vector_error(atom)}
       {:error, other} -> {:error, other}
@@ -835,7 +843,7 @@ defmodule AshArcadic.DataLayer do
         case gated_query(conn, cypher, params) do
           {:ok, rows} ->
             records = decode_records(resource, rows)
-            attach_computed(records, aggs, query.calculations, resource)
+            attach_computed(records, aggs, query, resource)
 
           {:error, %QueryFailed{} = gate_error} ->
             {:error, gate_error}
@@ -1004,19 +1012,19 @@ defmodule AshArcadic.DataLayer do
   # property/tokens/weights come from the (already malformed-guarded) stash PER-KIND inside
   # `run_vector_kind` — `run_vector_search` never dot-accesses `vs.index` (a hybrid stash has none;
   # S1 plan-review).
-  defp run_vector_search(conn, query, resource, vs, mode) do
+  defp run_vector_search(conn, query, resource, vs, tenant_pred) do
     type = to_string(Info.label(resource))
-
-    tenant_pred =
-      if mode == :scoped and strategy(resource) == :attribute,
-        do: vector_tenant_predicate(resource, query.tenant),
-        else: nil
 
     if query.filters == [] and is_nil(query.expression) and is_nil(tenant_pred) do
       run_vector_kind(conn, type, vs, [])
     else
       vector_candidate_search(conn, query, type, vs, tenant_pred)
     end
+  end
+
+  defp vector_scope_predicate(query, resource, mode) do
+    if mode == :scoped and strategy(resource) == :attribute,
+      do: vector_tenant_predicate(resource, query.tenant)
   end
 
   defp vector_candidate_search(conn, query, type, vs, tenant_pred) do
@@ -1176,22 +1184,62 @@ defmodule AshArcadic.DataLayer do
   defp vector_kind(%{kind: kind}) when kind in [:dense, :sparse, :hybrid], do: kind
   defp vector_kind(_), do: nil
 
-  # Decodes neighbors rows. Captures the rank metadata BEFORE decode_records strips undeclared keys:
-  # dense rows carry a `distance` (→ :vector_distance); sparse/hybrid rows carry a `score`
-  # (→ :vector_score, higher = better). A fuse row carries a `distance` KEY that is `nil` (it ranks by
-  # `score`), so each capture is gated `is_number` — a nil distance is skipped, never attached. Rank
-  # order (best-first) is preserved. Never reads the broken nested `record` map (top-level only).
-  defp decode_neighbor_rows(resource, rows) do
+  # ArcadeDB flattens vector results and overwrites property names used for rank.
+  # Hydrate colliding properties by RID from the same route and scope, preserving
+  # the ranked result order and keeping rank out of the stored-type decoder.
+  defp decode_neighbor_rows(conn, query, resource, kind, tenant_pred, rows) do
     attribute_map = Info.attribute_map(resource)
-    attribute_types = Info.attribute_types(resource)
+    types = Info.attribute_types(resource)
+    {rank_key, metadata_key} = vector_rank_field(kind)
+    collision? = rank_key in Map.values(attribute_map)
 
-    Enum.map(rows, fn row ->
-      resource
-      |> struct(Cast.row_to_attrs(row, attribute_map, attribute_types))
-      |> put_rank_metadata(:vector_distance, Map.get(row, "distance"))
-      |> put_rank_metadata(:vector_score, Map.get(row, "score"))
-    end)
+    with {:ok, ranked} <-
+           resolve_rank_properties(conn, query, collision?, tenant_pred, rows) do
+      records =
+        Enum.map(ranked, fn {row, rank} ->
+          resource
+          |> struct(Cast.row_to_attrs(row, attribute_map, types))
+          |> put_rank_metadata(metadata_key, Map.get(rank, rank_key))
+        end)
+
+      {:ok, records}
+    end
   end
+
+  defp vector_rank_field(:dense), do: {"distance", :vector_distance}
+  defp vector_rank_field(kind) when kind in [:sparse, :hybrid], do: {"score", :vector_score}
+
+  defp resolve_rank_properties(_conn, _query, _collision?, _tenant_pred, []), do: {:ok, []}
+
+  defp resolve_rank_properties(_conn, _query, false, _tenant_pred, rows),
+    do: {:ok, Enum.map(rows, &{&1, &1})}
+
+  defp resolve_rank_properties(conn, query, true, tenant_pred, rows) do
+    rids = Enum.map(rows, &Map.get(&1, "@rid"))
+    {tenant_clause, params} = rank_tenant_scope(tenant_pred)
+
+    extra = {"elementId(n) IN $rank_rids" <> tenant_clause, Map.put(params, "rank_rids", rids)}
+    {cypher, params} = AshArcadic.Query.candidate_rid_cypher(query, extra)
+
+    with true <- Enum.all?(rids, &is_binary/1),
+         {:ok, vertices} <- gated_query(conn, cypher, params) do
+      by_rid = Map.new(vertices, &{Map.get(&1, "@rid"), &1})
+      ranked = for %{"@rid" => rid} = rank <- rows, vertex = by_rid[rid], do: {vertex, rank}
+      {:ok, ranked}
+    else
+      false ->
+        {:error, vector_failed("ranked row lacks a record identity")}
+
+      {:error, %QueryFailed{} = error} ->
+        {:error, error}
+
+      {:error, error} ->
+        {:error, vector_failed(redact_db_error(error))}
+    end
+  end
+
+  defp rank_tenant_scope(nil), do: {"", %{}}
+  defp rank_tenant_scope({clause, params}), do: {" AND " <> clause, params}
 
   defp put_rank_metadata(record, key, value) when is_number(value),
     do: Ash.Resource.put_metadata(record, key, value)
@@ -1382,9 +1430,9 @@ defmodule AshArcadic.DataLayer do
   end
 
   # No stashed aggregates → records unchanged (Slice-1/2/3 parity).
-  defp attach_traversal_aggregates(records, [], _resource), do: {:ok, records}
+  defp attach_traversal_aggregates(records, [], _resource, _context), do: {:ok, records}
 
-  defp attach_traversal_aggregates(records, aggs, resource) do
+  defp attach_traversal_aggregates(records, aggs, resource, context) do
     # Each aggregate: one batched authorized Ash.load over ALL records at once (Traverse UNWIND $ids
     # → not N+1), then fold + attach per record. Multi-segment paths fail closed value-free (non-goal).
     # NOTE: add_aggregate/3 PREPENDS, so `aggs` is in reverse declaration order — harmless here because
@@ -1393,14 +1441,19 @@ defmodule AshArcadic.DataLayer do
     # `resource` is the SOURCE; the DESTINATION type map is resolved per-aggregate in load_and_attach
     # (different aggregates may target different rels/destinations).
     Enum.reduce_while(aggs, {:ok, records}, fn agg, {:ok, recs} ->
-      case load_and_attach(recs, agg, resource) do
+      case load_and_attach(recs, agg, resource, context) do
         {:ok, recs2} -> {:cont, {:ok, recs2}}
         {:error, _} = err -> {:halt, err}
       end
     end)
   end
 
-  defp load_and_attach(records, %Ash.Query.Aggregate{relationship_path: [rel]} = agg, source) do
+  defp load_and_attach(
+         records,
+         %Ash.Query.Aggregate{relationship_path: [rel]} = agg,
+         source,
+         context
+       ) do
     # The fold runs over DESTINATION records (Traverse Read B). guard_field/2's binary/sensitive
     # rejection and the min/max comparator key off the DESTINATION field's storage type — resolve the
     # type map from the destination resource, NOT `source` (self-referential coincides; a cross-resource
@@ -1426,13 +1479,18 @@ defmodule AshArcadic.DataLayer do
     # agg.query may be nil (a count with no destination filter) → load the plain rel.
     load = if agg.query, do: [{rel, agg.query}], else: [rel]
 
-    case Ash.load(records, load, load_opts) do
+    query =
+      source
+      |> Ash.Query.set_context(nested_read_context(context))
+      |> Ash.Query.load(load)
+
+    case Ash.load(records, query, load_opts) do
       {:ok, loaded} -> fold_and_put(loaded, rel, agg, types)
       {:error, error} -> {:error, traversal_aggregate_error(error)}
     end
   end
 
-  defp load_and_attach(_records, %Ash.Query.Aggregate{relationship_path: path}, _source)
+  defp load_and_attach(_records, %Ash.Query.Aggregate{relationship_path: path}, _source, _context)
        when length(path) != 1,
        do:
          {:error,
@@ -1492,9 +1550,9 @@ defmodule AshArcadic.DataLayer do
 
   # Chain the two post-decode computed-field attachers: traversal aggregates, then calculations.
   # Short-circuits value-free on the first {:error, _}.
-  defp attach_computed(records, aggs, calcs, resource) do
-    with {:ok, records} <- attach_traversal_aggregates(records, aggs, resource) do
-      attach_calculations(records, calcs, resource)
+  defp attach_computed(records, aggs, query, resource) do
+    with {:ok, records} <- attach_traversal_aggregates(records, aggs, resource, query.context) do
+      attach_calculations(records, query.calculations, resource)
     end
   end
 
@@ -3664,6 +3722,19 @@ defmodule AshArcadic.DataLayer do
       other ->
         Arcadic.with_database(other, database)
     end
+  end
+
+  @doc false
+  def nested_read_context(context) do
+    Map.drop(context, [
+      :private,
+      :actor,
+      :action,
+      :data_layer,
+      :vector_search,
+      :accessing_from,
+      :parent_stack
+    ])
   end
 
   defp routing_context(context), do: Map.drop(context, [:private, :actor])
