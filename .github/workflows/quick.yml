@@ -1,0 +1,133 @@
+name: Quick
+
+# Fast feedback on a work branch before it asks to land: format, compile, credo, then the tests
+# that cover the branch's changes (scripts/quick_tests.exs) against a live ArcadeDB. It is not
+# the landing verdict and nothing waits on it: ci.yml's `qualified` job on `kci/<sha>` is the one
+# verdict, so `kci/**` and the default branch are left out here.
+on:
+  push:
+    branches-ignore: [main, 'kci/**']
+
+# A new push to the same branch cancels the run it supersedes.
+concurrency:
+  group: quick-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+# Every run step is bash -eo pipefail: a failure behind a pipe fails its step.
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  # The default toolchain from .tool-versions, and the ArcadeDB image ci.yml pins, so the pin
+  # has one home.
+  prepare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5 # no green run yet
+    outputs:
+      elixir: ${{ steps.versions.outputs.elixir }}
+      otp: ${{ steps.versions.outputs.otp }}
+      image: ${{ steps.image.outputs.image }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Read the default toolchain
+        id: versions
+        run: scripts/toolchain.sh >> "$GITHUB_OUTPUT"
+      - name: Read the pinned ArcadeDB image from ci.yml
+        id: image
+        run: |
+          images=$(grep -oE 'arcadedata/arcadedb:[^[:space:]]+@sha256:[0-9a-f]{64}' .github/workflows/ci.yml | sort -u)
+          count=$(grep -c . <<< "$images")
+          [ "$count" = 1 ] || { echo "expected one pinned ArcadeDB image in ci.yml, found $count" >&2; exit 1; }
+          echo "image=$images" >> "$GITHUB_OUTPUT"
+
+  quick:
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90 # no green run yet
+    services:
+      arcadedb:
+        image: ${{ needs.prepare.outputs.image }}
+        ports:
+          - 2480:2480
+        env:
+          JAVA_OPTS: >-
+            -Darcadedb.server.rootPassword=arcadedb_dev_password
+            -Darcadedb.server.mode=development
+    env:
+      MIX_ENV: test
+      ARCADIC_TEST_URL: http://localhost:2480
+      ARCADIC_TEST_PASSWORD: arcadedb_dev_password
+    steps:
+      # Full history, so the selector can find where the branch left the default branch.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Set up Elixir/OTP
+        uses: ./.github/actions/beam
+        with:
+          elixir-version: ${{ needs.prepare.outputs.elixir }}
+          otp-version: ${{ needs.prepare.outputs.otp }}
+
+      # Restore only: cache-warmer.yml on the default branch is the one writer.
+      - name: Restore deps and _build
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            deps
+            _build
+          key: ${{ runner.os }}-mix-${{ needs.prepare.outputs.otp }}-${{ needs.prepare.outputs.elixir }}-${{ hashFiles('mix.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-mix-${{ needs.prepare.outputs.otp }}-${{ needs.prepare.outputs.elixir }}-
+
+      - name: Install dependencies
+        run: mix deps.get --check-locked
+
+      - name: Check formatting
+        run: mix format --check-formatted
+
+      - name: Compile (warnings as errors)
+        run: mix compile --warnings-as-errors
+
+      - name: Credo
+        run: mix credo --strict
+
+      - name: Select the tests that cover this branch
+        id: select
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          selected=$(elixir scripts/quick_tests.exs "origin/$DEFAULT_BRANCH")
+          echo "selected: $selected"
+          echo "tests=$selected" >> "$GITHUB_OUTPUT"
+
+      - name: Wait for ArcadeDB to be ready
+        if: steps.select.outputs.tests != 'none'
+        run: |
+          for i in {1..60}; do
+            # A refused connection is the expected answer while the server starts.
+            if code=$(curl -s -o /dev/null -w '%{http_code}' -u "root:$ARCADIC_TEST_PASSWORD" http://localhost:2480/api/v1/ready) \
+              && [ "$code" = "204" ]; then echo "ArcadeDB ready"; exit 0; fi
+            echo "waiting for ArcadeDB ($i)... last=$code"; sleep 2
+          done
+          echo "ArcadeDB did not become ready in time" >&2
+          exit 1
+
+      - name: Test the selected files (unit + integration)
+        if: steps.select.outputs.tests != 'none'
+        env:
+          TESTS: ${{ steps.select.outputs.tests }}
+        run: |
+          if [ "$TESTS" = all ]; then
+            mix test --warnings-as-errors --include integration
+          else
+            read -ra files <<< "$TESTS"
+            mix test --warnings-as-errors --include integration "${files[@]}"
+          fi
