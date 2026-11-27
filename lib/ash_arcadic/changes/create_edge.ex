@@ -20,6 +20,7 @@ defmodule AshArcadic.Changes.CreateEdge do
   use Ash.Resource.Change
 
   alias Ash.Error.Changes.InvalidRelationship
+  alias Ash.Resource.Info
   alias AshArcadic.Changes.DestroyEdge
   alias AshArcadic.Changes.EdgeCypher
   alias AshArcadic.DataLayer
@@ -37,7 +38,7 @@ defmodule AshArcadic.Changes.CreateEdge do
   @doc false
   def run(changeset, record, opts) do
     resource = changeset.resource
-    start = %{resource: resource, multitenancy: Ash.Resource.Info.multitenancy_strategy(resource)}
+    start = %{resource: resource, multitenancy: Info.multitenancy_strategy(resource)}
 
     Telemetry.span(:create_edge, start, fn ->
       edge = EdgeCypher.fetch_edge!(resource, Keyword.fetch!(opts, :edge))
@@ -70,9 +71,8 @@ defmodule AshArcadic.Changes.CreateEdge do
   end
 
   defp write_edges(changeset, record, edge, dest_ids, props, replace?) do
-    with :ok <- validate_relocation(replace?, edge, dest_ids) do
-      write_destinations(changeset, record, edge, dest_ids, props, replace?)
-    else
+    case validate_relocation(replace?, edge, dest_ids) do
+      :ok -> write_destinations(changeset, record, edge, dest_ids, props, replace?)
       {:error, reason} -> edge_write_error(edge, reason)
     end
   end

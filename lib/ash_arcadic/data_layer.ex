@@ -3609,6 +3609,7 @@ defmodule AshArcadic.DataLayer do
     end
   end
 
+  @typedoc false
   @type conn_error :: :tenant_required | Transaction.conn_error()
 
   @doc false
